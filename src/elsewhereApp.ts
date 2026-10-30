@@ -6676,7 +6676,7 @@ export function initElsewhereApp(): void {
     }
     if (act === 'downloadstandalone') {
       const a = document.createElement('a');
-      a.href = '/Elsewhere_Phase1_Standalone.html';
+      a.href = './Elsewhere_Phase1_Standalone.html';
       a.download = 'Elsewhere_v1_Phase1_Standalone.html';
       a.click();
       notify('正在下载免 Node.js 独立离线版 HTML');

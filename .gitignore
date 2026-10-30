@@ -10,6 +10,11 @@
 !/package-lock.json
 !/tsconfig.json
 !/vite.config.ts
+!/.github/
+/.github/*
+!/.github/workflows/
+/.github/workflows/*
+!/.github/workflows/deploy.yml
 !/src/
 !/scripts/
 !/docs/

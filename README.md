@@ -55,6 +55,14 @@ npm run verify
 
 单文件生成会更新 `public/Elsewhere_Phase1_Standalone.html`，此路径也是应用下载按钮使用的正式 URL。正式构建会把本次生成的离线文件放入 `dist/`。
 
+## GitHub Pages
+
+网页地址：[Elsewhere](https://stephanielinw.github.io/Elsewhere/)。`.github/workflows/deploy.yml` 在每次推送 `main` 时使用 Node 22、`npm ci` 和 `npm run build`，仅部署 `dist/`；也可在 Actions 手动运行。
+
+工作流设置 `GITHUB_PAGES=true`，使 Vite 使用 `/Elsewhere/` 资源路径。本地开发及普通构建仍使用 `/`，单文件离线版继续独立生成；首页离线下载入口采用相对地址，兼容两种路径。可用 `GITHUB_PAGES=true npm run build`、`GITHUB_PAGES=true npm run preview` 在本地检查 Pages 构建。
+
+部署不包含本机私有预设、聊天、媒体或凭据。线上网页与本地开发地址的浏览器存储相互隔离；需要迁移时请自行导出／恢复世界备份，并重新导入私有预设。API Key 仍仅在页面内存中使用；网页直连 API 仍需服务商允许该 HTTPS 来源的 CORS，不提供后端代理。
+
 ## 设计与已知问题
 
 - [Elsewhere Bible](docs/bible/ELSEWHERE_BIBLE_V1.md)

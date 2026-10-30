@@ -1,4 +1,3 @@
-import type {FrameAdjustment, FrameFit} from './avatarFrameLayout';
 export type ThemeName = 'blue' | 'green' | 'pink' | 'coffee' | 'night';
 
 export type MessageKind = 'chat' | 'sticker' | 'photo' | 'voice' | 'packet' | 'scene' | 'play';
@@ -153,7 +152,6 @@ export interface PendingReplyJob {
   replyTurnId?: string;
   bubbles: string[];
   dueAt: number;
-  sourceRevision?: number;
 }
 
 export interface ChatInviteState {
@@ -281,7 +279,6 @@ export interface CustomAvatarFrame {
   mediaId?: string;
   dataUrl?: string;
   sourceUrl?: string;
-  fit?: FrameFit;
   createdAt: number;
 }
 
@@ -309,7 +306,6 @@ export interface RoleData {
   frameScale?: number;
   frameX?: number;
   frameY?: number;
-  frameAdjustments?: Record<string, FrameAdjustment>;
   preset: PresetData | null;
   chats: ChatMessage[];
   diaries: DiaryEntry[];
@@ -343,7 +339,6 @@ export interface UserProfileData {
   frameScale?: number;
   frameX?: number;
   frameY?: number;
-  frameAdjustments?: Record<string, FrameAdjustment>;
 }
 
 export interface FocusMoment {

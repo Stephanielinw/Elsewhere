@@ -31,7 +31,7 @@ export function getScopeMessages(role: RoleData, scope: RevisionScope): ChatMess
  */
 export function getActiveMessages(messages: ChatMessage[] | undefined | null): ChatMessage[] {
   if (!Array.isArray(messages)) return [];
-  return messages.filter((m) => m && m.status !== 'retracted');
+  return messages.filter((m) => m && !['retracted','superseded','deleted'].includes(String(m.status)));
 }
 
 /**
@@ -52,6 +52,16 @@ function findLinkedEvents(role: RoleData, msg: ChatMessage): EventRecord[] {
     if (e.detail === msg.text && Math.abs((e.at || 0) - (msg.at || 0)) <= 1000) return true;
     return false;
   });
+}
+
+function invalidateRepliesTo(role:RoleData, scope:RevisionScope, messageId:string, nowTs:number):void {
+  for (const reply of getActiveMessages(getScopeMessages(role,scope)).filter(m=>m.speaker==='char' && m.replyTo===messageId)) {
+    const linked=findLinkedEvents(role,reply);
+    reply.status='retracted';
+    reply.editedAt=nowTs;
+    for (const event of linked) event.status='superseded';
+    ensureRevisionsList(role).push({id:makeUid('rev'),scope,targetMessageId:reply.id,action:'retract',speaker:'char',previousText:reply.text,at:nowTs,reason:'关联的用户消息已修改或撤回',supersededEventIds:linked.map(e=>e.id)});
+  }
 }
 
 export function editMessage(
@@ -94,6 +104,7 @@ export function editMessage(
   msg.text = newText;
   msg.editedAt = nowTs;
   msg.revisionCount = (msg.revisionCount || 0) + 1;
+  if (msg.speaker === 'me') invalidateRepliesTo(role,scope,msg.id,nowTs);
 
   // Also update any quote snapshots referencing this message so UI stays coherent
   for (const m of list) {
@@ -108,6 +119,9 @@ export function editMessage(
     const beforeLen = role.pendingReplies.length;
     role.pendingReplies = role.pendingReplies.filter((job) => job.replyTo !== msg.id);
     hadPendingReply = role.pendingReplies.length < beforeLen;
+  }
+  if (scope === 'chat' && msg.speaker === 'char' && Array.isArray(role.pendingReplies)) {
+    role.pendingReplies = role.pendingReplies.filter(job => !(msg.replyTurnId && job.replyTurnId===msg.replyTurnId) && !(msg.replyTo && job.replyTo===msg.replyTo));
   }
 
   const revision: MessageRevisionRecord = {
@@ -145,10 +159,11 @@ export function retractMessage(
 
   msg.status = 'retracted';
   msg.editedAt = nowTs;
+  if (msg.speaker === 'me') invalidateRepliesTo(role,scope,msg.id,nowTs);
 
   // Cancel any pending delayed reply that was triggered by this message
   if (scope === 'chat' && Array.isArray(role.pendingReplies)) {
-    role.pendingReplies = role.pendingReplies.filter((job) => job.replyTo !== msg.id);
+    role.pendingReplies = role.pendingReplies.filter((job) => job.replyTo !== msg.id && !(msg.replyTurnId && job.replyTurnId===msg.replyTurnId) && !(msg.speaker==='char' && msg.replyTo && job.replyTo===msg.replyTo));
   }
 
   const revision: MessageRevisionRecord = {
@@ -208,10 +223,12 @@ export function prepareRegenerateReply(
 
   // Find the nearest preceding user message in active history (if any) before this reply turn
   let promptMsg: ChatMessage | undefined;
-  for (let i = turnStartIdx - 1; i >= 0; i--) {
-    if (active[i].speaker === 'me') {
-      promptMsg = active[i];
-      break;
+  if (targetMsg.replyTo) {
+    promptMsg = active.slice(0,turnStartIdx).find(m=>m.id===targetMsg.replyTo && m.speaker==='me');
+    if (!promptMsg) return {ok:false,reason:'原始触发消息已失效，无法安全重抽'};
+  } else {
+    for (let i = turnStartIdx - 1; i >= 0; i--) {
+      if (active[i].speaker === 'me') { promptMsg = active[i]; break; }
     }
   }
 

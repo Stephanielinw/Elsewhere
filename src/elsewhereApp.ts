@@ -1,3 +1,11 @@
+import {readCompletion} from './core/apiResponse';
+import {buildRegenerationPlan} from './core/regeneration';
+import {startReplyTask as startScopedReplyTask} from './core/replyTask';
+import {renderAvatar} from './avatarView';
+import {frameCompositionSpan,framePlacement,frameStyle,frameKey,rememberFrame,type FrameAdjustment,type FrameFields} from './core/avatarFrameLayout';
+import {PRESET_FRAME_FITS} from './core/avatarFrameFits';
+import {inspectFrameBlob,persistAppearance} from './core/avatarAppearance';
+import {safeBubbleCSS, BUBBLE_CSS_LIMIT} from './core/bubbleCss';
 import {completionLimit} from './core/outputBudget';
 import {uploadedStickers} from './core/stickers';
 import {migrateUntouchedNainDemo,resetNainStart,NAIN_BACKUP_PREFIX} from './core/nainStart';
@@ -35,6 +43,7 @@ import {
   ensureRevisionsList,
   getActiveEvents,
   getActiveMessages,
+  getScopeMessages,
   makeUid,
   prepareRegenerateReply,
   retractMessage,
@@ -113,7 +122,7 @@ import {
 } from './core/focus';
 
 export function initElsewhereApp(): void {
-  const fruitManager = createFruitManager(()=>{const p=role()?.preset||data.preset;return p?`旧版原生附加预设仍按既有存档生效：${p.name}（${p.prompts.length} 条）。新选择器不改写它，也不将果实注入日常聊天。`:'';});
+  const fruitManager = createFruitManager(()=>{const p=role()?.preset||data.preset;return p?`旧版附加预设「${p.name}」（${p.prompts.length} 条）用途未确认，已保留原配置并暂停所有正式模式注入；新版预设仍仅用于预览。`:'';});
   const terminalApi = createTerminalApi({settings:()=>data.settings,key:()=>token,save:(settings,key)=>{
     data.settings=settings;token=key;
     for(const item of data.roles)syncRoleDiaryTasks(item,data.settings,now());
@@ -157,7 +166,14 @@ export function initElsewhereApp(): void {
   let formMode: 'new' | 'edit' = 'new';
   let editingRoleId: string | null = null;
   let deleteRoleId: string | null = null;
-  let busy = false;
+  const busyRoles = new Set<string>();
+  const isBusy = (): boolean => Boolean(role() && busyRoles.has(role()!.id));
+  const replyGenerations = new Map<string, number>();
+  const startReplyTask = (r:RoleData, scope:RevisionScope, message:ChatMessage): (()=>boolean) =>
+    startScopedReplyTask(()=>data.roles,replyGenerations,r,scope,message);
+  // shortcut: retries live only in memory; persist recovery with the E-03 task state.
+  const failedChatReplies = new Map<string,{roleId:string; messageId:string; text:string; revision:number}>();
+  const failedNovelReplies = new Map<string,{roleId:string; messageId:string; text:string; revision:number; kind:'scene'|'play'; sessionId:string}>();
   let token = '';
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
   let focusedRole: string | null = null;
@@ -168,7 +184,8 @@ export function initElsewhereApp(): void {
   let voiceRecorder: MediaRecorder | null = null;
   let voiceStart = 0;
   let voiceCancelled = false;
-  let mediaURLs: string[] = [];
+  const mediaURLs = new Map<string,string>();
+  const mediaReads = new Map<string,Promise<Blob|undefined>>();
   let detailId = '';
 
   // Phase 1 state: IME composition guard, inline message editing, quote replying, revision history drawer
@@ -186,6 +203,7 @@ export function initElsewhereApp(): void {
     frameScale: number;
     frameX: number;
     frameY: number;
+    frameAdjustments?: Record<string,FrameAdjustment>;
   }
 
   // UI 01-B & UI 02 state: staged avatar & avatar frame draft for UserProfile and RoleForm
@@ -226,6 +244,8 @@ export function initElsewhereApp(): void {
   let frameModalOwner: 'role' | 'user' | null = null;
   let modalFrameDraft: StagedFrameState | null = null;
   let frameModalAdjustOpen = false;
+  let frameModalSaving = false;
+  let frameSelection = 0;
 
   // UI 03-B state: Focus companion system (task input draft, history date picker, settlement modal, AI summary retry)
   let focusTaskInputDraft = '';
@@ -233,24 +253,20 @@ export function initElsewhereApp(): void {
   let focusSettlementModalSessionId: string | null = null;
   let focusSummaryAiBusy = false;
 
-  function buildStagedFrameFromOwner(
-    owner?: {
-      frameId?: string;
-      frameMediaId?: string;
-      frameData?: string;
-      frameScale?: number;
-      frameX?: number;
-      frameY?: number;
-    } | null
-  ): StagedFrameState {
-    return {
-      frameId: owner?.frameId || (owner?.frameData || owner?.frameMediaId ? 'custom' : 'none'),
-      frameMediaId: owner?.frameMediaId || '',
-      frameData: owner?.frameData || '',
-      frameScale: Number(owner?.frameScale) || 1.25,
-      frameX: Number(owner?.frameX) || 0,
-      frameY: Number(owner?.frameY) || 0,
-    };
+  function frameDefaults(owner:FrameFields):FrameAdjustment {
+    const preset=findPresetFrameByIdOrUrl(owner.frameId||owner.frameData);
+    return (preset&&PRESET_FRAME_FITS[preset.id])||(data.customFrames||[]).find(x=>x.id===owner.frameId||Boolean(owner.frameMediaId&&x.mediaId===owner.frameMediaId))?.fit||{scale:1.25,x:0,y:0};
+  }
+  function buildStagedFrameFromOwner(owner?:FrameFields|null):StagedFrameState {
+    const fields={frameId:owner?.frameId||(owner?.frameData||owner?.frameMediaId?'custom':'none'),frameMediaId:owner?.frameMediaId||'',frameData:owner?.frameData||''};
+    const p=framePlacement(owner||{},frameDefaults(fields));
+    return {...fields,frameScale:p.scale,frameX:p.x,frameY:p.y,frameAdjustments:{...owner?.frameAdjustments}};
+  }
+  function selectFrame(staged:StagedFrameState,source:Pick<StagedFrameState,'frameId'|'frameMediaId'|'frameData'>):void {
+    rememberFrame(staged);Object.assign(staged,source);frameSelection++;
+    const key=frameKey(staged);let p=Object.hasOwn(staged.frameAdjustments||{},key)?staged.frameAdjustments![key]:frameDefaults(staged);
+    if(!p||![p.scale,p.x,p.y].every(Number.isFinite))p=frameDefaults(staged);
+    staged.frameScale=p.scale;staged.frameX=p.x;staged.frameY=p.y;
   }
 
   function getOrInitUserFrameDraft(): StagedFrameState {
@@ -280,6 +296,7 @@ export function initElsewhereApp(): void {
   }
 
   function closeFrameModal(): void {
+    frameSelection++;frameModalSaving=false;
     frameModalOwner = null;
     modalFrameDraft = null;
     frameModalAdjustOpen = false;
@@ -387,32 +404,6 @@ export function initElsewhereApp(): void {
   const userAvatarChar = (u?: UserProfileData | null): string =>
     Array.from(String(u?.name || '我').trim() || '我')[0] || '我';
 
-  function safeBubbleCSS(raw?: string): string {
-    const input = String(raw || '').slice(0, 12000);
-    if (
-      /@import|@font-face|@keyframes|url\s*\(|expression\s*\(|<\/|\bbehavior\s*:/i.test(
-        input
-      )
-    ) {
-      return '';
-    }
-    const output: string[] = [];
-    const blocks = /([^{}]+)\{([^{}]*)\}/g;
-    let m: RegExpExecArray | null;
-    while ((m = blocks.exec(input)) !== null) {
-      const sel = m[1].trim();
-      if (!/^(\.message\.(mine|theirs)\s+\.bubble)(::(before|after))?$/.test(sel)) {
-        continue;
-      }
-      const body = m[4];
-      if (/position\s*:\s*(fixed|absolute)|z-index\s*:|content\s*:/i.test(body)) {
-        continue;
-      }
-      output.push(`.chat-view ${sel}{${body}}`);
-    }
-    return output.join('\n');
-  }
-
   function installBubbleCSS(): void {
     const previous = document.querySelector('#elsewhere-bubbles-css');
     if (previous) previous.remove();
@@ -449,112 +440,11 @@ export function initElsewhereApp(): void {
     return record;
   }
 
-  function renderAvatarFrameHtml(
-    owner?: {
-      frameId?: string;
-      frameMediaId?: string;
-      frameData?: string;
-      frameScale?: number;
-      frameX?: number;
-      frameY?: number;
-    } | null
-  ): string {
-    if (!owner) return '';
-    const scale = Number(owner.frameScale) || 1.25;
-    const x = Number(owner.frameX) || 0;
-    const y = Number(owner.frameY) || 0;
-    const styleAttr = `--frame-size:${scale};--frame-x:${x}px;--frame-y:${y}px`;
-    if (owner.frameMediaId) {
-      return `<img class="avatar-frame" alt="" data-media-id="${esc(
-        owner.frameMediaId
-      )}" data-frame-id="${esc(
-        owner.frameId || 'custom_media'
-      )}" style="${styleAttr}">`;
-    }
-    if (owner.frameData && isAllowedFrameSource(owner.frameData)) {
-      return `<img class="avatar-frame" alt="" src="${esc(
-        owner.frameData
-      )}" loading="lazy" data-frame-id="${esc(
-        owner.frameId || ''
-      )}" style="${styleAttr}">`;
-    }
-    if (owner.frameId && owner.frameId !== 'none') {
-      const preset = findPresetFrameByIdOrUrl(owner.frameId);
-      if (preset) {
-        return `<img class="avatar-frame" alt="" src="${esc(
-          preset.url
-        )}" loading="lazy" data-frame-id="${esc(
-          preset.id
-        )}" style="${styleAttr}">`;
-      }
-    }
-    return '';
+  function userAvatarTag(u?:UserProfileData|null,cl='avatar',opts?:{previewUrl?:string;removed?:boolean;fallbackName?:string}):string {
+    return renderAvatar(u,'user',cl,{...opts,defaults:frameDefaults(u||{})});
   }
-
-  function userAvatarTag(
-    u?: UserProfileData | null,
-    cl = 'avatar',
-    opts?: { previewUrl?: string; removed?: boolean; fallbackName?: string }
-  ): string {
-    const frame = renderAvatarFrameHtml(u);
-    const hasFrameCl = frame ? ' has-avatar-frame' : '';
-    const fallback =
-      Array.from(String(opts?.fallbackName ?? u?.name ?? '我').trim() || '我')[0] ||
-      '我';
-    const altText = esc((opts?.fallbackName ?? u?.name) || '我的头像');
-    if (opts?.previewUrl) {
-      return `<span class="${cl} has-avatar-img avatar-loaded${hasFrameCl}" data-avatar-box="user"><span class="avatar-fallback">${esc(
-        fallback
-      )}</span><img class="avatar-img" src="${esc(
-        opts.previewUrl
-      )}" alt="${altText}">${frame}</span>`;
-    }
-    const mediaId = !opts?.removed ? u?.avatarMediaId : '';
-    if (mediaId) {
-      return `<span class="${cl} has-avatar-img${hasFrameCl}" data-avatar-box="user"><span class="avatar-fallback">${esc(
-        fallback
-      )}</span><img class="avatar-img" data-media-id="${esc(
-        mediaId
-      )}" alt="${altText}">${frame}</span>`;
-    }
-    return `<span class="${cl}${hasFrameCl}" data-avatar-box="user"><span class="avatar-fallback">${esc(
-      fallback
-    )}</span>${frame}</span>`;
-  }
-
-  function avatarTag(
-    r?: RoleData | null,
-    cl = 'avatar',
-    opts?: { previewUrl?: string; removed?: boolean; fallbackName?: string }
-  ): string {
-    const frame = renderAvatarFrameHtml(r);
-    const hasFrameCl = frame ? ' has-avatar-frame' : '';
-    const fallback =
-      Array.from(String(opts?.fallbackName ?? r?.name ?? '?').trim() || '?')[0] ||
-      '?';
-    const altText = esc((opts?.fallbackName ?? r?.name) || '角色头像');
-    if (opts?.previewUrl) {
-      return `<span class="${cl} has-avatar-img avatar-loaded${hasFrameCl}" data-avatar-box="role" data-role-id="${esc(
-        r?.id || ''
-      )}"><span class="avatar-fallback">${esc(
-        fallback
-      )}</span><img class="avatar-img" src="${esc(
-        opts.previewUrl
-      )}" alt="${altText}">${frame}</span>`;
-    }
-    const mediaId = !opts?.removed ? r?.avatarMediaId : '';
-    if (mediaId) {
-      return `<span class="${cl} has-avatar-img${hasFrameCl}" data-avatar-box="role" data-role-id="${esc(
-        r?.id || ''
-      )}"><span class="avatar-fallback">${esc(
-        fallback
-      )}</span><img class="avatar-img" data-media-id="${esc(
-        mediaId
-      )}" alt="${altText}">${frame}</span>`;
-    }
-    return `<span class="${cl}${hasFrameCl}" data-avatar-box="role" data-role-id="${esc(
-      r?.id || ''
-    )}"><span class="avatar-fallback">${esc(fallback)}</span>${frame}</span>`;
+  function avatarTag(r?:RoleData|null,cl='avatar',opts?:{previewUrl?:string;removed?:boolean;fallbackName?:string}):string {
+    return renderAvatar(r,'role',cl,{...opts,defaults:frameDefaults(r||{})});
   }
 
   function syncModalAdjustInputsToStaged(
@@ -569,7 +459,7 @@ export function initElsewhereApp(): void {
     if (sizeEl && sizeEl.value !== '') {
       const parsed = Number(sizeEl.value);
       if (Number.isFinite(parsed)) {
-        staged.frameScale = Math.max(0.5, Math.min(3, parsed));
+        staged.frameScale = Math.max(0.25, Math.min(4, parsed));
       }
     }
     if (xEl && xEl.value !== '') {
@@ -618,11 +508,7 @@ export function initElsewhereApp(): void {
         (!staged.frameId || staged.frameId === 'none'))
         ? '当前预览：不使用头像框'
         : activePresetItem
-        ? `当前预览：${activePresetItem.label} (#${String(
-            activePresetItem.index
-          ).padStart(3, '0')})${
-            staged.frameMediaId ? ' · 本地缓存' : ' · 动态 GIF'
-          }`
+        ? `当前预览：${activePresetItem.label}`
         : activeCustomItem
         ? `当前预览：${activeCustomItem.name}（用户上传）`
         : '当前预览：自定义头像框';
@@ -636,30 +522,21 @@ export function initElsewhereApp(): void {
     };
   }
 
-  function renderFrameAdjustDrawerHtml(
-    ownerType: 'role' | 'user',
-    staged: StagedFrameState
-  ): string {
-    return `<div id="frame-adjust-${ownerType}" data-frame-adjust-owner="${ownerType}" data-testid="frame-adjust-drawer" class="frame-adjust-drawer">
-      <div class="frame-adjust-grid">
-        <label>缩放比例 <input class="field" data-frame-adjust-input="size" data-owner="${ownerType}" name="size" type="number" min="0.5" max="3" step="0.05" value="${
-          Number(staged.frameScale) || 1.25
-        }"></label>
-        <label>水平偏移 X <input class="field" data-frame-adjust-input="x" data-owner="${ownerType}" name="x" type="number" min="-80" max="80" value="${
-          Number(staged.frameX) || 0
-        }"></label>
-        <label>垂直偏移 Y <input class="field" data-frame-adjust-input="y" data-owner="${ownerType}" name="y" type="number" min="-80" max="80" value="${
-          Number(staged.frameY) || 0
-        }"></label>
-      </div>
-      <div class="row between" style="margin-top:8px;gap:8px">
-        <span class="tiny muted">调整数值将实时同步至上方预览</span>
-        <div class="row" style="gap:6px">
-          <button class="btn small ghost" type="button" data-action="resetframeadjust" data-owner="${ownerType}" data-testid="frame-adjust-reset-btn">重置默认</button>
-          <button class="btn small secondary" type="button" data-action="applyframedraftadjust" data-owner="${ownerType}" data-testid="frame-adjust-apply-btn-${ownerType}">更新位置预览</button>
-        </div>
-      </div>
-    </div>`;
+  function renderFrameAdjustDrawerHtml(ownerType:'role'|'user',staged:StagedFrameState):string {
+    return `<div id="frame-adjust-${ownerType}" data-frame-adjust-owner="${ownerType}" data-testid="frame-adjust-drawer" class="frame-adjust-drawer"><div class="frame-adjust-grid">
+      <label>大小<input class="field" data-frame-adjust-input="size" data-owner="${ownerType}" name="size" type="number" min="0.25" max="4" step="0.05" value="${staged.frameScale}"></label>
+      <label>左右<input class="field" data-frame-adjust-input="x" data-owner="${ownerType}" name="x" type="number" min="-80" max="80" value="${staged.frameX}"></label>
+      <label>上下<input class="field" data-frame-adjust-input="y" data-owner="${ownerType}" name="y" type="number" min="-80" max="80" value="${staged.frameY}"></label></div>
+      <button class="btn small ghost" type="button" data-action="resetframeadjust" data-owner="${ownerType}" data-testid="frame-adjust-reset-btn">恢复默认</button>
+      ${computeFrameModalStatusInfo(staged).isRemoteActive?`<details class="frame-secondary"><summary>离线使用</summary><button type="button" class="btn small ghost" data-action="cacheactiveframe" data-owner="${ownerType}" data-testid="frame-cache-btn-${ownerType}">缓存当前素材</button></details>`:''}</div>`;
+  }
+
+  function frameThumbnail(ownerType:'role'|'user',source:Pick<StagedFrameState,'frameId'|'frameMediaId'|'frameData'>,staged:StagedFrameState):string {
+    const {baseOwner,displayName}=getModalBaseOwnerAndDisplayName(ownerType),selected=frameKey(source)===frameKey(staged);
+    const stored=Object.hasOwn(staged.frameAdjustments||{},frameKey(source))?staged.frameAdjustments![frameKey(source)]:null;
+    const fields=selected?staged:{...source,frameScale:stored?.scale??1.25,frameX:stored?.x??0,frameY:stored?.y??0,frameAdjustments:stored?{[frameKey(source)]:stored}:{}};
+    const owner={...baseOwner,...fields,name:displayName},opts={previewUrl:ownerType==='user'?draftUserAvatarPreviewUrl:draftRoleAvatarPreviewUrl,removed:ownerType==='user'?draftUserAvatarRemove:draftRoleAvatarRemove};
+    return ownerType==='user'?userAvatarTag(owner as UserProfileData,'avatar frame-thumb-avatar',opts):avatarTag(owner as RoleData,'avatar frame-thumb-avatar',opts);
   }
 
   function renderFramePresetGridAndPaginationHtml(
@@ -706,10 +583,7 @@ export function initElsewhereApp(): void {
                 item.id
               )}" title="${esc(item.label)} (${esc(item.fileHint)})">
                 <div class="frame-thumb-box">
-                  <span class="frame-thumb-base">${esc(baseChar)}</span>
-                  <img class="frame-thumb-img" src="${esc(
-                    item.url
-                  )}" alt="${esc(item.label)}" loading="lazy">
+                  ${frameThumbnail(ownerType,{frameId:item.id,frameData:item.url,frameMediaId:''},staged)}
                 </div>
                 <span class="frame-cell-label">${esc(item.label)}</span>
                 <small class="frame-cell-tag">#${String(item.index).padStart(
@@ -741,7 +615,7 @@ export function initElsewhereApp(): void {
     staged: StagedFrameState
   ): string {
     const { activeFrameId } = computeFrameModalStatusInfo(staged);
-    const customList = Array.isArray(data.customFrames) ? data.customFrames : [];
+    const customList = (Array.isArray(data.customFrames)?data.customFrames:[]).filter(x=>!frameGallerySearch||x.name.toLowerCase().includes(frameGallerySearch.toLowerCase()));
     const baseChar = Array.from(String(displayName).trim() || '?')[0] || '?';
 
     if (frameGallerySourceTab === 'preset') {
@@ -751,11 +625,6 @@ export function initElsewhereApp(): void {
         staged
       );
       return `<div class="frame-preset-section">
-        <div class="frame-filter-bar">
-          <input type="search" id="frame-search-input" data-testid="frame-search-input" class="field frame-search-field" placeholder="搜索编号（如 #001、#073）或文件名（如 IMG-5574）…" value="${esc(
-            frameGallerySearch
-          )}">
-        </div>
         <div class="frame-grid" data-testid="preset-frame-grid">${gridHtml}</div>
         <div class="frame-pagination" data-testid="frame-pagination">${paginationHtml}</div>
       </div>`;
@@ -763,11 +632,9 @@ export function initElsewhereApp(): void {
 
     return `<div class="frame-custom-section" data-testid="custom-frame-section">
       <div class="row between" style="margin-bottom:10px;flex-wrap:wrap;gap:8px">
-        <span class="tiny muted">已入库的自定义头像框素材（共 ${
-          customList.length
-        } 款，可在「终端」批量管理）</span>
+        <span class="tiny muted">我的头像框 · ${customList.length} 款</span>
         <label class="btn small ghost" style="cursor:pointer" data-testid="upload-custom-frame-label">
-          ＋ 直接上传素材并选用
+          ＋ 上传头像框
           <input type="file" id="frame-file-${ownerType}" data-frame-upload-owner="${ownerType}" accept="image/png,image/svg+xml,image/gif,image/webp,.svg,.gif" hidden>
         </label>
       </div>
@@ -794,22 +661,11 @@ export function initElsewhereApp(): void {
                       cf.id
                     )}">
                       <div class="frame-thumb-box">
-                        <span class="frame-thumb-base">${esc(baseChar)}</span>
-                        ${
-                          cf.mediaId
-                            ? `<img class="frame-thumb-img" data-media-id="${esc(
-                                cf.mediaId
-                              )}" alt="${esc(cf.name)}">`
-                            : `<img class="frame-thumb-img" src="${esc(
-                                cf.dataUrl || ''
-                              )}" alt="${esc(cf.name)}">`
-                        }
+                        ${frameThumbnail(ownerType,{frameId:cf.id,frameMediaId:cf.mediaId||'',frameData:cf.dataUrl||''},staged)}
                       </div>
                       <span class="frame-cell-label">${esc(cf.name)}</span>
                     </button>
-                    <button type="button" class="frame-custom-del" title="删除自定义框" data-action="deletecustomframe" data-custom-id="${esc(
-                      cf.id
-                    )}">×</button>
+
                   </div>`;
                 })
                 .join('')}
@@ -824,9 +680,7 @@ export function initElsewhereApp(): void {
     staged: StagedFrameState
   ): void {
     if (!avatarBoxEl) return;
-    const scale = Number(staged.frameScale) || 1.25;
-    const x = Number(staged.frameX) || 0;
-    const y = Number(staged.frameY) || 0;
+    avatarBoxEl.style.setProperty('--composition-span',String(frameCompositionSpan(staged,frameDefaults(staged))));
 
     let resolvedMediaId = '';
     let resolvedUrl = '';
@@ -862,9 +716,7 @@ export function initElsewhereApp(): void {
     }
 
     frameImg.classList.remove('frame-img-error');
-    frameImg.style.setProperty('--frame-size', String(scale));
-    frameImg.style.setProperty('--frame-x', `${x}px`);
-    frameImg.style.setProperty('--frame-y', `${y}px`);
+    frameImg.style.cssText=frameStyle(staged,frameDefaults(staged));
     frameImg.dataset.frameId = resolvedFrameId;
 
     if (resolvedMediaId) {
@@ -923,6 +775,7 @@ export function initElsewhereApp(): void {
     const { activeFrameId, isRemoteActive, currentStatusText } =
       computeFrameModalStatusInfo(staged);
 
+    if(frameModalAdjustOpen)patchFrameModalAdjustDrawerInPlace(ownerType);
     // 1. Update only the overlay <img class="avatar-frame"> inside the top preview
     const livePreviewEl =
       modalSheet.querySelector<HTMLElement>('.frame-live-preview');
@@ -933,27 +786,7 @@ export function initElsewhereApp(): void {
       `[data-testid="frame-active-status-${ownerType}"]`
     );
     if (statusEl) {
-      statusEl.textContent = currentStatusText;
-    }
-
-    // 3. Update offline cache button in preview actions row
-    const actionsRow = modalSheet.querySelector<HTMLElement>(
-      '.frame-modal-preview .frame-preview-info .row'
-    );
-    const existingCacheBtn = modalSheet.querySelector<HTMLElement>(
-      `[data-testid="frame-cache-btn-${ownerType}"]`
-    );
-    if (isRemoteActive && !existingCacheBtn && actionsRow) {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'btn small ghost';
-      btn.dataset.action = 'cacheactiveframe';
-      btn.dataset.owner = ownerType;
-      btn.dataset.testid = `frame-cache-btn-${ownerType}`;
-      btn.textContent = '📥 离线缓存';
-      actionsRow.appendChild(btn);
-    } else if (!isRemoteActive && existingCacheBtn) {
-      existingCacheBtn.remove();
+      statusEl.textContent = currentStatusText.replace('当前预览：','');
     }
 
     // 4. Update .selected state on thumbnail cells in-place without rebuilding the grid
@@ -1005,9 +838,7 @@ export function initElsewhereApp(): void {
         'aria-expanded',
         frameModalAdjustOpen ? 'true' : 'false'
       );
-      toggleBtn.textContent = `⚙ 缩放与位置微调 ${
-        frameModalAdjustOpen ? '▴' : '▾'
-      }`;
+      toggleBtn.textContent = frameModalAdjustOpen?'收起调整':'调整位置与大小';
     }
     const existingDrawer = document.getElementById(`frame-adjust-${ownerType}`);
     if (frameModalAdjustOpen) {
@@ -1081,11 +912,11 @@ export function initElsewhereApp(): void {
     );
     if (presetTabBtn) {
       presetTabBtn.classList.toggle('active', frameGallerySourceTab === 'preset');
-      presetTabBtn.textContent = `预设头像框 (${AVATAR_FRAME_AUDIT_STATS.uniqueUrls})`;
+      presetTabBtn.textContent = '预设';
     }
     if (customTabBtn) {
       customTabBtn.classList.toggle('active', frameGallerySourceTab === 'custom');
-      customTabBtn.textContent = `用户上传的头像框 (${customList.length})`;
+      customTabBtn.textContent = '我的上传';
     }
 
     const modalBody = modalSheet.querySelector<HTMLElement>('.frame-modal-body');
@@ -1103,14 +934,15 @@ export function initElsewhereApp(): void {
 
   function openFrameModalInPlace(ownerType: 'role' | 'user'): void {
     const { baseOwner } = getModalBaseOwnerAndDisplayName(ownerType);
+    frameSelection++;
     if (ownerType === 'role') {
       draftRoleFormValues = captureFormValues('role-form');
       const formDraft = getOrInitRoleFrameDraft(baseOwner as RoleData | null);
-      modalFrameDraft = { ...formDraft };
+      modalFrameDraft = { ...formDraft,frameAdjustments:{...formDraft.frameAdjustments} };
     } else {
       draftUserFormValues = captureFormValues('user-profile-form');
       const formDraft = getOrInitUserFrameDraft();
-      modalFrameDraft = { ...formDraft };
+      modalFrameDraft = { ...formDraft,frameAdjustments:{...formDraft.frameAdjustments} };
     }
     frameModalOwner = ownerType;
     frameModalAdjustOpen = false;
@@ -1132,164 +964,87 @@ export function initElsewhereApp(): void {
     );
     if (modalBackdrop) {
       void hydrateMedia(modalBackdrop);
+      modalBackdrop.querySelector<HTMLButtonElement>('.frame-modal-close')?.focus({preventScroll:true});
     }
   }
 
   function closeFrameModalInPlace(): void {
+    const owner=frameModalOwner;
     closeFrameModal();
     document
       .querySelector<HTMLElement>('[data-testid="avatar-frame-modal-backdrop"]')
       ?.remove();
+    clearMediaURLs();
+    document.querySelector<HTMLButtonElement>(`[data-testid="open-${owner}-frame-modal-btn"]`)?.focus({preventScroll:true});
   }
 
-  function applyFrameModalInPlace(ownerType: 'role' | 'user'): void {
-    if (!modalFrameDraft) {
-      closeFrameModalInPlace();
-      return;
-    }
-    syncModalAdjustInputsToStaged(ownerType, modalFrameDraft);
-    const appliedDraft: StagedFrameState = { ...modalFrameDraft };
-    const { baseOwner } = getModalBaseOwnerAndDisplayName(ownerType);
-
-    if (ownerType === 'role') {
-      draftRoleFrame = appliedDraft;
-    } else {
-      draftUserFrame = appliedDraft;
-    }
-
-    closeFrameModalInPlace();
-
-    // Surgically update the avatar preview box and summary label on the underlying form without re-rendering #role-form / #user-profile-form
-    const editorSelector =
-      ownerType === 'role'
-        ? '[data-testid="role-avatar-editor"]'
-        : '[data-testid="user-avatar-editor"]';
-    const editorCard = document.querySelector<HTMLElement>(editorSelector);
-    if (editorCard) {
-      const formPreviewBox =
-        editorCard.querySelector<HTMLElement>('.avatar-preview-box');
-      updateAvatarBoxFrameInPlace(formPreviewBox, appliedDraft);
-    }
-
-    const labelSelector =
-      ownerType === 'role'
-        ? '[data-testid="role-frame-current-label"]'
-        : '[data-testid="user-frame-current-label"]';
-    const labelEl = document.querySelector<HTMLElement>(labelSelector);
-    if (labelEl) {
-      labelEl.textContent = formatFrameDraftSummary(appliedDraft, baseOwner);
-    }
+  async function applyFrameModalInPlace(ownerType:'role'|'user'):Promise<void>{
+    if(!modalFrameDraft||frameModalSaving)return;
+    const draft=modalFrameDraft;syncModalAdjustInputsToStaged(ownerType,draft);rememberFrame(draft);
+    const {baseOwner}=getModalBaseOwnerAndDisplayName(ownerType),selection=frameSelection;
+    const patch={...draft,frameAdjustments:{...draft.frameAdjustments}};
+    if(!baseOwner){draftRoleFrame=patch;closeFrameModalInPlace();patchProfileAppearance(ownerType,patch);notify('已选好头像框，创建角色时一并保存。');return;}
+    const blob=ownerType==='user'?draftUserAvatarBlob:draftRoleAvatarBlob;
+    const remove=ownerType==='user'?draftUserAvatarRemove:draftRoleAvatarRemove;
+    frameModalSaving=true;
+    const sheet=document.querySelector<HTMLElement>('[data-testid="avatar-frame-modal"]');
+    sheet?.setAttribute('aria-busy','true');
+    sheet?.querySelectorAll<HTMLInputElement|HTMLButtonElement>('button,input').forEach(el=>{if(el.dataset.action!=='cancelframemodal')el.disabled=true});
+    const status=sheet?.querySelector<HTMLElement>('[data-frame-save-status]');if(status)status.textContent='正在保存…';
+    try{
+      const ok=await persistAppearance(baseOwner,patch,{blob,remove},{put:mediaPut,remove:mediaDelete,save,uid:()=>makeUid('ava'),current:()=>frameSelection===selection&&modalFrameDraft===draft&&(ownerType==='user'?data.user===baseOwner&&draftUserAvatarBlob===blob:data.roles.includes(baseOwner as RoleData)&&draftRoleAvatarBlob===blob)});
+      if(!ok)return;
+      const previousUrl=ownerType==='user'?draftUserAvatarPreviewUrl:draftRoleAvatarPreviewUrl;
+      if(ownerType==='user'){draftUserAvatarBlob=null;draftUserAvatarRemove=false;draftUserAvatarPreviewUrl='';draftUserFrame=buildStagedFrameFromOwner(baseOwner);}
+      else{draftRoleAvatarBlob=null;draftRoleAvatarRemove=false;draftRoleAvatarPreviewUrl='';draftRoleFrame=buildStagedFrameFromOwner(baseOwner);}
+      closeFrameModalInPlace();patchProfileAppearance(ownerType,buildStagedFrameFromOwner(baseOwner));
+      const box=document.querySelector<HTMLElement>(`[data-testid="${ownerType==='user'?'user':'role'}-avatar-editor"] .avatar-preview-box`);
+      if(box&&(blob||remove)){
+        box.querySelector('.avatar-img')?.remove();box.classList.remove('has-avatar-img','avatar-loaded');
+        if(baseOwner.avatarMediaId){const img=document.createElement('img');img.className='avatar-img';img.alt='头像';img.dataset.mediaId=baseOwner.avatarMediaId;box.append(img);box.classList.add('has-avatar-img');await hydrateMedia(box);}
+      }
+      if(previousUrl)URL.revokeObjectURL(previousUrl);
+      const label=document.querySelector<HTMLElement>(`[data-testid="${ownerType==='user'?'user':'role'}-avatar-status"]`);if(label)label.textContent='头像装扮已保存';
+      notify('头像装扮已保存');
+    }catch(error){if(frameSelection===selection&&status)status.textContent='保存失败，选择仍保留，请重试。';notify('头像装扮未保存：'+(error instanceof Error?error.message:String(error)));}
+    finally{if(frameSelection===selection){frameModalSaving=false;sheet?.removeAttribute('aria-busy');sheet?.querySelectorAll<HTMLInputElement|HTMLButtonElement>('button,input').forEach(el=>el.disabled=false);}}
+  }
+  function patchProfileAppearance(ownerType:'role'|'user',staged:StagedFrameState):void {
+    const card=document.querySelector<HTMLElement>(`[data-testid="${ownerType==='user'?'user':'role'}-avatar-editor"]`);
+    updateAvatarBoxFrameInPlace(card?.querySelector('.avatar-preview-box')||null,staged);
+    const label=card?.querySelector<HTMLElement>(`[data-testid="${ownerType==='user'?'user':'role'}-frame-current-label"]`);
+    if(label)label.textContent=formatFrameDraftSummary(staged,getModalBaseOwnerAndDisplayName(ownerType).baseOwner);
   }
 
-  function renderAvatarFrameModal(
-    ownerType: 'role' | 'user',
-    baseOwner?: RoleData | UserProfileData | null
-  ): string {
-    const staged = getActiveModalOrFormFrameDraft(
-      ownerType,
-      baseOwner as RoleData | null
-    );
-    const displayName =
-      ownerType === 'role'
-        ? draftRoleFormValues?.name || (baseOwner as RoleData | null)?.name || '新角色'
-        : draftUserFormValues?.name || (baseOwner as UserProfileData | null)?.name || '我';
-    const ownerLabel =
-      ownerType === 'role'
-        ? `角色头像框 · ${displayName}`
-        : `个人头像框 · ${displayName}`;
+  function renderAvatarFrameModal(ownerType:'role'|'user',baseOwner?:RoleData|UserProfileData|null):string {
+    const staged=getActiveModalOrFormFrameDraft(ownerType,baseOwner as RoleData|null),name=getModalBaseOwnerAndDisplayName(ownerType).displayName;
+    const owner={...baseOwner,...staged,name},opts={previewUrl:ownerType==='user'?draftUserAvatarPreviewUrl:draftRoleAvatarPreviewUrl,removed:ownerType==='user'?draftUserAvatarRemove:draftRoleAvatarRemove};
+    const avatar=ownerType==='user'?userAvatarTag(owner as UserProfileData,'avatar frame-live-preview',opts):avatarTag(owner as RoleData,'avatar frame-live-preview',opts);
+    const title=computeFrameModalStatusInfo(staged).currentStatusText;
+    return `<div class="frame-modal-backdrop" data-testid="avatar-frame-modal-backdrop"><div class="frame-modal-sheet" role="dialog" aria-modal="true" aria-label="选择头像框" data-testid="avatar-frame-modal" data-frame-owner="${ownerType}">
+      <div class="frame-modal-header"><h3 class="frame-modal-title">选择头像框</h3><button type="button" class="frame-modal-close" data-action="cancelframemodal" aria-label="关闭头像框弹窗">×</button></div>
+      <div class="frame-modal-preview"><div class="frame-preview-avatar-wrap">${avatar}</div><div class="frame-preview-info"><b data-testid="frame-active-status-${ownerType}">${esc(title.replace('当前预览：',''))}</b><button type="button" class="btn small ghost frame-adjust-toggle" data-action="toggleframeadjust" data-testid="toggle-frame-adjust-btn" aria-expanded="${frameModalAdjustOpen}">调整位置与大小</button></div></div>
+      ${frameModalAdjustOpen?renderFrameAdjustDrawerHtml(ownerType,staged):''}
+      <input type="search" id="frame-search-input" data-testid="frame-search-input" class="field frame-search-field" placeholder="搜索头像框编号或名称" value="${esc(frameGallerySearch)}" aria-label="搜索头像框">
+      <div class="tabs frame-source-tabs" role="tablist" aria-label="头像框来源"><button type="button" data-action="framesourcetab" data-tab="preset" data-testid="frame-tab-preset" class="${frameGallerySourceTab==='preset'?'active':''}">预设</button><button type="button" data-action="framesourcetab" data-tab="custom" data-testid="frame-tab-custom" class="${frameGallerySourceTab==='custom'?'active':''}">我的上传</button></div>
+      <div class="frame-modal-body">${renderFrameModalBodyInnerHtml(ownerType,name,staged)}</div>
+      <div class="frame-modal-footer"><span class="tiny muted" role="status" data-frame-save-status>${baseOwner?'仅保存头像装扮，其他资料不变':'创建角色时一并保存'}</span><button type="button" class="btn secondary frame-modal-btn" data-action="cancelframemodal" data-testid="cancel-frame-modal-btn">取消</button><button type="button" class="btn frame-modal-btn" data-action="applyframemodal" data-testid="apply-frame-modal-btn">${baseOwner?'确认使用':'用于新角色'}</button></div>
+    </div></div>`;
+  }
 
-    const mergedOwner = {
-      ...(baseOwner || {}),
-      name: displayName,
-      frameId: staged.frameId,
-      frameMediaId: staged.frameMediaId,
-      frameData: staged.frameData,
-      frameScale: staged.frameScale,
-      frameX: staged.frameX,
-      frameY: staged.frameY,
-    };
-
-    const { isRemoteActive, currentStatusText } =
-      computeFrameModalStatusInfo(staged);
-    const customList = Array.isArray(data.customFrames) ? data.customFrames : [];
-
-    const previewAvatarHtml =
-      ownerType === 'role'
-        ? avatarTag(mergedOwner as RoleData, 'avatar large frame-live-preview', {
-            previewUrl: draftRoleAvatarPreviewUrl,
-            removed: draftRoleAvatarRemove,
-            fallbackName: displayName,
-          })
-        : userAvatarTag(mergedOwner as UserProfileData, 'avatar large frame-live-preview', {
-            previewUrl: draftUserAvatarPreviewUrl,
-            removed: draftUserAvatarRemove,
-            fallbackName: displayName,
-          });
-
-    return `<div class="frame-modal-backdrop" data-testid="avatar-frame-modal-backdrop">
-      <div class="frame-modal-sheet" role="dialog" aria-modal="true" aria-label="${esc(
-        ownerLabel
-      )}" data-testid="avatar-frame-modal" data-frame-owner="${ownerType}">
-        <div class="frame-modal-header">
-          <div>
-            <h3 class="frame-modal-title">${esc(ownerLabel)}</h3>
-            <div class="tiny muted" data-testid="frame-active-status-${ownerType}">${esc(
-              currentStatusText
-            )}</div>
-          </div>
-          <button type="button" class="frame-modal-close" data-action="cancelframemodal" aria-label="关闭头像框弹窗">×</button>
-        </div>
-
-        <div class="frame-modal-preview">
-          <div class="frame-preview-avatar-wrap">
-            ${previewAvatarHtml}
-          </div>
-          <div class="frame-preview-info">
-            <b>实时叠加预览 · ${esc(displayName)}</b>
-            <p class="tiny muted">点击下方缩略图立即预览；点击弹窗底部「应用」更新编辑草稿，点击「取消」放弃本次调整。</p>
-            <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:6px">
-              <button type="button" class="btn small secondary" data-action="selectpresetframe" data-owner="${ownerType}" data-frame-id="none" data-testid="frame-clear-btn-${ownerType}">不使用头像框</button>
-              <button type="button" class="btn small ghost frame-adjust-toggle ${
-                frameModalAdjustOpen ? 'active' : ''
-              }" data-action="toggleframeadjust" data-testid="toggle-frame-adjust-btn" aria-expanded="${
-                frameModalAdjustOpen ? 'true' : 'false'
-              }">⚙ 缩放与位置微调 ${frameModalAdjustOpen ? '▴' : '▾'}</button>
-              ${
-                isRemoteActive
-                  ? `<button type="button" class="btn small ghost" data-action="cacheactiveframe" data-owner="${ownerType}" data-testid="frame-cache-btn-${ownerType}">📥 离线缓存</button>`
-                  : ''
-              }
-            </div>
-          </div>
-        </div>
-
-        ${
-          frameModalAdjustOpen
-            ? renderFrameAdjustDrawerHtml(ownerType, staged)
-            : ''
-        }
-
-        <div class="tabs frame-source-tabs" role="tablist" aria-label="头像框来源切换">
-          <button type="button" data-action="framesourcetab" data-tab="preset" class="${
-            frameGallerySourceTab === 'preset' ? 'active' : ''
-          }" data-testid="frame-tab-preset">预设头像框 (${
-            AVATAR_FRAME_AUDIT_STATS.uniqueUrls
-          })</button>
-          <button type="button" data-action="framesourcetab" data-tab="custom" class="${
-            frameGallerySourceTab === 'custom' ? 'active' : ''
-          }" data-testid="frame-tab-custom">用户上传的头像框 (${customList.length})</button>
-        </div>
-
-        <div class="frame-modal-body">
-          ${renderFrameModalBodyInnerHtml(ownerType, displayName, staged)}
-        </div>
-
-        <div class="frame-modal-footer">
-          <button type="button" class="btn secondary frame-modal-btn" data-action="cancelframemodal" data-testid="cancel-frame-modal-btn">取消</button>
-          <button type="button" class="btn frame-modal-btn" data-action="applyframemodal" data-testid="apply-frame-modal-btn">应用</button>
-        </div>
-      </div>
-    </div>`;
+  async function storeCustomFrame(blob:Blob,name:string,sourceUrl?:string,current:()=>boolean=()=>true):Promise<CustomAvatarFrame|null>{
+    const mediaId=makeUid('frm_u');
+    try{
+      const preset=sourceUrl?findPresetFrameByIdOrUrl(sourceUrl):undefined;
+      const measured=(preset&&PRESET_FRAME_FITS[preset.id])||await inspectFrameBlob(blob);
+      const fit=measured?{...measured,scale:Number(measured.scale.toFixed(3)),x:Number(measured.x.toFixed(2)),y:Number(measured.y.toFixed(2))}:undefined;
+      await mediaPut(mediaId,blob);
+      if(!current()){await mediaDelete(mediaId).catch(()=>{});return null;}
+      const item:CustomAvatarFrame={id:makeUid('cf'),name,mediaId,createdAt:now(),...(sourceUrl?{sourceUrl}:{}),...(fit?{fit}:{})};
+      if(!Array.isArray(data.customFrames))data.customFrames=[];data.customFrames.unshift(item);
+      if(!save()){data.customFrames=data.customFrames.filter(x=>x!==item);throw new Error('图库写入失败');}
+      return item;
+    }catch(error){await mediaDelete(mediaId).catch(()=>{});throw error;}
   }
 
   function renderTerminalFrameAssetManagerCard(): string {
@@ -1661,11 +1416,9 @@ export function initElsewhereApp(): void {
           ...completionLimit(s,'focus-log'),
         }),
       });
-      if (!res.ok) return;
-      const json = await res.json();
-      const raw = String(json.choices?.[0]?.message?.content || '').trim();
+      const raw = await readCompletion(res);
       const match = raw.match(/\{[\s\S]*\}/);
-      if (!match) return;
+      if (!match) throw new Error('模型未返回有效的专注动态数据');
       const parsed = JSON.parse(match[0]);
 
       // Strictly bind to session.id so late API responses never pollute an ended session
@@ -1693,8 +1446,9 @@ export function initElsewhereApp(): void {
       }
       save();
       if (view === 'focus') render(false);
-    } catch {
-      // Timer and grounded Live Log continue undisturbed if API fails
+    } catch (err) {
+      syslog('error', `专注动态润色失败：${err instanceof Error ? err.message : String(err)}`);
+      if (view === 'focus') notify('AI 动态生成失败，已保留原有专注记录。');
     } finally {
       const currentSession = activeFocus();
       if (currentSession && currentSession.id === sessionId) {
@@ -1731,6 +1485,7 @@ export function initElsewhereApp(): void {
     save();
     render(false);
 
+    let summaryFailed = false;
     try {
       const s = data.settings;
       const url = s.endpoint.trim().replace(/\/+$/, '');
@@ -1751,14 +1506,7 @@ export function initElsewhereApp(): void {
             ...completionLimit(s,'focus-summary'),
           }),
         });
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
-        }
-        const json = await res.json();
-        const text = String(json.choices?.[0]?.message?.content || '').trim();
-        if (!text) {
-          throw new Error('模型返回内容为空');
-        }
+        const text = await readCompletion(res);
         const latestRec = (data.focus?.completed || []).find(
           (c) => c.id === sessionId
         );
@@ -1797,10 +1545,11 @@ export function initElsewhereApp(): void {
       }
       syslog('error', `专注角色小结生成失败：${msg}`);
       save();
-      if (manualTrigger) notify('AI 角色小结生成失败，可点击重试');
+      summaryFailed = true;
     } finally {
       focusSummaryAiBusy = false;
       render(false);
+      if (manualTrigger && summaryFailed) notify('AI 角色小结生成失败，可点击重试');
     }
   }
 
@@ -2010,6 +1759,10 @@ export function initElsewhereApp(): void {
     const remaining = [];
     let changed = false;
     for (const job of r.pendingReplies) {
+      if (job.sourceRevision !== undefined && !getActiveMessages(r.chats).some(m => m.id === job.replyTo && m.speaker === 'me' && (m.revisionCount || 0) === job.sourceRevision)) {
+        changed = true;
+        continue;
+      }
       if (job.dueAt > Date.now()) {
         remaining.push(job);
         continue;
@@ -2048,6 +1801,7 @@ export function initElsewhereApp(): void {
     const bubbles = splitChatBubbles(text, r);
     if (!bubbles.length) return;
     const turnId = makeUid('turn');
+    const sourceRevision = r.chats.find(m => m.id === replyTo && m.speaker === 'me')?.revisionCount || 0;
     if (!r.pendingReplies) r.pendingReplies = [];
 
     if (focused || bubbles.length === 1) {
@@ -2057,6 +1811,7 @@ export function initElsewhereApp(): void {
         replyTurnId: turnId,
         bubbles,
         dueAt: Date.now(),
+        sourceRevision,
       });
       deliverPending(r);
       return;
@@ -2069,6 +1824,7 @@ export function initElsewhereApp(): void {
       replyTurnId: turnId,
       bubbles: [bubbles[0]],
       dueAt: Date.now(),
+      sourceRevision,
     });
     deliverPending(r);
 
@@ -2080,13 +1836,14 @@ export function initElsewhereApp(): void {
       replyTurnId: turnId,
       bubbles: followUps,
       dueAt: Date.now() + staggerMs,
+      sourceRevision,
     });
     save();
     setTimeout(() => {
       if (deliverPending(r)) {
-        if (view === 'chat') {
+        if (view === 'chat' && role()?.id === r.id) {
           const sc = document.querySelector<HTMLElement>('#scroll-area');
-          if (sc && !editingMessageId) {
+          if (sc && sc.dataset.roleId === r.id && !editingMessageId) {
             clearMediaURLs();
             sc.innerHTML = renderChatMessagesHtml(r);
             hydrateMedia();
@@ -2382,6 +2139,7 @@ export function initElsewhereApp(): void {
       frameScale: stagedFrame.frameScale,
       frameX: stagedFrame.frameX,
       frameY: stagedFrame.frameY,
+      frameAdjustments:stagedFrame.frameAdjustments,
     };
     const fv = draftUserFormValues || {
       name: u.name || '',
@@ -2394,7 +2152,7 @@ export function initElsewhereApp(): void {
       draftUserAvatarPreviewUrl || (!draftUserAvatarRemove && u.avatarMediaId)
     );
     const statusLabel = draftUserAvatarPreviewUrl
-      ? '已选择新头像（点击下方「保存我的资料」后生效）'
+      ? '新头像待确认，可与头像框一并确认使用'
       : draftUserAvatarRemove
       ? '已标记移除头像（保存后恢复默认占位头像）'
       : u.avatarMediaId
@@ -2449,7 +2207,7 @@ export function initElsewhereApp(): void {
         fv.background
       )}</textarea></div><div class="fieldrow"><label>其他补充</label><textarea class="field" name="notes" placeholder="补充描述……">${esc(
         fv.notes
-      )}</textarea></div><button class="btn full" type="submit" data-testid="save-user-profile-btn">保存我的资料</button><button class="btn full secondary" type="button" data-action="canceluserprofile" data-testid="cancel-user-profile-btn" style="margin-top:8px">取消修改并返回</button></div></form>
+      )}</textarea></div><button class="btn full" type="submit" data-testid="save-user-profile-btn">保存我的资料</button><button class="btn full secondary" type="button" data-action="canceluserprofile" data-testid="cancel-user-profile-btn" style="margin-top:8px">放弃未保存的资料并返回</button></div></form>
       </div>${frameModalOwner === 'user' ? renderAvatarFrameModal('user', u) : ''}`,
       false
     );
@@ -2468,6 +2226,7 @@ export function initElsewhereApp(): void {
           frameScale: stagedFrame.frameScale,
           frameX: stagedFrame.frameX,
           frameY: stagedFrame.frameY,
+      frameAdjustments:stagedFrame.frameAdjustments,
         } as RoleData)
       : ({
           id: 'new_role_preview',
@@ -2478,6 +2237,7 @@ export function initElsewhereApp(): void {
           frameScale: stagedFrame.frameScale,
           frameX: stagedFrame.frameX,
           frameY: stagedFrame.frameY,
+      frameAdjustments:stagedFrame.frameAdjustments,
         } as RoleData);
     const fv = draftRoleFormValues || {
       name: r?.name || '',
@@ -2560,7 +2320,7 @@ export function initElsewhereApp(): void {
         fv.canonNotes
       )}</textarea></div><button class="btn full" type="submit" data-testid="save-role-form-btn">${
         r ? '保存角色修改' : '创建并进入'
-      }</button><button class="btn full secondary" type="button" data-action="cancelroleform" data-testid="cancel-role-form-btn" style="margin-top:8px">取消修改并返回</button></form>${
+      }</button><button class="btn full secondary" type="button" data-action="cancelroleform" data-testid="cancel-role-form-btn" style="margin-top:8px">放弃未保存的资料并返回</button></form>${
         r
           ? `<div class="card danger-zone"><h3>删除这个角色</h3><p>会连同该角色的聊天、日记、记忆、戏剧与个人手机设置一并删除。请先导出完整备份。</p><div class="row"><button class="btn small secondary" data-action="export">导出备份</button><button class="btn small danger-btn" data-action="askdelete" data-id="${esc(
               r.id
@@ -2870,7 +2630,7 @@ export function initElsewhereApp(): void {
     }
     if (chatPanel === 'packet') {
       return `<section class="chat-drawer" aria-label="虚拟红包">${bar}<form id="packet-form"><div class="packet-fields"><label>金额（虚拟 ¥）<input name="amount" type="number" inputmode="decimal" required min="0.01" max="200" step="0.01" placeholder="6.66"></label><label>祝福语<input name="wish" maxlength="100" placeholder="收下这份心意" value="收下这份心意"></label></div><p class="drawer-note">仅故事内的趣味红包，不扣除真实货币，不连接支付服务或钱包。</p><button class="packet-submit" ${
-        busy ? 'disabled' : ''
+        isBusy() ? 'disabled' : ''
       }>发送虚拟红包</button></form></section>`;
     }
     return '';
@@ -2895,7 +2655,7 @@ export function initElsewhereApp(): void {
         )}。系统不会使用固定模板冒充角色发言，请检查「终端」API 设置后重试。</p>
         <div class="first-message-actions">
           <button type="button" class="btn small" data-action="genfirstmsg" ${
-            busy ? 'disabled' : ''
+            isBusy() ? 'disabled' : ''
           }>重试生成首条消息</button>
           <button type="button" class="btn small secondary" data-action="view" data-view="terminal">前往终端检查 API</button>
         </div>
@@ -2908,7 +2668,7 @@ export function initElsewhereApp(): void {
       )}」的实际人设与关系由真实模型生成；当前尚未配置 API，因此系统<strong>不会编造固定欢迎语冒充 AI 回复</strong>。你可以先前往终端配置 API 并点击下方按钮生成，或直接由你先发消息。</p>
       <div class="first-message-actions">
         <button type="button" class="btn small" data-action="genfirstmsg" ${
-          busy ? 'disabled' : ''
+          isBusy() ? 'disabled' : ''
         }>由模型生成首条消息</button>
         <button type="button" class="btn small secondary" data-action="view" data-view="terminal">前往终端配置 API</button>
       </div>
@@ -2917,11 +2677,14 @@ export function initElsewhereApp(): void {
 
   function renderChatMessagesHtml(r: RoleData): string {
     const activeChats = getActiveMessages(r.chats);
+    const failedChatReply=failedChatReplies.get(r.id);
+    const failure = failedChatReply?.roleId === r.id && activeChats.some(m => m.id === failedChatReply?.messageId && m.text === failedChatReply?.text && (m.revisionCount || 0) === failedChatReply?.revision) ? failedChatReply : null;
     const pending = pendingFor(r);
     return `<div class="chat-privacy">你与 ${esc(
       r.name
     )} 的私人对话 · ${esc(dateStr(now()))}</div>
     ${renderFirstMessageCard(r)}
+    ${failure ? `<div class="reply-pending" role="alert">回复生成失败，消息已保存。<button type="button" class="btn small secondary" data-action="retrychatreply" ${isBusy()?'disabled':''}>重试回复</button></div>` : ''}
     ${activeChats
       .map((m, i) => {
         const dayChanged =
@@ -2973,7 +2736,7 @@ export function initElsewhereApp(): void {
                       ? `<button type="button" class="msg-action-btn" data-action="regenmsg" data-scope="chat" data-id="${esc(
                           m.id
                         )}" aria-label="重抽回复" ${
-                          busy ? 'disabled' : ''
+                          isBusy() ? 'disabled' : ''
                         }>重抽</button>`
                       : ''
                   }
@@ -2990,7 +2753,7 @@ export function initElsewhereApp(): void {
         ? `<div class="reply-pending">${esc(
             r.name
           )}稍后会回复 · ${pending} 条待发</div>`
-        : busy
+        : isBusy()
         ? '<div class="reply-pending">正在生成回复…</div>'
         : ''
     }`;
@@ -3051,9 +2814,9 @@ export function initElsewhereApp(): void {
       }" aria-pressed="${focused}" aria-label="${pawTitle}" title="${pawTitle}">${catPawSvg(
         focused
       )}</button><button type="button" class="chat-more" data-action="chatroleedit" data-testid="chat-role-edit-btn" aria-label="进入角色修改页面" title="编辑当前角色资料">•••</button></div></div>
- <div class="chat-interactions">${renderChatInteractionsHtml(r)}</div>
+ <div class="chat-interactions">${renderChatInteractionsHtml(r)}</div>${(r.preset || data.preset) ? '<p class="tiny muted" role="status">旧版附加预设用途未确认，原配置已保留；暂不注入正式聊天或小说。</p>' : ''}
  ${renderRevisionsDrawer(r, 'chat')}
- <div class="chat-conversation" id="scroll-area">${renderChatMessagesHtml(
+ <div class="chat-conversation" id="scroll-area" data-role-id="${esc(r.id)}">${renderChatMessagesHtml(
    r
  )}</div>
  <div class="chat-shortcuts"><button data-action="view" data-view="focus">${glyph(
@@ -3081,7 +2844,7 @@ export function initElsewhereApp(): void {
       )}</textarea><button type="button" class="compose-sticker" data-action="chatpanel" data-panel="sticker" aria-label="发送表情包">${attachmentIcon(
         'sticker'
       )}</button><button class="send-btn" ${
-        busy ? 'disabled' : ''
+        isBusy() ? 'disabled' : ''
       } aria-label="发送消息">↑</button></form>`,
       false
     );
@@ -4177,6 +3940,8 @@ export function initElsewhereApp(): void {
     const showBackstage=isPlay&&Boolean((p as PlayData).paused);
     if(showBackstage)view='intermission';
     const activeMessages = getActiveMessages(p.messages);
+    const failedNovelReply=failedNovelReplies.get(r.id);
+    const failed = failedNovelReply?.roleId === r.id && failedNovelReply.sessionId === p.id && activeMessages.some(m => m.id === failedNovelReply?.messageId && m.text === failedNovelReply?.text && (m.revisionCount || 0) === failedNovelReply?.revision) ? failedNovelReply : null;
     const revCount = ensureRevisionsList(r).filter(
       (x) => x.scope === scope
     ).length;
@@ -4196,8 +3961,9 @@ export function initElsewhereApp(): void {
           : ''
       }<button class="btn small secondary" data-action="endnovel">${
         isPlay ? '落幕' : '结束见面'
-      }</button></div>
+      }</button></div>${(r.preset || data.preset) ? '<p class="tiny muted" role="status">旧版附加预设用途未确认，原配置已保留；暂不注入正式聊天或小说。</p>' : ''}
       ${renderRevisionsDrawer(r, scope)}
+      ${failed ? `<div class="reply-pending" role="alert">回复生成失败，原发言已保存。<button type="button" class="btn small secondary" data-action="retrynovelreply" ${isBusy()?'disabled':''}>重试回复</button></div>` : ''}
       <div class="novel" id="scroll-area"><div class="chapter">${
         isPlay ? 'theatre / act one' : 'a moment together'
       }</div><h2 class="scene-title">${esc(title)}</h2>${activeMessages
@@ -4241,7 +4007,7 @@ export function initElsewhereApp(): void {
                         m.speaker === 'char'
                           ? `<button type="button" class="msg-action-btn" data-action="regenmsg" data-scope="${scope}" data-id="${esc(
                               m.id
-                            )}" ${busy||showBackstage ? 'disabled' : ''}>重抽</button>`
+                            )}" ${isBusy()||showBackstage ? 'disabled' : ''}>重抽</button>`
                           : ''
                       }
                       <button type="button" class="msg-action-btn" data-action="retractmsg" data-scope="${scope}" data-id="${esc(
@@ -4267,7 +4033,7 @@ export function initElsewhereApp(): void {
       <form class="compose" id="novel-form"><textarea id="novel-input" ${showBackstage?'disabled':''} placeholder="写下你说的话或行动..." rows="1">${esc(
         novelDraft
       )}</textarea><button class="btn" ${
-        busy||showBackstage ? 'disabled' : ''
+        isBusy()||showBackstage ? 'disabled' : ''
       }>➤</button></form></section>${showBackstage?renderIntermissionPanel(r,p as PlayData):''}</div>`,
       false
     );
@@ -4322,12 +4088,12 @@ export function initElsewhereApp(): void {
       )}</textarea><button class="btn small full">保存修改后的演出设定</button></form><button class="btn secondary full" data-action="rollbackplay" ${
         lastTurns.length ? '' : 'disabled'
       }>回退刚才一轮戏内互动</button><p class="sub">仅回退戏内已演的最后一轮；旧版本留在幕间修订档案，戏内正式剧情不再引用它。演员仍可能记得你们试过另一种演法。</p></details>
- <form class="compose intermission-compose" id="intermission-form"><textarea id="intermission-input" placeholder="和戏外的${esc(r.name)}聊聊……" rows="1" required ${busy?'disabled':''}>${esc(intermissionDraft)}</textarea><button class="btn" type="submit" ${busy?'disabled':''} aria-label="发送幕间消息（不触发 AI）" title="仅发送你的消息">发送</button><button type="button" class="btn intermission-paw" data-action="intermissionreply" ${busy?'disabled':''} aria-label="让 AI 回复幕间讨论" title="仅点爪印才触发 AI 回复">${catPawSvg(true)}<span>AI 回复</span></button></form></aside>`;
+ <form class="compose intermission-compose" id="intermission-form"><textarea id="intermission-input" placeholder="和戏外的${esc(r.name)}聊聊……" rows="1" required ${isBusy()?'disabled':''}>${esc(intermissionDraft)}</textarea><button class="btn" type="submit" ${isBusy()?'disabled':''} aria-label="发送幕间消息（不触发 AI）" title="仅发送你的消息">发送</button><button type="button" class="btn intermission-paw" data-action="intermissionreply" ${isBusy()?'disabled':''} aria-label="让 AI 回复幕间讨论" title="仅点爪印才触发 AI 回复">${catPawSvg(true)}<span>AI 回复</span></button></form></aside>`;
   }
 
   function submitIntermission(text:string):void {
     const r=role(),p=r?.play;
-    if(!r||!p||busy||!p.paused||!text.trim())return;
+    if(!r||!p||isBusy()||!p.paused||!text.trim())return;
     ensureIntermission(p);
     const message:ChatMessage={id:uid(),speaker:'me',text:text.trim(),at:now(),status:'active'};
     p.intermissionMessages!.push(message);
@@ -4340,25 +4106,27 @@ export function initElsewhereApp(): void {
 
   async function requestIntermissionReply():Promise<void> {
     const r=role(),p=r?.play;
-    if(!r||!p||busy||!p.paused)return;
+    if(!r||!p||isBusy()||!p.paused)return;
     if(intermissionDraft.trim()){notify('这段文字尚未发送，请先点发送，再点爪印。');return;}
     const latest=getActiveMessages(p.intermissionMessages||[]).filter(m=>m.speaker==='me').at(-1);
     if(!latest){notify('先发送一条幕间消息，再点爪印请 AI 回复。');return;}
+    if(getActiveMessages(p.intermissionMessages||[]).some(m=>m.speaker==='char' && m.replyTo===latest.id)){notify('这条发言已有回复，请先发送新的发言。');return;}
     if(!canUseRealModel(data.settings)){notify('请先在终端连接 API；当前发言已保存在本地。');return;}
-    busy=true;render(false);
+    const revision=latest.revisionCount||0, text=latest.text;
+    busyRoles.add(r.id);render(false);let generationError='';
     try {
       const reply=await apiReply(r,'intermission',latest.text);
-      if(r.play!==p||!p.paused||!getActiveMessages(p.intermissionMessages||[]).some(m=>m.id===latest.id))return;
+      if(!data.roles.includes(r)||r.play!==p||!p.paused||!getActiveMessages(p.intermissionMessages||[]).some(m=>m.id===latest.id && m.text===text && (m.revisionCount||0)===revision))return;
       for(const text of splitChatBubbles(reply,r))p.intermissionMessages!.push({id:uid(),speaker:'char',text,at:now(),status:'active',replyTo:latest.id});
       syslog('intermission','用户通过爪印触发戏外 AI 回复',{source:p.id});save();
-    }catch(e){notify('幕间回复失败：'+(e instanceof Error?e.message:String(e))+'；你的发言已保留。');}
-    finally{busy=false;render(false);const area=$('#intermission-scroll');if(area)area.scrollTop=area.scrollHeight;}
+    }catch(e){generationError=e instanceof Error?e.message:String(e);}
+    finally{busyRoles.delete(r.id);render(false);if(generationError && role()?.id===r.id)notify('幕间回复失败：'+generationError+'；你的发言已保留。');const area=$('#intermission-scroll');if(area)area.scrollTop=area.scrollHeight;}
   }
 
   function rollBackPlay(): void {
     const r = role();
     const p = r?.play;
-    if (!r || !p || !p.paused || busy) return;
+    if (!r || !p || !p.paused || isBusy()) return;
     ensureIntermission(p);
     const lastMe = p.messages
       .map((m, i) => (m.speaker === 'me' && m.status !== 'retracted' ? i : -1))
@@ -4432,14 +4200,14 @@ export function initElsewhereApp(): void {
         r.userAlias || ''
       )}" placeholder="该角色怎么称呼我"></div><div class="fieldrow"><label>只对这个角色生效的个人设定</label><textarea class="field" name="notes">${esc(
         r.notes || ''
-      )}</textarea></div><button class="btn small secondary" type="button" data-action="view" data-view="userprofile">修改全局「我的资料」、头像与头像框</button></div><button class="btn full">保存人设与专属身份</button></form>${nainPreflightCard(r)}${phoneSettingsCards()}</div>`
+      )}</textarea></div><button class="btn small secondary" type="button" data-action="view" data-view="userprofile">修改全局「我的资料」、头像与头像框</button></div><button class="btn full">保存人设与专属身份</button></form>${nainPreflightCard(r)}${Object.values(phoneSettingsCards()).join('')}</div>`
     );
   }
 
   function nainPreflightCard(r:RoleData):string {
     if(r.name!=='奈恩')return '';
     const hasBackup=r.demoStartResetAt&&localStorage.getItem(NAIN_BACKUP_PREFIX+r.id+':'+r.demoStartResetAt);
-    return `<section class="card nain-preflight"><h3>奈恩 · 实机前起点</h3><p class="sub">${r.demoStartResetAt?'已完成一次性清档。角色资料、头像与头像框保留。':awaitingFirstMessage(r)&&!r.chats.length?'尚未发出首条消息，等待连接 API。':'仅原厂演示开场会自动清理。其他历史无法自动认定为演示，请核对后再决定。'}</p>${!r.demoStartResetAt?`<p class="sub">一次性清理会移除当前奈恩的全部聊天（${r.chats.length} 条）、日记（${r.diaries.length} 篇）、事件（${r.events.length} 条）及见面／戏剧／待回复／足迹状态。若有真实记录请勿清理。先保存本地恢复副本，不删除媒体或其他角色。</p><button class="btn small secondary" data-action="nainpreflight" ${busy?'disabled':''}>核对后一次性清理奈恩互动</button>`:''}${hasBackup?'<button class="btn small secondary" data-action="exportnainbackup">导出清档前恢复副本（含媒体）</button>':''}</section>`;
+    return `<section class="card nain-preflight"><h3>奈恩 · 实机前起点</h3><p class="sub">${r.demoStartResetAt?'已完成一次性清档。角色资料、头像与头像框保留。':awaitingFirstMessage(r)&&!r.chats.length?'尚未发出首条消息，等待连接 API。':'仅原厂演示开场会自动清理。其他历史无法自动认定为演示，请核对后再决定。'}</p>${!r.demoStartResetAt?`<p class="sub">一次性清理会移除当前奈恩的全部聊天（${r.chats.length} 条）、日记（${r.diaries.length} 篇）、事件（${r.events.length} 条）及见面／戏剧／待回复／足迹状态。若有真实记录请勿清理。先保存本地恢复副本，不删除媒体或其他角色。</p><button class="btn small secondary" data-action="nainpreflight" ${isBusy()?'disabled':''}>核对后一次性清理奈恩互动</button>`:''}${hasBackup?'<button class="btn small secondary" data-action="exportnainbackup">导出清档前恢复副本（含媒体）</button>':''}</section>`;
   }
 
   function screenPlayDetail(): string {
@@ -4468,14 +4236,15 @@ export function initElsewhereApp(): void {
   }
 
   function screenTerminal(): string {
-    return shell(`${header('终端','home')}<div class="viewport"><div class="h2">API 与模型</div><div class="terminal-intro">连接模型服务，选择接口与模型。Key 仅保存在本页内存。</div><div class="card terminal-api-card" id="terminal-api-root"></div></div>`);
+    const cards = phoneSettingsCards();
+    return shell(`${header('终端','home')}<div class="viewport terminal-page"><div class="card terminal-api-card" id="terminal-api-root"></div><h2 class="terminal-section-title">02｜外观与主题</h2>${cards.appearance}<h2 class="terminal-section-title">03｜聊天气泡自定义</h2>${cards.bubble}<details class="terminal-other-settings"><summary>04｜其他手机设置</summary>${cards.frames}${cards.logs}${cards.backup}</details></div>`);
   }
   function screenPresets(): string {
     return shell(`${header('预设','home')}<div class="viewport"><div class="h2">预设</div><p class="sub">独立管理小说模式。即时设置自动保存；正文确认后才提交。当前仍只做隔离预览。</p><div class="card" id="fruit-preset-root"></div></div>`);
   }
-  function phoneSettingsCards(): string {
+  function phoneSettingsCards() {
     const r=role()!;
-    return `<div class="card"><h3>外观</h3><div class="theme-swatches">${[
+    return { appearance: `<div class="card"><h3>外观</h3><div class="theme-swatches">${[
         ['blue', '蓝色'],
         ['green', '绿色'],
         ['pink', '粉色'],
@@ -4494,7 +4263,7 @@ export function initElsewhereApp(): void {
         (r.font || data.font) === 'system' ? 'selected' : ''
       }>系统字体</option><option value="serif" ${
         (r.font || data.font) === 'serif' ? 'selected' : ''
-      }>衬线字体</option></select></div><div class="card"><h3>系统 Log</h3><p>查看本地事件、API 请求状态、模式切换和错误；不会记录 API Key。详细 Prompt 仅在本次请求记录一份脱敏摘要。</p><div class="row"><button class="btn small secondary" data-action="exportlogs">导出日志 JSON</button><button class="btn small ghost" data-action="clearlogs">清空日志</button></div><div class="log-list">${
+      }>衬线字体</option></select></div>`, logs: `<div class="card"><h3>系统 Log</h3><p>查看本地事件、API 请求状态、模式切换和错误；不会记录 API Key。详细 Prompt 仅在本次请求记录一份脱敏摘要。</p><div class="row"><button class="btn small secondary" data-action="exportlogs">导出日志 JSON</button><button class="btn small ghost" data-action="clearlogs">清空日志</button></div><div class="log-list">${
         (data.logs || [])
           .slice(-35)
           .reverse()
@@ -4507,13 +4276,13 @@ export function initElsewhereApp(): void {
               )}</pre></details>`
           )
           .join('') || '<p class="sub">暂无日志，开始聊天或切换主题后会出现记录。</p>'
-      }</div></div>
-      ${renderTerminalFrameAssetManagerCard()}
-      <div class="card"><h3>聊天气泡 CSS（当前角色独立）</h3><p>支持仅针对 .message.mine .bubble 和 .message.theirs .bubble 的 CSS；不允许外部资源或全局页面选择器。保存后进入聊天查看效果。</p><form id="bubble-form"><textarea class="field bubble-editor" name="css" spellcheck="false" placeholder=".message.mine .bubble { background: #ffd9eb; border-radius: 22px; }">${esc(
+      }</div></div>`,
+      frames: renderTerminalFrameAssetManagerCard(),
+      bubble: `<div class="card"><h3>聊天气泡 CSS（当前角色独立）</h3><p>支持仅针对 .message.mine .bubble 和 .message.theirs .bubble 的 CSS；不允许外部资源或全局页面选择器。保存后进入聊天查看效果。</p><form id="bubble-form"><label class="btn small ghost bubble-css-import">导入 CSS 文件<input id="bubble-css-file" type="file" accept=".css,text/css" hidden></label><p class="sub">导入只填入编辑器，点击应用后才保存。最多 12KB。</p><textarea class="field bubble-editor" name="css" spellcheck="false" placeholder=".message.mine .bubble { background: #ffd9eb; border-radius: 22px; }">${esc(
         r.bubbleCSS || ''
-      )}</textarea><div class="row"><button class="btn small">应用气泡 CSS</button><button class="btn small secondary" type="button" data-action="resetbubble">恢复默认气泡</button></div></form></div><div class="card"><h3>数据与跨环境迁移</h3><p>各角色互相隔离。支持导出 / 导入本地 JSON 备份（包含全部角色、修订档案、日记分享状态与 IndexedDB 媒体附件，不包含 API Key）。</p><div class="row" style="margin-top:11px;flex-wrap:wrap"><button class="btn small secondary" data-action="export">导出备份</button><label class="btn small ghost" style="cursor:pointer">导入备份<input id="backup-file" type="file" accept=".json" hidden></label></div></div><p class="tiny muted">当前角色：${esc(
+      )}</textarea><div class="row"><button class="btn small">应用气泡 CSS</button><button class="btn small secondary" type="button" data-action="resetbubble">恢复默认气泡</button></div></form></div>`, backup: `<div class="card"><h3>数据与跨环境迁移</h3><p>各角色互相隔离。支持导出 / 导入本地 JSON 备份（包含全部角色、修订档案、日记分享状态与 IndexedDB 媒体附件，不包含 API Key）。</p><div class="row" style="margin-top:11px;flex-wrap:wrap"><button class="btn small secondary" data-action="export">导出备份</button><label class="btn small ghost" style="cursor:pointer">导入备份<input id="backup-file" type="file" accept=".json" hidden></label></div></div><p class="tiny muted">当前角色：${esc(
         r.name
-      )} · v1 Phase 1</p>`;
+      )} · v1 Phase 1</p>` };
   }
 
   function applyTheme(): void {
@@ -4545,76 +4314,42 @@ export function initElsewhereApp(): void {
         : '-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif';
   }
 
-  function clearMediaURLs(): void {
-    for (const url of mediaURLs) URL.revokeObjectURL(url);
-    mediaURLs = [];
+  function clearMediaURLs(force=false):void {
+    if(force){for(const url of mediaURLs.values())URL.revokeObjectURL(url);mediaURLs.clear();mediaReads.clear();return;}
+    queueMicrotask(()=>{
+      const live=new Set(Array.from(document.querySelectorAll<HTMLElement>('[data-media-id]'),el=>el.dataset.mediaId));
+      for(const [key,url] of mediaURLs)if(!live.has(key)){URL.revokeObjectURL(url);mediaURLs.delete(key)}
+    });
   }
-
-  async function hydrateMedia(rootEl: ParentNode = document): Promise<void> {
-    // Attach graceful fallback handlers for remote preset avatar frames & thumbnails
-    rootEl
-      .querySelectorAll<HTMLImageElement>('.avatar-frame[src], .frame-thumb-img[src]')
-      .forEach((imgEl) => {
-        if (imgEl.dataset.fallbackBound === '1') return;
-        imgEl.dataset.fallbackBound = '1';
-        imgEl.addEventListener('error', () => {
-          imgEl.classList.add('frame-img-error');
-          const cell = imgEl.closest('.frame-cell');
-          if (cell) {
-            cell.classList.add('frame-remote-error');
-          }
-        });
-      });
-
-    const all = [
-      ...rootEl.querySelectorAll<HTMLImageElement | HTMLAudioElement>(
-        '[data-media-id]'
-      ),
-    ];
-    for (const item of all) {
-      const key = item.dataset.mediaId;
-      if (!key) continue;
-      if (item.dataset.hydratedKey === key && item.getAttribute('src')) continue;
-      const isAvatarImg = item.classList.contains('avatar-img');
-      const isFrameImg =
-        item.classList.contains('avatar-frame') ||
-        item.classList.contains('frame-thumb-img');
-      try {
-        const blob = await mediaGet(key);
-        if (!blob) {
-          if (isAvatarImg) {
-            const box = item.closest('.has-avatar-img');
-            box?.classList.remove('has-avatar-img', 'avatar-loaded');
-            item.remove();
-          } else if (isFrameImg) {
-            item.remove();
-          } else {
-            item.replaceWith(document.createTextNode('附件未找到（请检查备份）'));
-          }
-          continue;
+  async function hydrateMedia(rootEl:ParentNode=document):Promise<void>{
+    rootEl.querySelectorAll<HTMLImageElement>('.avatar-frame[src],.frame-thumb-img[src]').forEach(img=>{
+      if(img.dataset.fallbackBound)return;img.dataset.fallbackBound='1';
+      img.addEventListener('error',()=>img.classList.add('frame-img-error'));
+      img.addEventListener('load',()=>img.classList.remove('frame-img-error'));
+    });
+    await Promise.all(Array.from(rootEl.querySelectorAll<HTMLImageElement|HTMLAudioElement>('[data-media-id]'),async item=>{
+      const key=item.dataset.mediaId;if(!key)return;
+      if(item.dataset.hydratedKey===key&&item.getAttribute('src')&&mediaURLs.has(key))return;
+      try{
+        let url=mediaURLs.get(key);
+        if(!url){
+          let pending=mediaReads.get(key);if(!pending){pending=mediaGet(key);mediaReads.set(key,pending);void pending.finally(()=>{if(mediaReads.get(key)===pending)mediaReads.delete(key)}).catch(()=>{});}
+          const blob=await pending;
+          if(!item.isConnected||item.dataset.mediaId!==key)return;
+          if(!blob)throw new Error('媒体未找到');
+          url=mediaURLs.get(key);if(!url){url=URL.createObjectURL(blob);mediaURLs.set(key,url);}
         }
-        if (!item.isConnected) continue;
-        const url = URL.createObjectURL(blob);
-        mediaURLs.push(url);
-        item.dataset.hydratedKey = key;
-        item.src = url;
-        if (isAvatarImg) {
-          item.closest('.has-avatar-img')?.classList.add('avatar-loaded');
-        }
-      } catch {
-        if (item.isConnected) {
-          if (isAvatarImg) {
-            const box = item.closest('.has-avatar-img');
-            box?.classList.remove('has-avatar-img', 'avatar-loaded');
-            item.remove();
-          } else if (isFrameImg) {
-            item.remove();
-          } else {
-            item.replaceWith(document.createTextNode('媒体存储不可用'));
-          }
-        }
+        if(!item.isConnected||item.dataset.mediaId!==key)return;
+        item.dataset.hydratedKey=key;item.src=url;
+        if(item.classList.contains('avatar-img'))item.closest('.has-avatar-img')?.classList.add('avatar-loaded');
+      }catch{
+        if(!item.isConnected||item.dataset.mediaId!==key)return;
+        if(item.classList.contains('avatar-img')){item.closest('.has-avatar-img')?.classList.remove('has-avatar-img','avatar-loaded');item.remove();}
+        else if(item.classList.contains('avatar-frame')||item.classList.contains('frame-thumb-img'))item.remove();
+        else item.replaceWith(document.createTextNode('媒体存储不可用'));
       }
-    }
+    }));
+    clearMediaURLs();
   }
 
   /**
@@ -4821,7 +4556,8 @@ export function initElsewhereApp(): void {
   async function apiReply(
     r: RoleData,
     kind: 'chat' | 'scene' | 'play' | 'intermission',
-    input: string
+    input: string,
+    override?: {role:string;content:string}[]
   ): Promise<string> {
     const s = data.settings;
     const url = s.endpoint.trim().replace(/\/+$/, '');
@@ -4831,7 +4567,11 @@ export function initElsewhereApp(): void {
     if (!s.model.trim()) {
       throw new Error('请先在终端填写模型 ID');
     }
-    const prompt = messagesForModel(r, kind, input);
+    if (kind === 'chat' && !override) {
+      const latest = getActiveMessages(r.chats).filter(m => m.speaker !== 'note').at(-1);
+      if (!latest || latest.speaker !== 'me' || latest.text !== input) throw new Error('当前聊天上下文已变化，请检查消息后重试');
+    }
+    const prompt = override || messagesForModel(r, kind, input);
     syslog('api', `请求 ${kind} · ${s.model}`, {
       messages: prompt.length,
       chars: prompt.reduce((n, m) => n + m.content.length, 0),
@@ -4849,22 +4589,13 @@ export function initElsewhereApp(): void {
         ...completionLimit(s,kind),
       }),
     });
-    if (!res.ok) {
-      throw new Error(
-        `接口返回 ${res.status}: ${(await res.text()).slice(0, 120)}`
-      );
-    }
-    const json = await res.json();
-    if(json.choices?.[0]?.finish_reason==='length')notify('本次回复达到服务或模型的长度上限，正文可能未完。');
-    syslog('api', `返回成功 ${kind}`, { usage: json.usage || null });
-    return (
-      json.choices?.[0]?.message?.content?.trim() ||
-      '……我想了一下，还不知道怎么回答。'
-    );
+    const text = await readCompletion(res);
+    syslog('api', `返回成功 ${kind}`);
+    return text;
   }
 
   async function generateRoleFirstMessage(r: RoleData): Promise<void> {
-    if (busy||getActiveMessages(r.chats).some(m=>m.speaker==='char')) return;
+    if (busyRoles.has(r.id)||getActiveMessages(r.chats).some(m=>m.speaker==='char')) return;
     if (!canUseRealModel(data.settings)) {
       r.firstMessageState = {
         status: 'awaiting_api',
@@ -4875,13 +4606,14 @@ export function initElsewhereApp(): void {
       notify('请先在「终端」将模式切换为自定义 API 并填写模型 ID');
       return;
     }
-    busy = true;
+    busyRoles.add(r.id);
     r.firstMessageState = {
       status: 'generating',
       updatedAt: now(),
     };
     save();
     render();
+    let generationError='';
     try {
       const s = data.settings;
       const url = s.endpoint.trim().replace(/\/+$/, '');
@@ -4902,15 +4634,9 @@ export function initElsewhereApp(): void {
           ...completionLimit(s,'first-message'),
         }),
       });
-      if (!res.ok) {
-        throw new Error(
-          `接口返回 ${res.status}: ${(await res.text()).slice(0, 120)}`
-        );
-      }
-      const json = await res.json();
-      const rawText = json.choices?.[0]?.message?.content?.trim();
-      if (!rawText) throw new Error('模型返回内容为空');
-      const bubbles = splitChatBubbles(rawText);
+      const rawText = await readCompletion(res);
+      if (!data.roles.includes(r) || getActiveMessages(r.chats).some(m=>m.speaker==='char')) return;
+      const bubbles = splitChatBubbles(rawText,r);
       if(!bubbles.length)throw new Error('模型未返回有效的手机消息');
       applyGeneratedFirstMessage(r, bubbles, now());
       syslog('role', `${r.name} 已生成首条开场消息`);
@@ -4923,11 +4649,12 @@ export function initElsewhereApp(): void {
         updatedAt: now(),
       };
       syslog('error', `首条消息生成失败：${errMsg}`);
-      notify('首条消息生成失败：' + errMsg);
+      generationError=errMsg;
       save();
     } finally {
-      busy = false;
+      busyRoles.delete(r.id);
       render();
+      if(generationError && role()?.id===r.id)notify('首条消息生成失败：'+generationError);
     }
   }
 
@@ -5031,13 +4758,7 @@ export function initElsewhereApp(): void {
           ...completionLimit(s,'diary'),
         }),
       });
-      if (!res.ok) {
-        throw new Error(
-          `接口返回 ${res.status}: ${(await res.text()).slice(0, 120)}`
-        );
-      }
-      const json = await res.json();
-      const rawText = json.choices?.[0]?.message?.content?.trim() || '';
+      const rawText = await readCompletion(res);
       const applied = applyGeneratedCharacterDiary(r, dateKey, rawText, now());
       if (!applied.ok) {
         throw new Error(applied.reason || '模型返回日记内容为空');
@@ -5317,7 +5038,7 @@ export function initElsewhereApp(): void {
 
   async function sendRichMessage(partial: Partial<ChatMessage>): Promise<void> {
     const r = role();
-    if (!r || busy) return;
+    if (!r || isBusy()) return;
     const item: ChatMessage = {
       ...partial,
       id: uid(),
@@ -5328,29 +5049,36 @@ export function initElsewhereApp(): void {
       quote: quotingMessage || null,
     };
     quotingMessage = null;
-    busy = true;
+    busyRoles.add(r.id);
     chatPanel = '';
     r.chats.push(item);
+    const validTask = startReplyTask(r, 'chat', item);
     eMemory(r, item.text, 'me', 'chat', item.at, item.id);
     syslog('chat', `发送${item.kind}消息`, { source: item.id });
     save();
     render();
-    if(awaitingNainOpening(r)&&!canUseRealModel(data.settings)){busy=false;render(false);notify('你的消息已保存；连接 API 后才能生成角色首条回复。');return;}
+    if(awaitingNainOpening(r)&&!canUseRealModel(data.settings)){busyRoles.delete(r.id);render(false);notify('你的消息已保存；连接 API 后才能生成角色首条回复。');return;}
     const focused = isFocused(r);
+    let generationError = '';
     try {
       const reply =
         data.settings.mode === 'api'
           ? await apiReply(r, 'chat', item.text)
           : demoRichReply(r, item);
+      if (!validTask()) return;
+      failedChatReplies.delete(r.id);
       queueChatReply(r, reply, item.id, focused);
     } catch (err) {
+      if (!validTask()) return;
       const msg = err instanceof Error ? err.message : String(err);
       syslog('error', `附件消息回应失败：${msg}`);
-      notify('消息已保存，但回复失败：' + msg);
+      generationError=msg;
+      failedChatReplies.set(r.id,{roleId:r.id,messageId:item.id,text:item.text,revision:item.revisionCount||0});
     } finally {
-      busy = false;
+      busyRoles.delete(r.id);
       save();
       render();
+      if(generationError && role()?.id===r.id)notify('消息已保存，但回复失败：'+generationError);
     }
   }
 
@@ -5374,7 +5102,7 @@ export function initElsewhereApp(): void {
       notify('附件不能超过 8MB');
       return;
     }
-    if (busy) {
+    if (isBusy()) {
       notify('请等当前消息处理结束');
       return;
     }
@@ -5394,7 +5122,7 @@ export function initElsewhereApp(): void {
   }
 
   async function beginRecording(): Promise<void> {
-    if (busy) {
+    if (isBusy()) {
       notify('当前正在处理消息');
       return;
     }
@@ -5479,8 +5207,8 @@ export function initElsewhereApp(): void {
     text: string
   ): Promise<void> {
     const r = role();
-    if (!r || busy || !text.trim()) return;
-    busy = true;
+    if (!r || isBusy() || !text.trim()) return;
+    busyRoles.add(r.id);
     const focused = kind === 'chat' && isFocused(r);
     const at = now();
     const obj: ChatMessage = {
@@ -5494,8 +5222,9 @@ export function initElsewhereApp(): void {
     };
     quotingMessage = null;
     let useKind: 'chat' | 'scene' | 'play' = kind;
+    let sourceMessage = obj;
     if (kind === 'play' && r.play?.paused) {
-      busy = false;
+      busyRoles.delete(r.id);
       go('intermission');
       notify('正在幕间，需先返回戏剧才能推进剧情');
       return;
@@ -5508,13 +5237,14 @@ export function initElsewhereApp(): void {
         useKind = 'scene';
         view = 'novel';
         const sceneMsgId = uid();
-        r.scene!.messages.push({
+        sourceMessage = {
           id: sceneMsgId,
           speaker: 'me',
           text: obj.text,
           at,
           status: 'active',
-        });
+        };
+        r.scene!.messages.push(sourceMessage);
       }
     } else {
       const p = kind === 'play' ? r.play! : r.scene!;
@@ -5528,18 +5258,23 @@ export function initElsewhereApp(): void {
         { source: p.id, messageId: obj.id, speaker: 'me' }
       );
     }
-    syslog('chat', `${useKind} 用户消息已提交`, { source: obj.id });
+    const validTask = startReplyTask(r, useKind, sourceMessage);
+    syslog('chat', `${useKind} 用户消息已提交`, { source: sourceMessage.id });
     save();
     render();
-    if(awaitingNainOpening(r)&&!canUseRealModel(data.settings)){busy=false;render(false);notify('你的消息已保存；连接 API 后才能生成角色首条回复。');return;}
+    if(awaitingNainOpening(r)&&!canUseRealModel(data.settings)){busyRoles.delete(r.id);render(false);notify('你的消息已保存；连接 API 后才能生成角色首条回复。');return;}
+    let generationError = '';
     try {
       const reply =
         data.settings.mode === 'api'
           ? await apiReply(r, useKind, obj.text)
           : demoReply(r, useKind, obj.text);
+      if (!validTask()) return;
       if (useKind === 'chat') {
+        failedChatReplies.delete(r.id);
         queueChatReply(r, reply, obj.id, focused);
       } else {
+        failedNovelReplies.delete(r.id);
         const p = useKind === 'play' ? r.play : r.scene;
         if (!p) throw new Error('当前场景已关闭');
         const item: ChatMessage = {
@@ -5547,7 +5282,7 @@ export function initElsewhereApp(): void {
           speaker: 'char',
           text: reply,
           at: now(),
-          replyTo: obj.id,
+          replyTo: sourceMessage.id,
           status: 'active',
         };
         p.messages.push(item);
@@ -5559,81 +5294,118 @@ export function initElsewhereApp(): void {
           item.at,
           { source: p.id, messageId: item.id, speaker: 'char' }
         );
-        if (useKind === 'scene' && isFarewell(obj.text)) {
+        if (useKind === 'scene' && isFarewell(obj.text) && role()?.id===r.id) {
           endNovel();
           syslog('mode', '自动切换：面对面 → 手机聊天', { cause: 'farewell' });
         }
         save();
       }
     } catch (e) {
+      if (!validTask()) return;
       const msg = e instanceof Error ? e.message : String(e);
       syslog('error', `生成失败：${msg}`);
-      notify('生成失败：' + msg + '。你的输入已保存，可继续发送。');
+      generationError=msg;
+      if (useKind === 'chat') failedChatReplies.set(r.id,{roleId:r.id,messageId:obj.id,text:obj.text,revision:obj.revisionCount||0});
+      else { const p=useKind==='play'?r.play:r.scene; const m=p && getActiveMessages(p.messages).filter(x=>x.speaker!=='note').at(-1); if(p && m?.speaker==='me' && m.text===obj.text) failedNovelReplies.set(r.id,{roleId:r.id,messageId:m.id,text:m.text,revision:m.revisionCount||0,kind:useKind,sessionId:p.id}); }
     } finally {
-      busy = false;
+      busyRoles.delete(r.id);
       render();
+      if(generationError && role()?.id===r.id)notify('生成失败：'+generationError+'。你的输入已保存。');
     }
   }
 
-  async function regenerateMessageReply(
-    scope: RevisionScope,
-    charMessageId: string
-  ): Promise<void> {
-    const r = role();
-    if (!r || busy) return;
-    const prep = prepareRegenerateReply(r, scope, charMessageId, now());
-    if (!prep.ok) {
-      notify(prep.reason || '无法重抽该条消息');
-      return;
-    }
-    busy = true;
-    syslog('revision', `重抽 ${scope} 角色回复`, {
-      targetMessageId: charMessageId,
-      revisionId: prep.revision?.id,
-    });
-    save();
-    render(false);
+  async function retryChatReply(): Promise<void> {
+    const r=role(), failed=r && failedChatReplies.get(r.id);
+    if (!failed || !r || isBusy() || r.id!==failed.roleId) return;
+    if (data.settings.mode !== 'api') { notify('请先连接 API 后再重试'); return; }
+    const valid=()=>data.roles.includes(r) && getActiveMessages(r.chats).some(m=>m.id===failed.messageId && m.speaker==='me' && m.text===failed.text && (m.revisionCount||0)===failed.revision);
+    if (!valid()) { failedChatReplies.delete(r.id); render(false); notify('原消息已变化，无法重试'); return; }
+    const original = r.chats.find(m=>m.id===failed.messageId)!;
+    const validTask=startReplyTask(r,'chat',original);
+    busyRoles.add(r.id); render(false); let error='';
     try {
-      const promptText = prep.promptMessage?.text || '（请根据当前角色设定与情境发送一条新的开场消息）';
-      const replyToId = prep.promptMessage?.id || uid();
-      const reply =
-        data.settings.mode === 'api'
-          ? await apiReply(r, scope, promptText)
-          : demoReply(r, scope, promptText);
-      if (scope === 'chat') {
-        // Deliver regenerated reply immediately so the user sees the new version right away
-        queueChatReply(r, reply, replyToId, true);
+      const reply=await apiReply(r,'chat',failed.text);
+      if (!valid() || !validTask()) throw new Error('原消息已变化，回复未保存');
+      queueChatReply(r,reply,failed.messageId,isFocused(r));
+      if (failedChatReplies.get(r.id)===failed) failedChatReplies.delete(r.id);
+    } catch(e) { error=e instanceof Error?e.message:String(e); syslog('error',`重试回复失败：${error}`); }
+    finally { busyRoles.delete(r.id); save(); render(false); if(error && role()?.id===r.id)notify('回复生成失败：'+error); }
+  }
+
+  async function retryNovelReply():Promise<void> {
+    const r=role(), failed=r && failedNovelReplies.get(r.id);
+    if(!failed||!r||isBusy()||r.id!==failed.roleId)return;
+    if(data.settings.mode!=='api'){notify('请先连接 API 后再重试');return;}
+    const p=failed.kind==='play'?r.play:r.scene;
+    const valid=()=>{const current=failed.kind==='play'?r.play:r.scene;const last=current && getActiveMessages(current.messages).filter(m=>m.speaker!=='note').at(-1);return data.roles.includes(r) && current===p && current?.id===failed.sessionId && last?.id===failed.messageId && last.text===failed.text && (last.revisionCount||0)===failed.revision;};
+    if(!p||!valid()){failedNovelReplies.delete(r.id);render(false);notify('原场景或发言已变化，无法重试');return;}
+    const original=p.messages.find(m=>m.id===failed.messageId)!;
+    const validTask=startReplyTask(r,failed.kind,original);
+    busyRoles.add(r.id);render(false);let error='';
+    try{
+      const reply=await apiReply(r,failed.kind,failed.text);
+      if(!valid()||!validTask())throw new Error('原场景或发言已变化，回复未保存');
+      const item:ChatMessage={id:uid(),speaker:'char',text:reply,at:now(),replyTo:failed.messageId,status:'active'};
+      p.messages.push(item);entry(r,failed.kind==='play'?'drama':'scene',`${r.name}的回复`,reply,item.at,{source:p.id,messageId:item.id,speaker:'char'});
+      if(failedNovelReplies.get(r.id)===failed)failedNovelReplies.delete(r.id);save();
+      if(failed.kind==='scene' && data.selected===r.id && isFarewell(failed.text))endNovel();
+    }catch(e){error=e instanceof Error?e.message:String(e);syslog('error',`重试回复失败：${error}`);}
+    finally{busyRoles.delete(r.id);render(false);if(error && role()?.id===r.id)notify('回复生成失败：'+error);}
+  }
+
+  async function regenerateMessageReply(scope: RevisionScope, charMessageId: string): Promise<void> {
+    const r = role();
+    if (!r || isBusy()) return;
+    const plan = buildRegenerationPlan(data,r,scope,charMessageId);
+    if (!plan) { notify('此回合缺少可验证的来源，原消息未改变。'); return; }
+    const session = scope==='scene' ? r.scene : scope==='play' ? r.play : null;
+    const source = plan.sourceId ? getScopeMessages(r,scope).find(m=>m.id===plan.sourceId) : undefined;
+    const validTask = source ? startReplyTask(r,scope,source) : () => data.roles.includes(r);
+    const valid = () => data.roles.includes(r) && validTask() &&
+      (scope==='chat' || (scope==='scene' ? r.scene : r.play)===session) &&
+      plan.contextSignature(getScopeMessages(r,scope))===plan.signature;
+    busyRoles.add(r.id);
+    render(false);
+    let regenerationError='';
+    try {
+      const reply=data.settings.mode==='api'
+        ? await apiReply(r,scope,plan.sourceText || '',plan.messages)
+        : demoReply(r,scope,plan.sourceText || '开场');
+      if (!valid()) return;
+      const trial=prepareRegenerateReply(JSON.parse(JSON.stringify(r)) as RoleData,scope,charMessageId,now());
+      if (!trial.ok || JSON.stringify(trial.supersededMessageIds)!==JSON.stringify(plan.supersededIds)) return;
+      const list=getScopeMessages(r,scope);
+      const insertion=Math.max(0,...plan.supersededIds.map(id=>list.findIndex(m=>m.id===id)))+1;
+      const prep=prepareRegenerateReply(r,scope,charMessageId,now());
+      if (!prep.ok) return;
+      const before=list.length;
+      if (scope==='chat') {
+        if (plan.sourceId) queueChatReply(r,reply,plan.sourceId,true);
+        else applyGeneratedFirstMessage(r,splitChatBubbles(reply,r),now());
       } else {
-        const p = scope === 'play' ? r.play : r.scene;
-        if (p) {
-          const item: ChatMessage = {
-            id: uid(),
-            speaker: 'char',
-            text: reply,
-            at: now(),
-            replyTo: replyToId,
-            status: 'active',
-          };
-          p.messages.push(item);
-          entry(
-            r,
-            scope === 'play' ? 'drama' : 'scene',
-            `${r.name}的回复`,
-            reply,
-            item.at,
-            { source: p.id, messageId: item.id, speaker: 'char' }
-          );
-        }
+        const p=scope==='play'?r.play:r.scene;
+        if (!p) throw new Error('当前场景已关闭');
+        const item:ChatMessage={id:uid(),speaker:'char',text:reply,at:now(),replyTo:plan.sourceId,status:'active'};
+        p.messages.push(item);
+        entry(r,scope==='play'?'drama':'scene',`${r.name}的回复`,reply,item.at,{source:p.id,messageId:item.id,speaker:'char'});
       }
+      const inserted=list.splice(before);
+      inserted.forEach((message,index)=>{
+        message.at=plan.targetAt+index;
+        for (const event of r.events) if (event.messageId===message.id) event.at=message.at;
+      });
+      list.splice(insertion,0,...inserted);
+      syslog('revision',`重抽 ${scope} 角色回复`,{targetMessageId:charMessageId,revisionId:prep.revision?.id});
       save();
-      notify('已重新生成回复，旧版本已归入修订记录');
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      syslog('error', `重抽失败：${msg}`);
-      notify('重抽失败：' + msg);
+      if(role()?.id===r.id)notify('已重新生成；旧版本与后续回合均保留。缺少快照的历史记忆和待办未带入。');
+    } catch(e) {
+      const msg=e instanceof Error?e.message:String(e);
+      syslog('error',`重抽失败：${msg}`);
+      regenerationError=msg;
     } finally {
-      busy = false;
+      busyRoles.delete(r.id);
       render(false);
+      if(regenerationError && role()?.id===r.id)notify('重抽失败，原回复保留：'+regenerationError);
     }
   }
 
@@ -5774,6 +5546,7 @@ export function initElsewhereApp(): void {
           throw new Error('不是 Elsewhere 备份');
         }
         await restoreMediaFromBackup(d._media);
+        clearMediaURLs(true);
         delete d._media;
         data = normalizeAndMigrateData(d);
         data.selected = null;
@@ -5814,10 +5587,11 @@ export function initElsewhereApp(): void {
     const b = targetEl?.closest<HTMLElement>('[data-action]');
     if (!b) return;
     const act = b.dataset.action;
+    if(frameModalSaving&&b.closest('[data-testid=avatar-frame-modal]')&&act!=='cancelframemodal')return;
     let r = role();
 
     if(act==='nainpreflight'){
-      if(!r||busy||diaryQueueBusy||footprintAiBusy){notify('请等待当前请求结束后再清档。');return;}
+      if(!r||isBusy()||diaryQueueBusy||footprintAiBusy){notify('请等待当前请求结束后再清档。');return;}
       if(!window.confirm(`仅清理当前奈恩的互动：${r.chats.length} 条聊天、${r.diaries.length} 篇日记、${r.events.length} 条事件，以及见面／戏剧／足迹状态。若有真实记录请取消。角色资料与其他角色保留；先创建恢复副本。本操作仅执行一次，确认继续？`))return;
       const result=resetNainStart(data,r.id,localStorage,now());
       data=result.data;
@@ -5847,7 +5621,7 @@ export function initElsewhereApp(): void {
     }
     if(act==='senduploadedsticker'){
       const item=uploadedStickers(r?.chats||[]).find(item=>item.mediaId===b.dataset.mediaId);
-      if(item&&!busy)void sendRichMessage({kind:'sticker',mediaId:item.mediaId,caption:item.caption});
+      if(item&&!isBusy())void sendRichMessage({kind:'sticker',mediaId:item.mediaId,caption:item.caption});
       return;
     }
     if (act === 'recordtoggle') {
@@ -6148,6 +5922,8 @@ export function initElsewhereApp(): void {
       render(false);
       return;
     }
+    if (act === 'retrychatreply') { void retryChatReply(); return; }
+    if (act === 'retrynovelreply') { void retryNovelReply(); return; }
     if (act === 'starteditmsg') {
       if (!r || !b.dataset.id) return;
       const scope = (b.dataset.scope as RevisionScope) || 'chat';
@@ -6189,7 +5965,7 @@ export function initElsewhereApp(): void {
       });
       save();
       render(false);
-      notify('消息已撤回，已从正式上下文与记忆中移除');
+      notify('消息及直接关联的回复已移出正式上下文；后续历史保留。');
       return;
     }
     if (act === 'regenmsg') {
@@ -6231,7 +6007,7 @@ export function initElsewhereApp(): void {
       return;
     }
     if (act === 'endnovel') {
-      if (busy) {
+      if (isBusy()) {
         notify('请先完成当前回复，再结束场景');
         return;
       }
@@ -6329,6 +6105,7 @@ export function initElsewhereApp(): void {
       footprintAiBusy = true;
       render(false);
       void (async () => {
+        let resultNotice = '';
         try {
           const s = data.settings;
           const url = s.endpoint.trim().replace(/\/+$/, '');
@@ -6349,26 +6126,21 @@ export function initElsewhereApp(): void {
               ...completionLimit(s,'footprints'),
             }),
           });
-          if (!res.ok) {
-            throw new Error(
-              `接口返回 ${res.status}: ${(await res.text()).slice(0, 120)}`
-            );
-          }
-          const json = await res.json();
-          const rawText = json.choices?.[0]?.message?.content?.trim() || '';
+          const rawText = await readCompletion(res);
           const applied = applyAiDailyFootprints(r!, targetDate, rawText, now());
           if (!applied.ok) {
             throw new Error(applied.reason || '未能解析 AI 足迹响应');
           }
           save();
-          notify(`已完成 ${r!.name} 在 ${targetDate} 的日常足迹细节润色`);
+          resultNotice = `已完成 ${r!.name} 在 ${targetDate} 的日常足迹细节润色`;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           syslog('error', `AI 润色日常足迹失败：${msg}`);
-          notify('AI 润色足迹失败：' + msg);
+          resultNotice = 'AI 润色足迹失败：' + msg;
         } finally {
           footprintAiBusy = false;
           render(false);
+          if (resultNotice) notify(resultNotice);
         }
       })();
       return;
@@ -6392,8 +6164,7 @@ export function initElsewhereApp(): void {
       }
       if (ownerType === 'role') draftRoleFormValues = captureFormValues('role-form');
       else draftUserFormValues = captureFormValues('user-profile-form');
-      applyFrameModalInPlace(ownerType);
-      notify('已更新头像框草稿，请点击页面底部「保存」正式生效');
+      void applyFrameModalInPlace(ownerType);
       return;
     }
     if (act === 'toggleframeadjust') {
@@ -6414,9 +6185,7 @@ export function initElsewhereApp(): void {
         ownerType,
         formMode === 'edit' ? data.roles.find((x) => x.id === editingRoleId) : r
       );
-      staged.frameScale = 1.25;
-      staged.frameX = 0;
-      staged.frameY = 0;
+      const defaults=frameDefaults(staged);staged.frameScale=defaults.scale;staged.frameX=defaults.x;staged.frameY=defaults.y;rememberFrame(staged);frameSelection++;
       patchFrameModalAdjustDrawerInPlace(ownerType);
       patchFrameModalSelectionInPlace(ownerType);
       notify('已恢复默认缩放与位置');
@@ -6467,18 +6236,13 @@ export function initElsewhereApp(): void {
       syncModalAdjustInputsToStaged(ownerType, staged);
       const frameId = b.dataset.frameId || 'none';
       if (frameId === 'none') {
-        staged.frameId = 'none';
-        staged.frameData = '';
-        staged.frameMediaId = '';
+        selectFrame(staged,{frameId:'none',frameData:'',frameMediaId:''});
         patchFrameModalSelectionInPlace(ownerType);
         return;
       }
       const presetItem = PRESET_AVATAR_FRAMES.find((x) => x.id === frameId);
       if (!presetItem) return;
-      staged.frameId = presetItem.id;
-      staged.frameData = presetItem.url;
-      staged.frameMediaId = '';
-      if (!staged.frameScale) staged.frameScale = 1.25;
+      selectFrame(staged,{frameId:presetItem.id,frameData:presetItem.url,frameMediaId:''});
       patchFrameModalSelectionInPlace(ownerType);
       return;
     }
@@ -6492,45 +6256,17 @@ export function initElsewhereApp(): void {
       const customId = b.dataset.customId || '';
       const cf = (data.customFrames || []).find((x) => x.id === customId);
       if (!cf) return;
-      staged.frameId = cf.id;
-      staged.frameMediaId = cf.mediaId || '';
-      staged.frameData = cf.dataUrl || '';
-      if (!staged.frameScale) staged.frameScale = 1.25;
+      selectFrame(staged,{frameId:cf.id,frameMediaId:cf.mediaId||'',frameData:cf.dataUrl||''});
       patchFrameModalSelectionInPlace(ownerType);
       return;
     }
     if (act === 'confirmterminalframeupload') {
-      if (!stagedTerminalFrameBlob) return;
-      const blobToSave = stagedTerminalFrameBlob;
-      const nameInput = document.getElementById(
-        'terminal-staged-frame-name'
-      ) as HTMLInputElement | null;
-      const cleanName =
-        (nameInput?.value || stagedTerminalFrameName || '自定义头像框')
-          .trim()
-          .slice(0, 36) || '自定义头像框';
-      void (async () => {
-        try {
-          const mediaId = makeUid('frm_u');
-          await mediaPut(mediaId, blobToSave);
-          const customId = makeUid('cf');
-          if (!Array.isArray(data.customFrames)) data.customFrames = [];
-          data.customFrames.unshift({
-            id: customId,
-            name: cleanName,
-            mediaId,
-            createdAt: now(),
-          });
-          resetStagedTerminalFrame();
-          syslog('ui', `终端入库自定义头像框素材：${cleanName}`);
-          save();
-          render(false);
-          notify(`已将「${cleanName}」加入头像框图库，可在人物编辑页选用`);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          notify('入库自定义头像框失败：' + msg);
-        }
-      })();
+      const blob=stagedTerminalFrameBlob;if(!blob)return;
+      const name=(document.querySelector<HTMLInputElement>('#terminal-staged-frame-name')?.value||stagedTerminalFrameName||'自定义头像框').trim().slice(0,36);
+      b.setAttribute('disabled','');
+      void storeCustomFrame(blob,name,undefined,()=>stagedTerminalFrameBlob===blob).then(item=>{
+        if(!item)return;resetStagedTerminalFrame();render(false);notify('已加入头像框图库');
+      }).catch(error=>notify('入库失败：'+(error instanceof Error?error.message:String(error)))).finally(()=>b.removeAttribute('disabled'));
       return;
     }
     if (act === 'cancelterminalframeupload') {
@@ -6580,53 +6316,25 @@ export function initElsewhereApp(): void {
       return;
     }
     if (act === 'cacheactiveframe') {
-      const ownerType = b.dataset.owner === 'user' ? 'user' : 'role';
-      const staged = getActiveModalOrFormFrameDraft(
-        ownerType,
-        formMode === 'edit' ? data.roles.find((x) => x.id === editingRoleId) : r
-      );
-      syncModalAdjustInputsToStaged(ownerType, staged);
-      const remoteUrl = staged?.frameData || '';
-      if (!staged || !/^https:\/\//i.test(remoteUrl)) return;
-      void (async () => {
-        try {
-          const resp = await fetch(remoteUrl, { mode: 'cors' });
-          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-          const blob = await resp.blob();
-          const mediaId = makeUid('frm_cache');
-          await mediaPut(mediaId, blob);
-          staged.frameMediaId = mediaId;
-          if (!Array.isArray(data.customFrames)) data.customFrames = [];
-          const presetInfo = findPresetFrameByIdOrUrl(
-            staged.frameId || remoteUrl
-          );
-          data.customFrames.unshift({
-            id: makeUid('cf'),
-            name: presetInfo ? `离线缓存 · ${presetInfo.label}` : '离线缓存头像框',
-            mediaId,
-            sourceUrl: remoteUrl,
-            createdAt: now(),
-          });
-          save();
-          if (frameModalOwner && document.querySelector('[data-testid="avatar-frame-modal"]')) {
-            patchFrameModalBodyAndTabsInPlace(ownerType);
-          } else {
-            render(false);
-          }
-          notify('已将该头像框缓存至浏览器本地 IndexedDB');
-        } catch {
-          notify(
-            '远程图床未开放跨域读取或当前处于离线状态；将继续以远程链接加载，你也可以在「终端 → 头像框素材管理」上传本地文件'
-          );
-        }
-      })();
+      const ownerType=b.dataset.owner==='user'?'user':'role',staged=getActiveModalOrFormFrameDraft(ownerType,formMode==='edit'?data.roles.find(x=>x.id===editingRoleId):r),url=staged.frameData,selection=frameSelection;
+      if(!url||!/^https:\/\//i.test(url))return;
+      b.setAttribute('disabled','');
+      void (async()=>{try{
+        const response=await fetch(url,{mode:'cors'});if(!response.ok)throw new Error('素材下载失败');
+        const item=await storeCustomFrame(await response.blob(),'离线缓存 · '+(findPresetFrameByIdOrUrl(staged.frameId)?.label||'头像框'),url);if(!item)return;
+        if(frameSelection===selection&&frameModalOwner===ownerType){staged.frameMediaId=item.mediaId||'';patchFrameModalSelectionInPlace(ownerType);}
+        notify('已缓存原始素材，动画保持不变');
+      }catch{notify('缓存失败，可继续使用远程素材，或在终端上传本地原件。')}finally{b.removeAttribute('disabled')}})();
       return;
     }
     if (act === 'resetbubble') {
       if (!r) return;
+      const previous = r.bubbleCSS;
       r.bubbleCSS = '';
       syslog('ui', '清除角色 CSS');
-      save();
+      if (!save()) { r.bubbleCSS = previous; return; }
+      const editor = document.querySelector<HTMLTextAreaElement>('#bubble-form [name="css"]');
+      if (editor) editor.value = '';
       render(false);
       return;
     }
@@ -6706,21 +6414,13 @@ export function initElsewhereApp(): void {
         targetMessageId: msgId,
         revisionId: res.revision?.id,
       });
-      if (res.hadPendingReply && scope === 'chat') {
-        const focused = isFocused(r);
-        (data.settings.mode === 'api'
-          ? apiReply(r, 'chat', newText)
-          : Promise.resolve(demoReply(r, 'chat', newText))
-        )
-          .then((reply) => {
-            queueChatReply(r, reply, msgId, focused);
-            render(false);
-          })
-          .catch(() => {});
+      const edited = scope === 'chat' ? r.chats.find(m=>m.id===msgId && m.speaker==='me') : undefined;
+      if (edited && (res.hadPendingReply || isBusy())) {
+        failedChatReplies.set(r.id,{roleId:r.id,messageId:edited.id,text:edited.text,revision:edited.revisionCount||0});
       }
       save();
       render(false);
-      notify('消息已修改，旧版本已归档并从正式上下文移除');
+      notify('消息已修改；直接关联的旧回复已归档，后续历史保留。');
       return;
     }
 
@@ -6757,141 +6457,36 @@ export function initElsewhereApp(): void {
     }
 
     if (f.id === 'user-profile-form') {
-      for (const k of [
-        'name',
-        'pronouns',
-        'identity',
-        'background',
-        'notes',
-      ] as const) {
-        data.user[k] = String(fd.get(k) || '')
-          .trim()
-          .slice(0, 10000);
-      }
-      if (draftUserFrame) {
-        const wrap = document.getElementById('frame-adjust-user');
-        if (wrap) {
-          const sizeEl = wrap.querySelector<HTMLInputElement>('[name="size"]');
-          const xEl = wrap.querySelector<HTMLInputElement>('[name="x"]');
-          const yEl = wrap.querySelector<HTMLInputElement>('[name="y"]');
-          if (sizeEl) draftUserFrame.frameScale = Math.max(0.5, Math.min(3, Number(sizeEl.value) || 1.25));
-          if (xEl) draftUserFrame.frameX = Math.max(-80, Math.min(80, Number(xEl.value) || 0));
-          if (yEl) draftUserFrame.frameY = Math.max(-80, Math.min(80, Number(yEl.value) || 0));
-        }
-        data.user.frameId = draftUserFrame.frameId;
-        data.user.frameMediaId = draftUserFrame.frameMediaId;
-        data.user.frameData = draftUserFrame.frameData;
-        data.user.frameScale = draftUserFrame.frameScale;
-        data.user.frameX = draftUserFrame.frameX;
-        data.user.frameY = draftUserFrame.frameY;
-      }
-      try {
-        if (draftUserAvatarBlob) {
-          const oldId = data.user.avatarMediaId;
-          const nextId = makeUid('ava_u');
-          await mediaPut(nextId, draftUserAvatarBlob);
-          data.user.avatarMediaId = nextId;
-          if (oldId && oldId !== nextId) {
-            await mediaDelete(oldId).catch(() => {});
-          }
-        } else if (draftUserAvatarRemove) {
-          const oldId = data.user.avatarMediaId;
-          data.user.avatarMediaId = '';
-          if (oldId) {
-            await mediaDelete(oldId).catch(() => {});
-          }
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        notify('个人头像保存失败：' + msg);
-      }
-      resetUserAvatarDraft();
-      syslog('identity', '更新用户全局资料与头像框');
-      save();
-      go('landing');
-      notify('我的资料与头像框已保存');
+      const owner=data.user,patch:Partial<UserProfileData>={};
+      for(const k of ['name','pronouns','identity','background','notes'] as const)patch[k]=String(fd.get(k)||'').trim().slice(0,10000);
+      if(draftUserFrame){syncModalAdjustInputsToStaged('user',draftUserFrame);rememberFrame(draftUserFrame);Object.assign(patch,draftUserFrame);}
+      const blob=draftUserAvatarBlob,remove=draftUserAvatarRemove;
+      try{
+        const ok=await persistAppearance(owner,patch,{blob,remove},{put:mediaPut,remove:mediaDelete,save,uid:()=>makeUid('ava_u'),current:()=>f.isConnected&&data.user===owner&&draftUserAvatarBlob===blob});
+        if(!ok)return;
+        resetUserAvatarDraft();syslog('identity','更新用户全局资料与头像框');go('landing');notify('我的资料与头像装扮已保存');
+      }catch(error){notify('资料未保存：'+(error instanceof Error?error.message:String(error)));}
       return;
     }
 
     if (f.id === 'role-form') {
-      const name = String(fd.get('name') || '').trim();
-      if (!name) return;
-      const isNew = formMode !== 'edit';
-      let r =
-        formMode === 'edit'
-          ? data.roles.find((x) => x.id === editingRoleId) || null
-          : null;
-      if (!r) {
-        r = createRole(
-          name,
-          '',
-          String(fd.get('job') || ''),
-          String(fd.get('traits') || ''),
-          String(fd.get('place') || '')
-        );
-        r.relationship = '';
-        initNewRoleFirstMessageState(r, data.settings, now());
-        data.roles.push(r);
-      }
-      for (const k of [
-        'name',
-        'job',
-        'traits',
-        'place',
-        'profile',
-        'relationship',
-        'canonNotes',
-      ] as const) {
-        r[k] = String(fd.get(k) || '')
-          .trim()
-          .slice(0, 20000);
-      }
-      if (draftRoleFrame) {
-        const wrap = document.getElementById('frame-adjust-role');
-        if (wrap) {
-          const sizeEl = wrap.querySelector<HTMLInputElement>('[name="size"]');
-          const xEl = wrap.querySelector<HTMLInputElement>('[name="x"]');
-          const yEl = wrap.querySelector<HTMLInputElement>('[name="y"]');
-          if (sizeEl) draftRoleFrame.frameScale = Math.max(0.5, Math.min(3, Number(sizeEl.value) || 1.25));
-          if (xEl) draftRoleFrame.frameX = Math.max(-80, Math.min(80, Number(xEl.value) || 0));
-          if (yEl) draftRoleFrame.frameY = Math.max(-80, Math.min(80, Number(yEl.value) || 0));
-        }
-        r.frameId = draftRoleFrame.frameId;
-        r.frameMediaId = draftRoleFrame.frameMediaId;
-        r.frameData = draftRoleFrame.frameData;
-        r.frameScale = draftRoleFrame.frameScale;
-        r.frameX = draftRoleFrame.frameX;
-        r.frameY = draftRoleFrame.frameY;
-      }
-      try {
-        if (draftRoleAvatarBlob) {
-          const oldId = r.avatarMediaId;
-          const nextId = makeUid('ava_r');
-          await mediaPut(nextId, draftRoleAvatarBlob);
-          r.avatarMediaId = nextId;
-          if (oldId && oldId !== nextId) {
-            await mediaDelete(oldId).catch(() => {});
-          }
-        } else if (draftRoleAvatarRemove) {
-          const oldId = r.avatarMediaId;
-          r.avatarMediaId = '';
-          if (oldId) {
-            await mediaDelete(oldId).catch(() => {});
-          }
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        notify('角色头像保存失败：' + msg);
-      }
-      resetRoleAvatarDraft();
-      data.selected = r.id;
-      syslog('role', `${formMode === 'edit' ? '编辑' : '创建'}角色：${r.name}`);
-      save();
-      go(formMode === 'edit' ? roleFormReturnView : 'home');
-      notify(formMode === 'edit' ? '角色资料与头像框修改已保存' : `已创建角色 ${r.name}`);
-      if (isNew && canUseRealModel(data.settings)) {
-        generateRoleFirstMessage(r);
-      }
+      const name=String(fd.get('name')||'').trim();if(!name)return;
+      const existing=formMode==='edit'?data.roles.find(x=>x.id===editingRoleId):undefined;
+      const owner=existing||createRole(name,'',String(fd.get('job')||''),String(fd.get('traits')||''),String(fd.get('place')||''));
+      if(!existing){owner.relationship='';initNewRoleFirstMessageState(owner,data.settings,now());}
+      const patch:Partial<RoleData>={};for(const k of ['name','job','traits','place','profile','relationship','canonNotes'] as const)patch[k]=String(fd.get(k)||'').trim().slice(0,20000);
+      if(draftRoleFrame){syncModalAdjustInputsToStaged('role',draftRoleFrame);rememberFrame(draftRoleFrame);Object.assign(patch,draftRoleFrame);}
+      const blob=draftRoleAvatarBlob,remove=draftRoleAvatarRemove,selected=data.selected;
+      try{
+        const ok=await persistAppearance(owner,patch,{blob,remove},{put:mediaPut,remove:mediaDelete,uid:()=>makeUid('ava_r'),current:()=>f.isConnected&&draftRoleAvatarBlob===blob,save:()=>{
+          if(!existing)data.roles.push(owner);data.selected=owner.id;
+          if(save())return true;
+          if(!existing)data.roles=data.roles.filter(x=>x!==owner);data.selected=selected;return false;
+        }});
+        if(!ok)return;
+        resetRoleAvatarDraft();syslog('role',`${existing?'编辑':'创建'}角色：${owner.name}`);go(existing?roleFormReturnView:'home');notify(existing?'角色资料与头像装扮已保存':`已创建角色 ${owner.name}`);
+        if(formMode!=='edit'&&canUseRealModel(data.settings))void generateRoleFirstMessage(owner);
+      }catch(error){notify('角色资料未保存：'+(error instanceof Error?error.message:String(error)));}
       return;
     }
 
@@ -6951,6 +6546,10 @@ export function initElsewhereApp(): void {
     if (f.id === 'message-form') {
       const inputEl = $('#message-input') as HTMLTextAreaElement | null;
       const t = inputEl?.value || '';
+      if (!role() || isBusy() || isComposing || !t.trim()) {
+        if (isBusy()) notify('请等待当前回复完成，输入内容已保留。');
+        return;
+      }
       chatDraft = '';
       if (inputEl) inputEl.value = '';
       submitText('chat', t);
@@ -6960,6 +6559,7 @@ export function initElsewhereApp(): void {
     if (f.id === 'intermission-form') {
       const inputEl = $('#intermission-input') as HTMLTextAreaElement | null;
       const t = String(fd.get('text') || inputEl?.value || '').trim();
+      if (!role()?.play?.paused || isBusy() || isComposing || !t) return;
       intermissionDraft = '';
       if (inputEl) inputEl.value = '';
       submitIntermission(t);
@@ -6992,6 +6592,8 @@ export function initElsewhereApp(): void {
     if (f.id === 'novel-form') {
       const inputEl = $('#novel-input') as HTMLTextAreaElement | null;
       const t = inputEl?.value || '';
+      const current = role();
+      if (!current || isBusy() || isComposing || !t.trim() || (!current.play && !current.scene) || current.play?.paused) return;
       novelDraft = '';
       if (inputEl) inputEl.value = '';
       submitText(role()?.play ? 'play' : 'scene', t);
@@ -7059,9 +6661,15 @@ export function initElsewhereApp(): void {
     if (f.id === 'bubble-form') {
       const r = role();
       if (!r) return;
-      r.bubbleCSS = String(fd.get('css') || '').slice(0, 12000);
+      const css = String(fd.get('css') || '');
+      if (css.length > BUBBLE_CSS_LIMIT || (css.trim() && !safeBubbleCSS(css))) {
+        notify('CSS 未保存：最多 12000 字符，请使用支持的气泡选择器，不含外部资源或定位覆盖。');
+        return;
+      }
+      const previous = r.bubbleCSS;
+      r.bubbleCSS = css;
       syslog('ui', '更新角色聊天气泡 CSS');
-      save();
+      if (!save()) { r.bubbleCSS = previous; return; }
       render(false);
       notify('气泡样式已保存');
       return;
@@ -7084,6 +6692,28 @@ export function initElsewhereApp(): void {
 
   appRoot.addEventListener('change', (e) => {
     const el = e.target as HTMLInputElement;
+    if (el.id === 'bubble-css-file' && el.files?.[0]) {
+      const file = el.files[0];
+      el.value = '';
+      const editor = document.querySelector<HTMLTextAreaElement>('#bubble-form [name="css"]');
+      if (!editor) return;
+      if (!/\.css$/i.test(file.name) || file.size > BUBBLE_CSS_LIMIT) {
+        notify('请选择 12KB 以内的 .css 文件；当前样式未改变。');
+        return;
+      }
+      const owner = role()?.id, before = editor.value;
+      void file.text().then(css => {
+        if (!editor.isConnected || role()?.id !== owner || editor.value !== before) return;
+        if (!css.trim() || !safeBubbleCSS(css)) {
+          notify('未导入：未找到支持的气泡规则，或包含外部资源／不安全 CSS。当前样式未改变。');
+          return;
+        }
+        editor.value = css;
+        editor.focus({preventScroll:true});
+        notify('CSS 已载入编辑器，点击「应用气泡 CSS」才会保存。');
+      }).catch(() => notify('CSS 文件读取失败；当前样式未改变。'));
+      return;
+    }
     if (el.id === 'focus-minutes-slider') {
       ensureFocusData();
       const taskInputEl = document.getElementById('focus-task-input') as HTMLInputElement | null;
@@ -7162,6 +6792,7 @@ export function initElsewhereApp(): void {
       el.files?.[0]
     ) {
       const f = el.files[0];
+      el.value='';
       const allowedTypes = [
         'image/png',
         'image/svg+xml',
@@ -7180,36 +6811,12 @@ export function initElsewhereApp(): void {
       );
       syncModalAdjustInputsToStaged(ownerType, staged);
 
-      void (async () => {
-        try {
-          const mediaId = makeUid('frm_u');
-          await mediaPut(mediaId, f);
-          const customId = makeUid('cf');
-          const cleanName = f.name.replace(/\.[^.]+$/, '').slice(0, 32) || '自定义头像框';
-          if (!Array.isArray(data.customFrames)) data.customFrames = [];
-          data.customFrames.unshift({
-            id: customId,
-            name: cleanName,
-            mediaId,
-            createdAt: now(),
-          });
-          staged.frameId = customId;
-          staged.frameMediaId = mediaId;
-          staged.frameData = '';
-          if (!staged.frameScale) staged.frameScale = 1.25;
-          syslog('ui', `上传自定义头像框素材并加入预览：${cleanName}`);
-          save();
-          if (frameModalOwner && document.querySelector('[data-testid="avatar-frame-modal"]')) {
-            patchFrameModalBodyAndTabsInPlace(ownerType);
-          } else {
-            render(false);
-          }
-          notify(`已上传「${cleanName}」并放入当前弹窗预览（点击「应用」后写入编辑草稿）`);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          notify('上传自定义头像框失败：' + msg);
-        }
-      })();
+      const selection=frameSelection;
+      void storeCustomFrame(f,f.name.replace(/\.[^.]+$/,'').slice(0,32)||'自定义头像框').then(item=>{
+        if(!item)return;
+        if(frameSelection===selection&&frameModalOwner===ownerType){selectFrame(staged,{frameId:item.id,frameMediaId:item.mediaId||'',frameData:''});patchFrameModalBodyAndTabsInPlace(ownerType);}
+        notify('已加入我的上传，确认使用后保存头像装扮');
+      }).catch(error=>notify('上传失败：'+(error instanceof Error?error.message:String(error))));
       return;
     }
     if (el.id === 'photo-upload') {
@@ -7273,6 +6880,7 @@ export function initElsewhereApp(): void {
       return;
     }
     if (el.dataset.frameAdjustInput) {
+      if(frameModalSaving)return;
       const ownerType = el.dataset.owner === 'user' ? 'user' : 'role';
       const staged = getActiveModalOrFormFrameDraft(
         ownerType,
@@ -7280,26 +6888,22 @@ export function initElsewhereApp(): void {
       );
       const field = el.dataset.frameAdjustInput;
       if (field === 'size') {
-        staged.frameScale = Math.max(0.5, Math.min(3, Number(el.value) || 1.25));
+        staged.frameScale = Math.max(0.25, Math.min(4, Number(el.value) || 1.25));
       } else if (field === 'x') {
         staged.frameX = Math.max(-80, Math.min(80, Number(el.value) || 0));
       } else if (field === 'y') {
         staged.frameY = Math.max(-80, Math.min(80, Number(el.value) || 0));
       }
-      document
-        .querySelectorAll<HTMLElement>('.frame-live-preview .avatar-frame')
-        .forEach((imgEl) => {
-          imgEl.style.setProperty('--frame-size', String(staged.frameScale));
-          imgEl.style.setProperty('--frame-x', `${staged.frameX}px`);
-          imgEl.style.setProperty('--frame-y', `${staged.frameY}px`);
-        });
-      return;
+      rememberFrame(staged);frameSelection++;
+      const box=document.querySelector<HTMLElement>('.frame-live-preview');
+      updateAvatarBoxFrameInPlace(box,staged);
+      document.querySelectorAll<HTMLElement>('.frame-cell.selected .avatar-composite').forEach(el=>updateAvatarBoxFrameInPlace(el,staged));
     }
     if (el.id === 'frame-search-input') {
       const ownerType = frameModalOwner || 'role';
       frameGallerySearch = el.value;
       frameGalleryPage = 0;
-      patchFrameModalPresetGridInPlace(ownerType);
+      if(frameGallerySourceTab==='preset')patchFrameModalPresetGridInPlace(ownerType);else patchFrameModalBodyAndTabsInPlace(ownerType);
       return;
     }
 
@@ -7307,6 +6911,16 @@ export function initElsewhereApp(): void {
 
   appRoot.addEventListener('keydown', (e) => {
     const target = e.target as HTMLElement;
+    const frameDialog=document.querySelector<HTMLElement>('[data-testid="avatar-frame-modal"]');
+    if(frameDialog){
+      if(e.key==='Escape'&&!e.isComposing){e.preventDefault();closeFrameModalInPlace();return;}
+      if(e.key==='Tab'){
+        const controls=Array.from(frameDialog.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),summary')).filter(el=>el.getClientRects().length&&getComputedStyle(el).visibility!=='hidden');
+        const first=controls[0],last=controls.at(-1);
+        if(first&&last&&(!frameDialog.contains(target)||(e.shiftKey?target===first:target===last))){e.preventDefault();(e.shiftKey?last:first).focus();}
+      }
+      return;
+    }
     if (
       target.id === 'focus-task-input' &&
       e.key === 'Enter' &&
@@ -7383,7 +6997,7 @@ export function initElsewhereApp(): void {
           view === 'home' ||
           view === 'monitor' ||
           view === 'diary') &&
-        !busy
+        !isBusy()
       ) {
         const activeEl = document.activeElement as HTMLElement | null;
         const intermissionTools = document.querySelector<HTMLDetailsElement>(

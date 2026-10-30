@@ -31,7 +31,7 @@ export function getScopeMessages(role: RoleData, scope: RevisionScope): ChatMess
  */
 export function getActiveMessages(messages: ChatMessage[] | undefined | null): ChatMessage[] {
   if (!Array.isArray(messages)) return [];
-  return messages.filter((m) => m && m.status !== 'retracted');
+  return messages.filter((m) => m && !['retracted','superseded','deleted'].includes(String(m.status)));
 }
 
 /**
@@ -52,6 +52,16 @@ function findLinkedEvents(role: RoleData, msg: ChatMessage): EventRecord[] {
     if (e.detail === msg.text && Math.abs((e.at || 0) - (msg.at || 0)) <= 1000) return true;
     return false;
   });
+}
+
+function invalidateChatSource(role:RoleData,msg:ChatMessage,nowTs:number):void {
+  role.pendingReplies=(role.pendingReplies||[]).filter(job=>!job.sources?.some(source=>source.id===msg.id)&&!(msg.replyTurnId&&job.replyTurnId===msg.replyTurnId));
+  if(msg.speaker!=='me')return;
+  for(const reply of getActiveMessages(role.chats).filter(m=>m.replySourceIds?.includes(msg.id))){
+    const events=findLinkedEvents(role,reply);reply.status='retracted';reply.editedAt=nowTs;
+    for(const event of events)event.status='superseded';
+    ensureRevisionsList(role).push({id:makeUid('rev'),scope:'chat',targetMessageId:reply.id,action:'retract',speaker:'char',previousText:reply.text,at:nowTs,reason:'该回复的聚合来源已修改或撤回',supersededEventIds:events.map(event=>event.id)});
+  }
 }
 
 export function editMessage(
@@ -94,6 +104,8 @@ export function editMessage(
   msg.text = newText;
   msg.editedAt = nowTs;
   msg.revisionCount = (msg.revisionCount || 0) + 1;
+
+  if(scope==='chat')invalidateChatSource(role,msg,nowTs);
 
   // Also update any quote snapshots referencing this message so UI stays coherent
   for (const m of list) {
@@ -145,6 +157,7 @@ export function retractMessage(
 
   msg.status = 'retracted';
   msg.editedAt = nowTs;
+  if(scope==='chat')invalidateChatSource(role,msg,nowTs);
 
   // Cancel any pending delayed reply that was triggered by this message
   if (scope === 'chat' && Array.isArray(role.pendingReplies)) {

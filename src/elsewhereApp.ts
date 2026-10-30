@@ -1,3 +1,9 @@
+import {monitorItemsForDisplay,newestMonitorFirst} from './core/monitorPresentation';
+import {uiIcon,plainUiLabel} from './uiIcons';
+import {chatTiming,setChatFocused,enqueueChat,prepareChatDue,claimChatBatch,chatBatchValid,chatRevisionKey,completeChatBatch,failChatBatch,recoverChatTiming,retryChatTiming,reviseChatTiming,sourceStillValid} from './core/chatScheduler';
+import {buildChatBatchMessages,buildPhoneRegeneration,readChatResponse} from './core/chatBatchPrompt';
+import {createHomeTasks} from './homeTasksView';
+import {safeBubbleCSS, BUBBLE_CSS_LIMIT} from './core/bubbleCss';
 import {completionLimit} from './core/outputBudget';
 import {uploadedStickers} from './core/stickers';
 import {migrateUntouchedNainDemo,resetNainStart,NAIN_BACKUP_PREFIX} from './core/nainStart';
@@ -5,6 +11,7 @@ import { createTerminalApi } from './terminalApi';
 import { createFruitManager } from './fruitManager';
 import type {
   ActiveFocusSession,
+  ChatBatch,
   AppData,
   ChatMessage,
   CustomAvatarFrame,
@@ -160,8 +167,10 @@ export function initElsewhereApp(): void {
   let busy = false;
   let token = '';
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
-  let focusedRole: string | null = null;
+  const activeChatRequests = new Map<string,AbortController>();
+  const chatTyping = new Set<string>();
   let chatPanel = '';
+  let bubbleCssRead = 0;
   let chatDraft = '';
   let novelDraft = '';
   let intermissionDraft = '';
@@ -386,32 +395,6 @@ export function initElsewhereApp(): void {
 
   const userAvatarChar = (u?: UserProfileData | null): string =>
     Array.from(String(u?.name || '我').trim() || '我')[0] || '我';
-
-  function safeBubbleCSS(raw?: string): string {
-    const input = String(raw || '').slice(0, 12000);
-    if (
-      /@import|@font-face|@keyframes|url\s*\(|expression\s*\(|<\/|\bbehavior\s*:/i.test(
-        input
-      )
-    ) {
-      return '';
-    }
-    const output: string[] = [];
-    const blocks = /([^{}]+)\{([^{}]*)\}/g;
-    let m: RegExpExecArray | null;
-    while ((m = blocks.exec(input)) !== null) {
-      const sel = m[1].trim();
-      if (!/^(\.message\.(mine|theirs)\s+\.bubble)(::(before|after))?$/.test(sel)) {
-        continue;
-      }
-      const body = m[4];
-      if (/position\s*:\s*(fixed|absolute)|z-index\s*:|content\s*:/i.test(body)) {
-        continue;
-      }
-      output.push(`.chat-view ${sel}{${body}}`);
-    }
-    return output.join('\n');
-  }
 
   function installBubbleCSS(): void {
     const previous = document.querySelector('#elsewhere-bubbles-css');
@@ -950,7 +933,7 @@ export function initElsewhereApp(): void {
       btn.dataset.action = 'cacheactiveframe';
       btn.dataset.owner = ownerType;
       btn.dataset.testid = `frame-cache-btn-${ownerType}`;
-      btn.textContent = '📥 离线缓存';
+      btn.innerHTML = uiIcon('download')+' 离线缓存';
       actionsRow.appendChild(btn);
     } else if (!isRemoteActive && existingCacheBtn) {
       existingCacheBtn.remove();
@@ -1005,7 +988,7 @@ export function initElsewhereApp(): void {
         'aria-expanded',
         frameModalAdjustOpen ? 'true' : 'false'
       );
-      toggleBtn.textContent = `⚙ 缩放与位置微调 ${
+      toggleBtn.innerHTML = `${uiIcon('settings')} 缩放与位置微调 ${
         frameModalAdjustOpen ? '▴' : '▾'
       }`;
     }
@@ -1253,10 +1236,10 @@ export function initElsewhereApp(): void {
                 frameModalAdjustOpen ? 'active' : ''
               }" data-action="toggleframeadjust" data-testid="toggle-frame-adjust-btn" aria-expanded="${
                 frameModalAdjustOpen ? 'true' : 'false'
-              }">⚙ 缩放与位置微调 ${frameModalAdjustOpen ? '▴' : '▾'}</button>
+              }">${uiIcon('settings')} 缩放与位置微调 ${frameModalAdjustOpen ? '▴' : '▾'}</button>
               ${
                 isRemoteActive
-                  ? `<button type="button" class="btn small ghost" data-action="cacheactiveframe" data-owner="${ownerType}" data-testid="frame-cache-btn-${ownerType}">📥 离线缓存</button>`
+                  ? `<button type="button" class="btn small ghost" data-action="cacheactiveframe" data-owner="${ownerType}" data-testid="frame-cache-btn-${ownerType}">${uiIcon('download')} 离线缓存</button>`
                   : ''
               }
             </div>
@@ -1334,8 +1317,8 @@ export function initElsewhereApp(): void {
                     )}" maxlength="36" placeholder="输入头像框名称">
                   </div>
                   <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px">
-                    <button type="button" class="btn small" data-action="confirmterminalframeupload" data-testid="terminal-frame-confirm-btn">✓ 确认加入头像框图库</button>
-                    <button type="button" class="btn small ghost" data-action="cancelterminalframeupload" data-testid="terminal-frame-cancel-btn">✕ 取消上传</button>
+                    <button type="button" class="btn small" data-action="confirmterminalframeupload" data-testid="terminal-frame-confirm-btn">${uiIcon('check')} 确认加入头像框图库</button>
+                    <button type="button" class="btn small ghost" data-action="cancelterminalframeupload" data-testid="terminal-frame-cancel-btn">${uiIcon('close')} 取消上传</button>
                   </div>
                 </div>
               </div>
@@ -1384,7 +1367,7 @@ export function initElsewhereApp(): void {
 
   const ongoing = (r?: RoleData | null): boolean => Boolean(r?.scene || r?.play);
   const isFocused = (r?: RoleData | null): boolean =>
-    Boolean(r && focusedRole === r.id);
+    Boolean(r?.chatTiming?.focused);
   const pendingFor = (r?: RoleData | null): number =>
     (r?.pendingReplies || []).length;
   const activeFocus = (): ActiveFocusSession | null => data.focus?.active || null;
@@ -1533,102 +1516,89 @@ export function initElsewhereApp(): void {
     );
   }
 
-  function charNote(r: RoleData, msg: string, at = now()): void {
-    if(awaitingNainOpening(r))return;
-    const id = uid();
-    r.chats.push({
-      id,
-      speaker: 'char',
-      text: msg,
-      at,
-      kind: 'chat',
-      status: 'active',
-    });
-    eMemory(r, msg, 'char', 'chat', at, id);
+  function requestChatFocus(r:RoleData):void {
+    const before=r.chatTiming?structuredClone(r.chatTiming):undefined;
+    setChatFocused(r,!isFocused(r));
+    if(!save()){r.chatTiming=before;return;}
+    render(false);pumpChatSchedules();
   }
 
-  function resolveChatInvite(r?: RoleData): boolean {
-    const inv = r?.chatInvite;
-    if (!r || !inv || !inv.dueAt || now() < inv.dueAt) return false;
-    if (inv.status === 'later') {
-      inv.status = 'offered';
-      inv.dueAt = null;
-      charNote(r, '我现在忙完了。之前说好晚点找你——你还想专心聊一会儿吗？');
-      save();
-      return true;
-    }
-    if (inv.status === 'declined') {
-      r.chatInvite = null;
-      save();
-      return true;
-    }
-    return false;
+  function chatDelay(r:RoleData,quietAt:number):number {
+    const availability=chatAvailability(r,quietAt);
+    if(availability.dueAt)return Math.max(1000,availability.dueAt-quietAt);
+    const characterOffset=Array.from(r.name+r.traits).reduce((sum,char)=>sum+char.charCodeAt(0),0)%30001;
+    return 30000+characterOffset;
   }
 
-  function requestChatFocus(r: RoleData): void {
-    if(awaitingNainOpening(r)){notify('请先连接 API 并生成首条消息，再邀请专心聊。');return;}
-    if (isFocused(r)) {
-      focusedRole = null;
-      r.chatInvite = null;
-      syslog('chat', `退出专心聊 (${r.name})`);
-      save();
-      render(false);
-      notify('已退出专心聊，恢复日常联系');
-      return;
-    }
-    resolveChatInvite(r);
-    if (r.chatInvite?.status === 'offered') {
-      r.chatInvite = null;
-      focusedRole = r.id;
-      charNote(r, '好，那现在就专心聊。');
-      save();
-      render();
-      return;
-    }
-    if (r.chatInvite?.status === 'later' || r.chatInvite?.status === 'declined') {
-      const nudgeMsgId = uid();
-      const nudgeAt = now();
-      r.chats.push({
-        id: nudgeMsgId,
-        speaker: 'me',
-        text: '还是想现在和你专心聊几句，方便吗？',
-        at: nudgeAt,
-        kind: 'chat',
-        status: 'active',
+  async function requestPhoneReply(r:RoleData,messages:{role:string;content:string}[],signal:AbortSignal,task:'chat'|'first-message'='chat'):Promise<string> {
+      const settings={...data.settings};
+      const pendingResponse=fetch(settings.endpoint.trim().replace(/\/+$/,'')+'/chat/completions',{
+        method:'POST',signal,
+        headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},
+        body:JSON.stringify({model:settings.model,messages,stream:false,temperature:+settings.temperature,...completionLimit(settings,task)}),
       });
-      eMemory(r, '再次邀请对方进入专心聊天', 'me', 'chat', nudgeAt, nudgeMsgId);
-      charNote(
-        r,
-        '好吧，看你这么想聊，我就先放下手头的事，专心陪你聊一会儿。'
-      );
-      r.chatInvite = null;
-      focusedRole = r.id;
-      save();
-      render();
-      return;
+      chatTyping.add(r.id);
+      if(view==='chat'&&role()?.id===r.id)patchDynamicRegionsOnTick();
+      return readChatResponse(await pendingResponse);
+  }
+
+  async function runChatBatch(r:RoleData,batch:ChatBatch):Promise<void> {
+    const controller=new AbortController();activeChatRequests.set(r.id,controller);
+    try{
+      const text=await requestPhoneReply(r,buildChatBatchMessages(data,r,batch,now()),controller.signal);
+      if(!data.roles.includes(r)||!chatBatchValid(r,batch)){
+        if(r.chatTiming?.inFlight?.id===batch.id){reviseChatTiming(r,now());save();}
+        return;
+      }
+      const bubbles=splitChatBubbles(text,r);
+      if(!bubbles.length)throw new Error('回复中没有有效的手机消息');
+      const timingBefore=structuredClone(r.chatTiming),outboxBefore=r.pendingReplies;
+      if(!completeChatBatch(r,batch))return;
+      const turnId=makeUid('turn'),base=now();
+      r.pendingReplies=[...(r.pendingReplies||[]),...bubbles.map((bubble,i)=>({id:uid(),replyTo:batch.sources.at(-1)!.id,replyTurnId:turnId,bubbles:[bubble],dueAt:base+i*240,sources:batch.sources,chatBatchId:batch.id}))];
+      if(!save()){r.chatTiming=timingBefore;r.pendingReplies=outboxBefore;throw new Error('回复未能保存，请重试');}
+      deliverPending(r);
+    }catch(error){
+      if(data.roles.includes(r)&&r.chatTiming?.inFlight?.id===batch.id){
+        const reason=error instanceof Error && error.name!=='AbortError'?error.message:'回复请求已中断，请重试';
+        failChatBatch(r,batch,reason);save();
+      }
+    }finally{
+      if(activeChatRequests.get(r.id)===controller){activeChatRequests.delete(r.id);chatTyping.delete(r.id);}
+      if(view==='chat'&&role()?.id===r.id)patchDynamicRegionsOnTick();
     }
-    const available = chatAvailability(r);
-    const inviteMsgId = uid();
-    const inviteAt = now();
-    r.chats.push({
-      id: inviteMsgId,
-      speaker: 'me',
-      text: '现在方便专心聊一会儿吗？',
-      at: inviteAt,
-      kind: 'chat',
-      status: 'active',
-    });
-    eMemory(r, '邀请对方进入专心聊天', 'me', 'chat', inviteAt, inviteMsgId);
-    charNote(r, available.reason);
-    if (available.type === 'accepted') {
-      focusedRole = r.id;
-      r.chatInvite = null;
-    } else {
-      focusedRole = null;
-      r.chatInvite = { status: available.type, dueAt: available.dueAt };
+  }
+
+  function pumpChatSchedules():void {
+    for(const r of data.roles){
+      if(!r.chatTiming)continue;
+      const before=JSON.stringify(r.chatTiming);
+      prepareChatDue(r,now(),quietAt=>chatDelay(r,quietAt));
+      const batch=activeChatRequests.has(r.id)?null:claimChatBatch(r,now(),Boolean(token.trim())&&canUseRealModel(data.settings));
+      if(JSON.stringify(r.chatTiming)!==before){
+        if(!save()){
+          if(batch)failChatBatch(r,batch,'调度未能保存，请重试');
+          if(view==='chat'&&role()?.id===r.id)patchDynamicRegionsOnTick();
+          continue;
+        }
+        if(view==='chat'&&role()?.id===r.id)patchDynamicRegionsOnTick();
+      }
+      if(batch)void runChatBatch(r,batch);
     }
-    save();
-    render();
+  }
+
+  function acceptPhoneMessage(r:RoleData,item:ChatMessage):boolean {
+    const timingBefore=r.chatTiming?structuredClone(r.chatTiming):undefined;
+    const chatsBefore=r.chats.length,eventsBefore=r.events.length;
+    r.chats.push(item);eMemory(r,item.text,'me','chat',item.at,item.id);enqueueChat(r,item.id,item.at);
+    if(!save()){r.chats.length=chatsBefore;r.events.length=eventsBefore;r.chatTiming=timingBefore;return false;}
+    if(role()?.id===r.id)quotingMessage=null;return true;
+  }
+
+  function revisePhoneSchedule(r:RoleData):void {
+    activeChatRequests.get(r.id)?.abort();chatTyping.delete(r.id);
+    if(!r.chatTiming)return;
+    reviseChatTiming(r,now());
   }
 
   async function requestAiLiveLogForActiveSession(
@@ -1961,7 +1931,7 @@ export function initElsewhereApp(): void {
           `<div class="focus-moment ${
             i === moments.length - 1 ? 'latest' : ''
           }" data-testid="focus-live-log-item-${i}">
-            <span class="focus-moment-icon">${esc(m.icon || '⏳')}</span>
+            <span class="focus-moment-icon">${uiIcon(m.icon || 'hourglass')}</span>
             <div class="focus-moment-body">
               <div class="focus-moment-head">
                 <b>${esc(m.title)}</b>
@@ -1970,7 +1940,7 @@ export function initElsewhereApp(): void {
               <p>${esc(m.detail)}</p>
               ${
                 m.innerThought
-                  ? `<div class="focus-moment-thought">💭 内心：${esc(
+                  ? `<div class="focus-moment-thought">${uiIcon('chat')} 内心：${esc(
                       m.innerThought
                     )}</div>`
                   : ''
@@ -2005,98 +1975,24 @@ export function initElsewhereApp(): void {
     return bubbles.length ? bubbles : [String(text || '').trim()].filter(Boolean);
   }
 
-  function deliverPending(r?: RoleData): boolean {
-    if (!r?.pendingReplies?.length) return false;
-    const remaining = [];
-    let changed = false;
-    for (const job of r.pendingReplies) {
-      if (job.dueAt > Date.now()) {
-        remaining.push(job);
-        continue;
-      }
-      const turnId = job.replyTurnId || job.id;
-      const baseAt = now();
-      (job.bubbles || []).forEach((bubble, idx) => {
-        const at = baseAt + idx;
-        const item: ChatMessage = {
-          id: uid(),
-          speaker: 'char',
-          text: bubble,
-          at,
-          kind: 'chat',
-          replyTo: job.replyTo,
-          replyTurnId: turnId,
-          status: 'active',
-        };
-        r.chats.push(item);
+  function deliverPending(r?:RoleData):boolean {
+    if(!r?.pendingReplies?.length||!data.roles.includes(r))return false;
+    const before=r.pendingReplies,chats=r.chats.length,events=r.events.length,firstMessage=r.firstMessageState;
+    const remaining=[];let changed=false;
+    for(const job of before){
+      if(job.sources&&((r.scene||r.play)||!job.sources.every(source=>sourceStillValid(r,source)))){changed=true;continue;}
+      if(job.dueAt>now()){remaining.push(job);continue;}
+      const turnId=job.replyTurnId||job.id;
+      for(const [index,bubble] of job.bubbles.entries()){
+        const at=now()+index,item:ChatMessage={id:uid(),speaker:'char',text:bubble,at,kind:'chat',replyTo:job.replyTo,replyTurnId:turnId,status:'active',...(job.sources?{replySourceIds:job.sources.map(m=>m.id)}:{})};
+        r.chats.push(item);eMemory(r,bubble,'char','chat',at,item.id);
         if(r.firstMessageState?.status!=='ready')r.firstMessageState={status:'ready',updatedAt:at};
-        eMemory(r, bubble, 'char', 'chat', at, item.id);
-      });
-      changed = true;
-    }
-    r.pendingReplies = remaining;
-    if (changed) save();
-    return changed;
-  }
-
-  function queueChatReply(
-    r: RoleData,
-    text: string,
-    replyTo: string,
-    focused: boolean
-  ): void {
-    const bubbles = splitChatBubbles(text, r);
-    if (!bubbles.length) return;
-    const turnId = makeUid('turn');
-    if (!r.pendingReplies) r.pendingReplies = [];
-
-    if (focused || bubbles.length === 1) {
-      r.pendingReplies.push({
-        id: uid(),
-        replyTo,
-        replyTurnId: turnId,
-        bubbles,
-        dueAt: Date.now(),
-      });
-      deliverPending(r);
-      return;
-    }
-
-    // Deliver the first bubble immediately for responsive feel, and stagger follow-up bubbles naturally
-    r.pendingReplies.push({
-      id: uid(),
-      replyTo,
-      replyTurnId: turnId,
-      bubbles: [bubbles[0]],
-      dueAt: Date.now(),
-    });
-    deliverPending(r);
-
-    const followUps = bubbles.slice(1);
-    const staggerMs = 240;
-    r.pendingReplies.push({
-      id: uid(),
-      replyTo,
-      replyTurnId: turnId,
-      bubbles: followUps,
-      dueAt: Date.now() + staggerMs,
-    });
-    save();
-    setTimeout(() => {
-      if (deliverPending(r)) {
-        if (view === 'chat') {
-          const sc = document.querySelector<HTMLElement>('#scroll-area');
-          if (sc && !editingMessageId) {
-            clearMediaURLs();
-            sc.innerHTML = renderChatMessagesHtml(r);
-            hydrateMedia();
-            sc.scrollTop = sc.scrollHeight;
-            return;
-          }
-        }
-        safeRenderWhenNotTyping();
       }
-    }, staggerMs + 30);
+      changed=true;
+    }
+    r.pendingReplies=remaining;
+    if(changed&&!save()){r.pendingReplies=before;r.chats.length=chats;r.events.length=events;r.firstMessageState=firstMessage;return false;}
+    return changed;
   }
 
   function simulate(r: RoleData): void {
@@ -2131,7 +2027,7 @@ export function initElsewhereApp(): void {
     r.lifeAt = end;
     const activeChats = getActiveMessages(r.chats);
     if (
-      gap > 90 * 60000 &&
+      !r.chatTiming?.pending.length && !r.chatTiming?.inFlight && gap > 90 * 60000 &&
       activeChats.length &&
       end - (r.lastInvitation || 0) > 6 * 3600000
     ) {
@@ -2175,30 +2071,7 @@ export function initElsewhereApp(): void {
     }
   }
 
-  const glyph = (name: string): string => {
-    const paths: Record<string, string> = {
-      chat: '<path d="M4 5.5h16v10.5H9l-5 4v-4z"/><path d="M8 10h8"/>',
-      diary: '<path d="M6 3.5h13v17H6z"/><path d="M9 3.5v17M12 8h4m-4 4h4"/>',
-      focus: '<circle cx="12" cy="13" r="8"/><path d="M12 7.5v5.5l3.3 2M10 2h4"/>',
-      monitor:
-        '<rect x="3.5" y="5.5" width="17" height="13" rx="3"/><circle cx="12" cy="12" r="3.2"/><path d="M7.5 5.5l1-2h7l1 2"/>',
-
-      presets:'<rect x="4" y="3" width="16" height="18" rx="3"/><path d="M8 8h8m-8 4h8m-8 4h5"/>',
-      drama:
-        '<path d="M4 5c2 0 4 1 7 1s5-1 7-1v7c0 5-3 8-7 9-4-1-7-4-7-9z"/><path d="M7 10h2m4 0h2m-7 4c2 1.5 5 1.5 7 0"/>',
-
-      terminal:
-        '<path d="m5 8 4 4-4 4M11 17h8"/><rect x="2.5" y="3.5" width="19" height="17" rx="3"/>',
-
-      tasks:
-        '<rect x="4" y="4" width="16" height="17" rx="3"/><path d="M8 9l1.6 1.6L12 8m2 2h3M8 16l1.6 1.6L12 15m2 2h3"/>',
-      deadline:
-        '<rect x="4" y="5" width="16" height="16" rx="3"/><path d="M8 3v4m8-4v4M4 10h16m-8 3v3l2 1"/>',
-    };
-    return `<svg class="app-symbol" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${
-      paths[name] || paths.chat
-    }</svg>`;
-  };
+  const glyph = (name:string):string => uiIcon(name,'app-symbol');
 
   const header = (title: string, back = 'home', right = ''): string =>
     `<div class="top"><button class="back-btn" data-action="view" data-view="${esc(
@@ -2590,6 +2463,8 @@ export function initElsewhereApp(): void {
     );
   }
 
+  const homeTasks=createHomeTasks({tasks:()=>data.sharedTasks!,save,notify,glyph});
+
   function screenHome(): string {
     const r = role()!;
     const a = activity(r, now());
@@ -2628,52 +2503,7 @@ export function initElsewhereApp(): void {
  )}<div><b>${esc(r.name)}</b><small>${esc(a.label)} · ${esc(
         a.where
       )}</small></div></div><span class="widget-arrow">›</span></div><div class="widget-divider"></div><div class="widget-bottom"><span class="widget-caption">${captionText}</span><span class="widget-action">打开聊天 →</span></div></button>
- <div class="shared-widgets">
- ${(
-   [
-     ['ddl', 'DDL', 'deadline'],
-     ['todo', 'To-do', 'tasks'],
-   ] as const
- )
-   .map(
-     ([kind, label, ic]) =>
-       `<section class="mini-widget" aria-label="${label}"><div class="mini-head">${glyph(
-         ic
-       )}<strong>${label}</strong><span>${
-         data.sharedTasks![kind].filter((x) => !x.done).length
-       }</span></div><div class="mini-list" tabindex="0">${
-         data
-           .sharedTasks![kind].slice()
-           .sort(
-             (a, b) =>
-               Number(a.done) - Number(b.done) ||
-               String(a.due || '').localeCompare(String(b.due || ''))
-           )
-           .map(
-             (t) =>
-               `<div class="mini-task"><button title="切换完成" data-action="tasktoggle" data-kind="${kind}" data-id="${esc(
-                 t.id
-               )}" class="task-check ${t.done ? 'is-done' : ''}">${
-                 t.done ? '✓' : ''
-               }</button><span class="${t.done ? 'task-done' : ''}">${esc(
-                 t.text
-               )}${
-                 t.due ? `<small>${esc(t.due)}</small>` : ''
-               }</span><button title="删除" class="task-delete" data-action="taskdelete" data-kind="${kind}" data-id="${esc(
-                 t.id
-               )}">×</button></div>`
-           )
-           .join('') || '<div class="mini-empty">还没有项目</div>'
-       }</div><form data-task-add="${kind}" class="mini-add"><input name="text" maxlength="140" required placeholder="${
-         kind === 'ddl' ? '添加截止任务' : '添加待办'
-       }" aria-label="${label} 新项目">${
-         kind === 'ddl'
-           ? '<input name="due" type="date" aria-label="截止日期">'
-           : ''
-       }<button aria-label="添加">＋</button></form></section>`
-   )
-   .join('')}
- </div>
+ <div class="shared-widgets" id="home-task-cards">${homeTasks.renderCards()}</div>
  <div class="home-apps">${[
    ['diary', '日记'],
    ['monitor', '监控'],
@@ -2690,7 +2520,7 @@ export function initElsewhereApp(): void {
  }
  ${
    ongoing(r)
-     ? `<button class="home-ongoing" data-action="resume">✦ 继续${
+     ? `<button class="home-ongoing" data-action="resume">${uiIcon('sparkles')} 继续${
          r.play ? '未落幕的戏剧' : '面对面的相处'
        } <span>›</span></button>`
      : ''
@@ -2834,8 +2664,7 @@ export function initElsewhereApp(): void {
     if (chatPanel === 'more') {
       return `<section class="chat-drawer" aria-label="聊天工具菜单">${bar}<div class="chat-tool-grid">${[
         ['voice', '语音'],
-        ['sticker', '表情包'],
-        ['photo', '照片'],
+                ['photo', '照片'],
         ['packet', '红包'],
       ]
         .map(
@@ -2844,7 +2673,7 @@ export function initElsewhereApp(): void {
               id
             )}<span>${label}</span></button>`
         )
-        .join('')}</div></section>`;
+        .join('')}<button data-action="view" data-view="focus">${glyph('focus')}<span>一起专注</span></button><button data-action="view" data-view="drama">${glyph('drama')}<span>戏剧</span></button></div></section>`;
     }
     if (chatPanel === 'sticker') {
       const gallery=uploadedStickers(role()?.chats||[]);
@@ -2877,6 +2706,7 @@ export function initElsewhereApp(): void {
   }
 
   function renderFirstMessageCard(r: RoleData): string {
+    if(chatTyping.has(r.id)||r.chatTiming?.pending.length||r.chatTiming?.inFlight)return '';
     const activeChats = getActiveMessages(r.chats);
     if (activeChats.some(m=>m.speaker==='char')) return '';
     const fm = r.firstMessageState;
@@ -2917,7 +2747,6 @@ export function initElsewhereApp(): void {
 
   function renderChatMessagesHtml(r: RoleData): string {
     const activeChats = getActiveMessages(r.chats);
-    const pending = pendingFor(r);
     return `<div class="chat-privacy">你与 ${esc(
       r.name
     )} 的私人对话 · ${esc(dateStr(now()))}</div>
@@ -2985,15 +2814,7 @@ export function initElsewhereApp(): void {
         }
         </div></div>`;
       })
-      .join('')}${
-      pending
-        ? `<div class="reply-pending">${esc(
-            r.name
-          )}稍后会回复 · ${pending} 条待发</div>`
-        : busy
-        ? '<div class="reply-pending">正在生成回复…</div>'
-        : ''
-    }`;
+      .join('')}${renderChatTyping(r)}`;
   }
 
   function catPawSvg(isDark: boolean): string {
@@ -3008,29 +2829,14 @@ export function initElsewhereApp(): void {
     </svg>`;
   }
 
-  function renderChatInteractionsHtml(r: RoleData): string {
-    const focused = isFocused(r);
-    const invite = r.chatInvite;
-    const revCount = ensureRevisionsList(r).filter(
-      (x) => x.scope === 'chat'
-    ).length;
-    const label = focused
-      ? '专心聊天中'
-      : invite?.status === 'offered'
-      ? '邀请你继续聊天'
-      : invite?.status === 'later'
-      ? '忙完再聊（可再次点击右上角猫爪印邀约）'
-      : invite?.status === 'declined'
-      ? '暂时不方便（可再次点击右上角猫爪印邀约）'
-      : '日常联系';
-    return `<span class="chat-mode-label" data-testid="chat-mode-label"><span class="online-point"></span>${label}</span>
-      <button type="button" class="chat-focus-action" data-action="togglerevisions" aria-label="查看修订记录">修订记录${
-        revCount ? ` (${revCount})` : ''
-      }</button>${
-      invite?.status === 'offered'
-        ? '<button type="button" class="chat-focus-action" data-action="focuschat">接受邀请</button><button type="button" class="chat-focus-action" data-action="declinechat">暂不</button>'
-        : ''
-    }`;
+  function renderChatFeedback(r:RoleData):string {
+    const state=r.chatTiming;
+    if(!state?.blocked)return '';
+    return `<details class="chat-error-notice"><summary>${uiIcon('warning')}${state.blocked==='api'?'消息已保存，尚未连接':'回复未完成'} · 查看详情</summary><p>${esc(state.blocked==='api'?'请在终端连接 API，待回复消息会保留。':state.error||'连接未成功，待回复消息已保留。')}</p>${state.blocked==='failed'?'<button type="button" class="chat-focus-action" data-action="retrychatbatch">重试回复</button>':''}</details>`;
+  }
+
+  function renderChatTyping(r:RoleData):string {
+    return chatTyping.has(r.id)&&!ongoing(r)?'<div class="chat-typing" data-testid="chat-typing" role="status" aria-live="polite"><span class="chat-typing-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>对方正在输入中…</span></div>':'';
   }
 
   function screenChat(): string {
@@ -3038,8 +2844,8 @@ export function initElsewhereApp(): void {
     const focused = isFocused(r);
     const pawStateClass = focused ? 'is-dark' : 'is-light';
     const pawTitle = focused
-      ? '当前处于专心聊（深色猫爪印）· 点击退出专心聊'
-      : '当前为日常联系（浅色猫爪印）· 点击邀请角色专心聊';
+      ? '热聊模式 · 点击切换为日常联系'
+      : '日常联系 · 点击开启热聊模式';
     return shell(
       `<div class="chat-header"><button class="chat-back" data-action="view" data-view="home" aria-label="返回桌面">‹<small>桌面</small></button><div class="chat-contact">${avatarTag(
         r,
@@ -3050,17 +2856,11 @@ export function initElsewhereApp(): void {
         focused ? 'dark' : 'light'
       }" aria-pressed="${focused}" aria-label="${pawTitle}" title="${pawTitle}">${catPawSvg(
         focused
-      )}</button><button type="button" class="chat-more" data-action="chatroleedit" data-testid="chat-role-edit-btn" aria-label="进入角色修改页面" title="编辑当前角色资料">•••</button></div></div>
- <div class="chat-interactions">${renderChatInteractionsHtml(r)}</div>
- ${renderRevisionsDrawer(r, 'chat')}
- <div class="chat-conversation" id="scroll-area">${renderChatMessagesHtml(
+      )}</button><button type="button" class="chat-more" data-action="chatroleedit" data-testid="chat-role-edit-btn" aria-label="进入角色修改页面" title="编辑当前角色资料">${uiIcon('ellipsis')}</button></div></div>
+ <div class="chat-feedback" data-chat-feedback ${r.chatTiming?.blocked?'':'hidden'}>${renderChatFeedback(r)}</div>
+ <div class="chat-conversation" id="scroll-area" data-role-id="${esc(r.id)}">${renderChatMessagesHtml(
    r
  )}</div>
- <div class="chat-shortcuts"><button data-action="view" data-view="focus">${glyph(
-        'focus'
-      )} <span>一起专注</span></button><button data-action="view" data-view="drama">${glyph(
-        'drama'
-      )} <span>戏剧</span></button></div>
  ${chatDrawer()}
  ${
    quotingMessage
@@ -3072,17 +2872,7 @@ export function initElsewhereApp(): void {
       </div>`
      : ''
  }
- <form class="compose" id="message-form"><button type="button" class="compose-plus" data-action="chatpanel" data-panel="more" aria-label="打开聊天功能" aria-expanded="${Boolean(
-   chatPanel
- )}">${
-        chatPanel ? attachmentIcon('close') : attachmentIcon('more')
-      }</button><textarea id="message-input" rows="1" placeholder="发送信息" aria-label="输入消息">${esc(
-        chatDraft
-      )}</textarea><button type="button" class="compose-sticker" data-action="chatpanel" data-panel="sticker" aria-label="发送表情包">${attachmentIcon(
-        'sticker'
-      )}</button><button class="send-btn" ${
-        busy ? 'disabled' : ''
-      } aria-label="发送消息">↑</button></form>`,
+ <form class="compose" id="message-form"><textarea id="message-input" rows="1" placeholder="发送信息" aria-label="输入消息">${esc(chatDraft)}</textarea><button type="button" class="compose-plus" data-action="chatpanel" data-panel="more" aria-label="打开聊天功能" aria-expanded="${chatPanel==='more'}">${chatPanel==='more'?attachmentIcon('close'):attachmentIcon('more')}</button><button type="button" class="compose-sticker" data-action="chatpanel" data-panel="sticker" aria-label="发送表情包">${attachmentIcon('sticker')}</button><button class="send-btn" aria-label="发送消息">${uiIcon('send')}</button></form>`,
       false
     );
   }
@@ -3146,18 +2936,18 @@ export function initElsewhereApp(): void {
                      : '当日无直接用户互动 · 将书写角色独立日常与思绪';
                    const statusBadge =
                      t.status === 'generating'
-                       ? '<span class="diary-task-badge generating">⏳ 正在生成…</span>'
+                       ? `<span class="diary-task-badge generating">${uiIcon('hourglass')} 正在生成…</span>`
                        : t.status === 'failed'
-                       ? '<span class="diary-task-badge failed">⚠️ 生成失败</span>'
+                       ? `<span class="diary-task-badge failed">${uiIcon('warning')} 生成失败</span>`
                        : t.status === 'awaiting_api'
-                       ? '<span class="diary-task-badge awaiting">🔌 待连接 API 补写</span>'
-                       : '<span class="diary-task-badge pending">🕒 待补写队列</span>';
+                       ? `<span class="diary-task-badge awaiting">${uiIcon('plug')} 待连接 API 补写</span>`
+                       : `<span class="diary-task-badge pending">${uiIcon('clock')} 待补写队列</span>`;
                    return `<div class="card diary-task-card" data-diary-task-date="${esc(
                      t.dateKey
                    )}" data-diary-task-status="${esc(t.status)}">
                      <div class="diary-task-head">
                        <div>
-                         <b class="diary-task-title">📅 ${esc(bounds.label)}（${esc(
+                         <b class="diary-task-title">${uiIcon('deadline')} ${esc(bounds.label)}（${esc(
                      t.dateKey
                    )}）</b>
                          <div class="diary-task-sub">${esc(factText)}</div>
@@ -3221,7 +3011,7 @@ export function initElsewhereApp(): void {
                     e.id
                   )}" data-diary-date="${esc(dKey)}">
                     <div class="diary-entry-head">
-                      <time class="diary-archive-date">📅 ${esc(
+                      <time class="diary-archive-date">${uiIcon('deadline')} ${esc(
                         bounds.label
                       )}（${esc(dKey)}）</time>
                       <span class="diary-char-meta">${
@@ -3232,7 +3022,7 @@ export function initElsewhereApp(): void {
                     </div>
                     <div class="diary-body-text">${esc(e.text)}</div>
                     <div class="diary-entry-foot">
-                      <span class="diary-fact-badge">✦ ${esc(sourceSummary)}</span>
+                      <span class="diary-fact-badge">${uiIcon('sparkles')} ${esc(sourceSummary)}</span>
                     </div>
                   </article>`;
                 }
@@ -3244,10 +3034,10 @@ export function initElsewhereApp(): void {
                 )}</div><div class="diary-entry-foot">
                         ${
                           isShared
-                            ? `<span class="shared-badge">✓ 已主动分享给 ${esc(
+                            ? `<span class="shared-badge">${uiIcon('check')} 已主动分享给 ${esc(
                                 r.name
                               )} · 对方已知情</span>`
-                            : `<span class="privacy-badge">🔒 私密日记（${esc(
+                            : `<span class="privacy-badge">${uiIcon('lock')} 私密日记（${esc(
                                 r.name
                               )}不知情）</span>
                                <button type="button" class="btn small secondary" data-action="sharediary" data-id="${esc(
@@ -3299,7 +3089,7 @@ export function initElsewhereApp(): void {
           cell.isFuture ? 'disabled title="未来日期尚未发生"' : ''
         }>
           <span class="fp-cal-num">${cell.day}</span>
-          ${cell.hasActivity ? '<span class="fp-cal-paw" title="当天有生活足迹">🐾</span>' : '<span class="fp-cal-dot"></span>'}
+          ${cell.hasActivity ? `<span class="fp-cal-paw" title="当天有生活足迹">${uiIcon('paw')}</span>` : '<span class="fp-cal-dot"></span>'}
         </button>`;
       })
       .join('');
@@ -3317,7 +3107,7 @@ export function initElsewhereApp(): void {
         ${emptyCells}${dayCells}
       </div>
       <div class="fp-cal-footer">
-        <span class="tiny muted">🐾 表示当天有已记录的互动或生活足迹</span>
+        <span class="tiny muted">${uiIcon('paw')} 表示当天有已记录的互动或生活足迹</span>
         <div class="row" style="gap:6px">
           <button type="button" class="btn small ghost" data-action="monitordate" data-date="${esc(
             todayKey
@@ -3339,11 +3129,11 @@ export function initElsewhereApp(): void {
     const nextDateKey = shiftDateKey(monitorDateKey, 1);
     const canGoNext = monitorDateKey < todayKey;
 
-    const a = activity(r, nowTs);
     const archive = getOrBuildDailyFootprints(r, monitorDateKey, nowTs);
-    const facts = collectDailyDiaryFacts(r, monitorDateKey);
+    const displayItems=monitorItemsForDisplay(r,data.user,archive.items,nowTs);
+    const latestConfirmed=displayItems.find(item=>item.confirmed);
 
-    const rawEvents = getActiveEvents(r.events)
+    const rawEvents = newestMonitorFirst(getRoleKnownEvents(r)
       .filter((x) => {
         if (x.at > nowTs) return false;
         const dKey = toLocalDateKey(x.at);
@@ -3357,7 +3147,7 @@ export function initElsewhereApp(): void {
           x.kind === 'drama'
         );
       })
-      .sort((x, y) => y.at - x.at);
+      );
 
     const categoryBadgeMap: Record<string, string> = {
       interaction: '线上联络',
@@ -3369,12 +3159,12 @@ export function initElsewhereApp(): void {
       quiet: '平静日常',
     };
 
-    const footprintsListHtml = archive.items.length
-      ? archive.items
+    const footprintsListHtml = displayItems.length
+      ? displayItems
           .map((item) => {
             const catLabel = categoryBadgeMap[item.category] || '日常足迹';
-            const artifactHtml = item.artifact
-              ? renderSafeFootprintArtifact(item.artifact)
+            const artifactHtml = item.confirmed&&item.artifact
+              ? `<details class="fp-artifact-preview"><summary>${uiIcon('file')}情境辅助素材 · 非活动凭证</summary>${renderSafeFootprintArtifact(item.artifact)}</details>`
               : '';
             const transcriptCount = item.rawTranscript?.length || 0;
 
@@ -3385,8 +3175,8 @@ export function initElsewhereApp(): void {
             )}" data-fp-id="${esc(item.id)}">
               <div class="fp-card-head">
                 <div class="fp-time-group">
-                  <span class="fp-icon" aria-hidden="true">${esc(item.icon)}</span>
-                  <time class="fp-time-badge">${esc(item.timeLabel)}</time>
+                  <span class="fp-icon" aria-hidden="true">${uiIcon(item.icon)}</span>
+                  <time class="fp-time-badge">${esc(hm(item.timestamp))}</time>
                   ${
                     item.durationLabel
                       ? `<span class="fp-duration-tag">${esc(
@@ -3407,7 +3197,7 @@ export function initElsewhereApp(): void {
 
               <details class="footprint-omniscient-box" data-testid="footprint-omniscient-details">
                 <summary class="fp-omniscient-summary">
-                  <span>👁️ 上帝视角 · 角色状态读心${
+                  <span>${uiIcon('eye')} 上帝视角 · 角色状态读心${
                     transcriptCount ? `与 ${transcriptCount} 条关联原始记录` : ''
                   }</span>
                   <span class="fp-omniscient-arrow">⌄</span>
@@ -3454,11 +3244,10 @@ export function initElsewhereApp(): void {
           })
           .join('')
       : `<div class="card fp-empty-card" data-testid="footprint-calm-empty">
-          <div class="fp-calm-icon">🍃</div>
-          <h3>今日步调十分平静</h3>
+          <div class="fp-calm-icon">${uiIcon('leaf')}</div>
+          <h3>暂无活动记录</h3>
           <p>${esc(
-            archive.calmDayNote ||
-              `这一天没有喧嚣的插曲，${r.name}在${r.place || '日常居所'}按自己的步调安静度过。`
+            '暂无可确认的活动记录'
           )}</p>
         </div>`;
 
@@ -3475,16 +3264,14 @@ export function initElsewhereApp(): void {
       <div class="card fp-current-status-card"><div class="row">${avatarTag(
         r,
         'avatar large'
-      )}<div><h3>${esc(a.where)}</h3><p>${esc(r.name)}：${esc(
-        a.doing
-      )}</p></div></div></div>
+      )}<div><h3>最近确认的活动</h3><p>${esc(latestConfirmed?.summary||'暂无可确认的活动记录')}</p></div></div></div>
 
       <div class="fp-date-bar" data-testid="monitor-date-bar">
         <button type="button" class="btn small secondary fp-nav-btn" data-action="monitordate" data-date="${esc(
           prevDateKey
         )}" data-testid="monitor-prev-day" aria-label="前一天">‹ 前一天</button>
         <button type="button" class="fp-date-display" data-action="togglefootprintcal" data-testid="monitor-date-display" title="点击打开足迹日历">
-          <strong>📅 ${esc(bounds.label)}</strong>
+          <strong>${uiIcon('deadline')} ${esc(bounds.label)}</strong>
           <small>${esc(monitorDateKey)} · ${
             isToday ? '今天' : '历史归档'
           } · 点击展开日历 ▾</small>
@@ -3501,12 +3288,12 @@ export function initElsewhereApp(): void {
       <div class="tabs fp-mode-tabs" style="margin:10px 0">
         <button type="button" data-action="monitortab" data-tab="footprints" class="${
           monitorTab === 'footprints' ? 'active' : ''
-        }" data-testid="monitor-tab-footprints">🐾 日常足迹概览 (${
-          archive.items.length
+        }" data-testid="monitor-tab-footprints">${uiIcon('paw')} 日常足迹概览 (${
+          displayItems.length
         })</button>
         <button type="button" data-action="monitortab" data-tab="raw" class="${
           monitorTab === 'raw' ? 'active' : ''
-        }" data-testid="monitor-tab-raw">👁️ 完整原始事件流 (${
+        }" data-testid="monitor-tab-raw">${uiIcon('eye')} 完整原始事件流 (${
           rawEvents.length
         })</button>
       </div>
@@ -3515,9 +3302,9 @@ export function initElsewhereApp(): void {
         monitorTab === 'footprints'
           ? `<div class="fp-overview-toolbar">
               <div class="tiny muted" data-testid="footprint-fact-consistency">
-                真实历史同源：当日 ${facts.summary.chatCount} 条聊天已聚合 · ${
-                  facts.summary.sceneCount
-                } 条见面 · ${facts.summary.focusCount} 次共同专注（与每日 AI 日记共享同一套底层事实）
+                有效记录：当日 ${displayItems.filter(item=>item.category==='interaction').reduce((sum,item)=>sum+item.sourceMessageCount,0)} 条聊天已聚合 · ${
+                  displayItems.filter(item=>item.category==='scene').reduce((sum,item)=>sum+item.sourceMessageCount,0)
+                } 条见面记录 · ${displayItems.filter(item=>item.category==='focus').reduce((sum,item)=>sum+item.sourceEventCount,0)} 条专注记录
               </div>
               <button type="button" class="btn small ghost" data-action="enrichfootprints" data-date="${esc(
                 monitorDateKey
@@ -3525,16 +3312,16 @@ export function initElsewhereApp(): void {
                 footprintAiBusy ? 'disabled' : ''
               }>${
                 footprintAiBusy
-                  ? '⏳ 正在润色…'
+                  ? `${uiIcon('hourglass')} 正在润色…`
                   : archive.aiGeneratedAt
-                  ? '✦ 重新 AI 润色足迹'
-                  : '✦ AI 润色今日足迹细节'
+                  ? `${uiIcon('sparkles')} 重新 AI 润色足迹`
+                  : `${uiIcon('sparkles')} AI 润色今日足迹细节`
               }</button>
             </div>
             ${
-              archive.calmDayNote && archive.items.length > 0
-                ? `<div class="hint fp-calm-banner" data-testid="footprint-calm-banner">🌿 ${esc(
-                    archive.calmDayNote
+              !latestConfirmed && displayItems.length > 0
+                ? `<div class="hint fp-calm-banner" data-testid="footprint-calm-banner">${uiIcon('leaf')} ${esc(
+                    '日程投影不作为已确认行为，暂无可确认的活动记录'
                   )}</div>`
                 : ''
             }
@@ -3615,7 +3402,7 @@ export function initElsewhereApp(): void {
             <span class="focus-status-badge ${
               isCompleted ? 'is-completed' : 'is-early'
             }" data-testid="settlement-status-badge">${
-              isCompleted ? '✓ 已完成' : '⏹ 提前结束'
+              isCompleted ? `${uiIcon('check')} 已完成` : `${uiIcon('square')} 提前结束`
             }</span>
             <span class="focus-settlement-date">${esc(
               rec.dateKey || toLocalDateKey(rec.finishedAt)
@@ -3744,9 +3531,7 @@ export function initElsewhereApp(): void {
               ${moments
                 .map(
                   (m) => `<div class="focus-moment">
-                    <span class="focus-moment-icon">${esc(
-                      m.icon || '⏳'
-                    )}</span>
+                    <span class="focus-moment-icon">${uiIcon(m.icon || 'hourglass')}</span>
                     <div class="focus-moment-body">
                       <div class="focus-moment-head">
                         <b>${esc(m.title)}</b>
@@ -3755,7 +3540,7 @@ export function initElsewhereApp(): void {
                       <p>${esc(m.detail)}</p>
                       ${
                         m.innerThought
-                          ? `<div class="focus-moment-thought">💭 内心：${esc(
+                          ? `<div class="focus-moment-thought">${uiIcon('chat')} 内心：${esc(
                               m.innerThought
                             )}</div>`
                           : ''
@@ -3891,7 +3676,7 @@ export function initElsewhereApp(): void {
                                     )}</div>
                                     ${
                                       p.currentThought
-                                        ? `<div class="focus-participant-thought">💭 内心：${esc(
+                                        ? `<div class="focus-participant-thought">${uiIcon('chat')} 内心：${esc(
                                             p.currentThought
                                           )}</div>`
                                         : ''
@@ -4006,7 +3791,7 @@ export function initElsewhereApp(): void {
                   <button type="button" class="btn small ghost ${
                     draftInvited.length === 0 ? 'active' : ''
                   }" data-action="focusclearroles" data-testid="focus-solo-btn">${
-                    draftInvited.length === 0 ? '✓ 当前独自专注' : '切换为独自专注'
+                    draftInvited.length === 0 ? `${uiIcon('check')} 当前独自专注` : '切换为独自专注'
                   }</button>
                 </div>
                 <div class="focus-invite-role-list" data-testid="focus-invite-role-list">
@@ -4024,7 +3809,7 @@ export function initElsewhereApp(): void {
                           <div class="row between">
                             <b>${esc(roleItem.name)}</b>
                             <span class="focus-role-check">${
-                              isSelected ? '✓ 已邀请' : '点击邀请'
+                              isSelected ? `${uiIcon('check')} 已邀请` : '点击邀请'
                             }</span>
                           </div>
                           <div class="tiny muted">${esc(roleItem.job)} · ${esc(
@@ -4139,7 +3924,7 @@ export function initElsewhereApp(): void {
         r.play
           ? `<button class="btn full secondary" data-action="${
               r.play.paused ? 'intermission' : 'resume'
-            }">↩ ${
+            }">${uiIcon('undo')} ${
               r.play.paused
                 ? '继续幕间讨论'
                 : '继续未落幕的《' + esc(r.play.title) + '》'
@@ -4268,7 +4053,7 @@ export function initElsewhereApp(): void {
         novelDraft
       )}</textarea><button class="btn" ${
         busy||showBackstage ? 'disabled' : ''
-      }>➤</button></form></section>${showBackstage?renderIntermissionPanel(r,p as PlayData):''}</div>`,
+      }>${uiIcon('send')}</button></form></section>${showBackstage?renderIntermissionPanel(r,p as PlayData):''}</div>`,
       false
     );
   }
@@ -4432,7 +4217,7 @@ export function initElsewhereApp(): void {
         r.userAlias || ''
       )}" placeholder="该角色怎么称呼我"></div><div class="fieldrow"><label>只对这个角色生效的个人设定</label><textarea class="field" name="notes">${esc(
         r.notes || ''
-      )}</textarea></div><button class="btn small secondary" type="button" data-action="view" data-view="userprofile">修改全局「我的资料」、头像与头像框</button></div><button class="btn full">保存人设与专属身份</button></form>${nainPreflightCard(r)}${phoneSettingsCards()}</div>`
+      )}</textarea></div><button class="btn small secondary" type="button" data-action="view" data-view="userprofile">修改全局「我的资料」、头像与头像框</button></div><button class="btn full">保存人设与专属身份</button></form>${nainPreflightCard(r)}${Object.values(phoneSettingsCards()).join('')}</div>`
     );
   }
 
@@ -4468,14 +4253,15 @@ export function initElsewhereApp(): void {
   }
 
   function screenTerminal(): string {
-    return shell(`${header('终端','home')}<div class="viewport"><div class="h2">API 与模型</div><div class="terminal-intro">连接模型服务，选择接口与模型。Key 仅保存在本页内存。</div><div class="card terminal-api-card" id="terminal-api-root"></div></div>`);
+    const cards = phoneSettingsCards();
+    return shell(`${header('终端','home')}<div class="viewport terminal-page"><div class="card terminal-api-card" id="terminal-api-root"></div><h2 class="terminal-section-title">02｜外观与主题</h2>${cards.appearance}<h2 class="terminal-section-title">03｜聊天气泡自定义</h2>${cards.bubble}<details class="terminal-other-settings"><summary>04｜其他手机设置</summary>${cards.frames}${cards.logs}${cards.backup}</details></div>`);
   }
   function screenPresets(): string {
     return shell(`${header('预设','home')}<div class="viewport"><div class="h2">预设</div><p class="sub">独立管理小说模式。即时设置自动保存；正文确认后才提交。当前仍只做隔离预览。</p><div class="card" id="fruit-preset-root"></div></div>`);
   }
-  function phoneSettingsCards(): string {
+  function phoneSettingsCards() {
     const r=role()!;
-    return `<div class="card"><h3>外观</h3><div class="theme-swatches">${[
+    return { appearance: `<div class="card"><h3>外观</h3><div class="theme-swatches">${[
         ['blue', '蓝色'],
         ['green', '绿色'],
         ['pink', '粉色'],
@@ -4494,7 +4280,7 @@ export function initElsewhereApp(): void {
         (r.font || data.font) === 'system' ? 'selected' : ''
       }>系统字体</option><option value="serif" ${
         (r.font || data.font) === 'serif' ? 'selected' : ''
-      }>衬线字体</option></select></div><div class="card"><h3>系统 Log</h3><p>查看本地事件、API 请求状态、模式切换和错误；不会记录 API Key。详细 Prompt 仅在本次请求记录一份脱敏摘要。</p><div class="row"><button class="btn small secondary" data-action="exportlogs">导出日志 JSON</button><button class="btn small ghost" data-action="clearlogs">清空日志</button></div><div class="log-list">${
+      }>衬线字体</option></select></div>`, logs: `<div class="card"><h3>系统 Log</h3><p>查看本地事件、API 请求状态、模式切换和错误；不会记录 API Key。详细 Prompt 仅在本次请求记录一份脱敏摘要。</p><div class="row"><button class="btn small secondary" data-action="exportlogs">导出日志 JSON</button><button class="btn small ghost" data-action="clearlogs">清空日志</button></div><div class="log-list">${
         (data.logs || [])
           .slice(-35)
           .reverse()
@@ -4507,13 +4293,13 @@ export function initElsewhereApp(): void {
               )}</pre></details>`
           )
           .join('') || '<p class="sub">暂无日志，开始聊天或切换主题后会出现记录。</p>'
-      }</div></div>
-      ${renderTerminalFrameAssetManagerCard()}
-      <div class="card"><h3>聊天气泡 CSS（当前角色独立）</h3><p>支持仅针对 .message.mine .bubble 和 .message.theirs .bubble 的 CSS；不允许外部资源或全局页面选择器。保存后进入聊天查看效果。</p><form id="bubble-form"><textarea class="field bubble-editor" name="css" spellcheck="false" placeholder=".message.mine .bubble { background: #ffd9eb; border-radius: 22px; }">${esc(
+      }</div></div>`,
+      frames: renderTerminalFrameAssetManagerCard(),
+      bubble: `<div class="card"><h3>聊天气泡 CSS（当前角色独立）</h3><p>支持仅针对 .message.mine .bubble 和 .message.theirs .bubble 的 CSS；不允许外部资源或全局页面选择器。保存后进入聊天查看效果。</p><form id="bubble-form"><label class="btn small ghost bubble-css-import">导入 CSS 文件<input id="bubble-css-file" type="file" accept=".css,text/css" hidden></label><p class="sub">导入只填入编辑器，点击应用后才保存。最多 12KB。</p><textarea class="field bubble-editor" name="css" spellcheck="false" placeholder=".message.mine .bubble { background: #ffd9eb; border-radius: 22px; }">${esc(
         r.bubbleCSS || ''
-      )}</textarea><div class="row"><button class="btn small">应用气泡 CSS</button><button class="btn small secondary" type="button" data-action="resetbubble">恢复默认气泡</button></div></form></div><div class="card"><h3>数据与跨环境迁移</h3><p>各角色互相隔离。支持导出 / 导入本地 JSON 备份（包含全部角色、修订档案、日记分享状态与 IndexedDB 媒体附件，不包含 API Key）。</p><div class="row" style="margin-top:11px;flex-wrap:wrap"><button class="btn small secondary" data-action="export">导出备份</button><label class="btn small ghost" style="cursor:pointer">导入备份<input id="backup-file" type="file" accept=".json" hidden></label></div></div><p class="tiny muted">当前角色：${esc(
+      )}</textarea><div class="row"><button class="btn small">应用气泡 CSS</button><button class="btn small secondary" type="button" data-action="resetbubble">恢复默认气泡</button></div></form></div>`, backup: `<div class="card"><h3>数据与跨环境迁移</h3><p>各角色互相隔离。支持导出 / 导入本地 JSON 备份（包含全部角色、修订档案、日记分享状态与 IndexedDB 媒体附件，不包含 API Key）。</p><div class="row" style="margin-top:11px;flex-wrap:wrap"><button class="btn small secondary" data-action="export">导出备份</button><label class="btn small ghost" style="cursor:pointer">导入备份<input id="backup-file" type="file" accept=".json" hidden></label></div></div><p class="tiny muted">当前角色：${esc(
         r.name
-      )} · v1 Phase 1</p>`;
+      )} · v1 Phase 1</p>` };
   }
 
   function applyTheme(): void {
@@ -4630,11 +4416,11 @@ export function initElsewhereApp(): void {
     const r = role();
     if (!r) return;
     if (view === 'chat') {
-      const inter = document.querySelector<HTMLElement>('.chat-interactions');
-      if (inter) inter.innerHTML = renderChatInteractionsHtml(r);
+      const feedback = document.querySelector<HTMLElement>('[data-chat-feedback]');
+      if(feedback){feedback.hidden=!r.chatTiming?.blocked;feedback.innerHTML=renderChatFeedback(r);}
       if (!editingMessageId) {
         const sc = document.querySelector<HTMLElement>('#scroll-area');
-        if (sc) {
+        if (sc && sc.dataset.roleId===r.id) {
           const wasAtBottom =
             sc.scrollHeight - sc.scrollTop - sc.clientHeight < 60;
           clearMediaURLs();
@@ -4661,6 +4447,7 @@ export function initElsewhereApp(): void {
   }
 
   function render(scroll = true): void {
+    if(view==='home' && homeTasks.isOpen()){homeTasks.refresh();return;}
     if (view === 'chat' && $('#message-input')) {
       chatDraft = ($('#message-input') as HTMLTextAreaElement).value;
     }
@@ -4680,7 +4467,6 @@ export function initElsewhereApp(): void {
 
     ensureFocusData();
     completeFocusIfDue();
-    if (role()) resolveChatInvite(role());
     applyTheme();
     const app = $('#app');
     if (!app) return;
@@ -4753,6 +4539,7 @@ export function initElsewhereApp(): void {
   let leavingPresets=false;
   window.addEventListener('beforeunload',(event)=>{if(fruitManager.hasUnsaved()){event.preventDefault();event.returnValue='';}});
   function go(v: string): void {
+    if(v!=='home')homeTasks.close();
     const preserveStage=(view==='novel'&&v==='intermission')||(view==='intermission'&&v==='novel');
     if(['location','memories','profile'].includes(v))v='home';
     if(view==='presets'&&v!==view){
@@ -4789,7 +4576,6 @@ export function initElsewhereApp(): void {
       if (voiceRecorder?.state === 'recording') stopRecording(true);
     }
     if (v === 'landing') {
-      focusedRole = null;
       chatDraft = '';
     }
     if (!role() && !['roleform', 'userprofile', 'deleterole'].includes(v)) {
@@ -4864,7 +4650,8 @@ export function initElsewhereApp(): void {
   }
 
   async function generateRoleFirstMessage(r: RoleData): Promise<void> {
-    if (busy||getActiveMessages(r.chats).some(m=>m.speaker==='char')) return;
+    if (!token.trim()||r.chatTiming?.pending.length||r.chatTiming?.inFlight){notify('请先连接 API，或等待当前聊天批次完成。');return;}
+    if (busy||activeChatRequests.has(r.id)||getActiveMessages(r.chats).some(m=>m.speaker==='char')) return;
     if (!canUseRealModel(data.settings)) {
       r.firstMessageState = {
         status: 'awaiting_api',
@@ -4876,6 +4663,8 @@ export function initElsewhereApp(): void {
       return;
     }
     busy = true;
+    const controller=new AbortController(),revision=chatRevisionKey(r),scene=r.scene,play=r.play;
+    activeChatRequests.set(r.id,controller);
     r.firstMessageState = {
       status: 'generating',
       updatedAt: now(),
@@ -4883,38 +4672,15 @@ export function initElsewhereApp(): void {
     save();
     render();
     try {
-      const s = data.settings;
-      const url = s.endpoint.trim().replace(/\/+$/, '');
       const prompt = buildFirstMessagePrompt(r, data.user, dt(now()));
-      syslog('api', `生成角色首条消息 · ${r.name} · ${s.model}`, {
-        messages: prompt.length,
-      });
-      const res = await fetch(url + '/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: 'Bearer ' + token } : {}),
-        },
-        body: JSON.stringify({
-          model: s.model,
-          messages: prompt,
-          temperature: +s.temperature,
-          ...completionLimit(s,'first-message'),
-        }),
-      });
-      if (!res.ok) {
-        throw new Error(
-          `接口返回 ${res.status}: ${(await res.text()).slice(0, 120)}`
-        );
-      }
-      const json = await res.json();
-      const rawText = json.choices?.[0]?.message?.content?.trim();
-      if (!rawText) throw new Error('模型返回内容为空');
-      const bubbles = splitChatBubbles(rawText);
+      const rawText=await requestPhoneReply(r,prompt,controller.signal,'first-message');
+      if(!data.roles.includes(r)||chatRevisionKey(r)!==revision||r.scene!==scene||r.play!==play)throw new Error('聊天状态已变化，首条消息未写入');
+      const bubbles = splitChatBubbles(rawText,r);
       if(!bubbles.length)throw new Error('模型未返回有效的手机消息');
+      const chatsBefore=r.chats.length,eventsBefore=r.events.length,firstBefore=r.firstMessageState;
       applyGeneratedFirstMessage(r, bubbles, now());
+      if(!save()){r.chats.length=chatsBefore;r.events.length=eventsBefore;r.firstMessageState=firstBefore;throw new Error('首条消息未能保存，请重试');}
       syslog('role', `${r.name} 已生成首条开场消息`);
-      save();
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       r.firstMessageState = {
@@ -4926,6 +4692,7 @@ export function initElsewhereApp(): void {
       notify('首条消息生成失败：' + errMsg);
       save();
     } finally {
+      if(activeChatRequests.get(r.id)===controller){activeChatRequests.delete(r.id);chatTyping.delete(r.id);}
       busy = false;
       render();
     }
@@ -5288,70 +5055,11 @@ export function initElsewhereApp(): void {
     return item.text || '';
   }
 
-  function demoRichReply(r: RoleData, m: ChatMessage): string {
-    if (m.kind === 'sticker') {
-      return m.sticker === 'dice'
-        ? '这枚骰子看着还挺眼熟的。你想让我再掷一次？'
-        : '哪儿找来的表情？你是想用它代替回答吗？';
-    }
-    if (m.kind === 'packet') {
-      return `虚拟红包？你还真会制造惊喜。上面写着「${
-        m.wish || '收下这份心意'
-      }」，我看到了。`;
-    }
-    if (m.kind === 'photo') {
-      return m.caption
-        ? `照片上的说明我看到了：${m.caption.slice(
-            0,
-            70
-          )}。不过图片内容我现在没法确认。`
-        : '照片收到。不过这版演示还不能看图，你得跟我描述一下。';
-    }
-    if (m.kind === 'voice') {
-      return m.caption
-        ? `语音我收到了，你写的内容是「${m.caption.slice(0, 70)}」。`
-        : '收到语音了。不过我现在没法识别音频，能用文字跟我说一下吗？';
-    }
-    return demoReply(r, 'chat', m.text);
-  }
-
-  async function sendRichMessage(partial: Partial<ChatMessage>): Promise<void> {
-    const r = role();
-    if (!r || busy) return;
-    const item: ChatMessage = {
-      ...partial,
-      id: uid(),
-      at: now(),
-      speaker: 'me',
-      text: mediaNote(partial),
-      status: 'active',
-      quote: quotingMessage || null,
-    };
-    quotingMessage = null;
-    busy = true;
-    chatPanel = '';
-    r.chats.push(item);
-    eMemory(r, item.text, 'me', 'chat', item.at, item.id);
-    syslog('chat', `发送${item.kind}消息`, { source: item.id });
-    save();
-    render();
-    if(awaitingNainOpening(r)&&!canUseRealModel(data.settings)){busy=false;render(false);notify('你的消息已保存；连接 API 后才能生成角色首条回复。');return;}
-    const focused = isFocused(r);
-    try {
-      const reply =
-        data.settings.mode === 'api'
-          ? await apiReply(r, 'chat', item.text)
-          : demoRichReply(r, item);
-      queueChatReply(r, reply, item.id, focused);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      syslog('error', `附件消息回应失败：${msg}`);
-      notify('消息已保存，但回复失败：' + msg);
-    } finally {
-      busy = false;
-      save();
-      render();
-    }
+  async function sendRichMessage(partial:Partial<ChatMessage>,r=role()):Promise<void> {
+    if(!r||!data.roles.includes(r))return;
+    const item:ChatMessage={...partial,id:uid(),at:now(),speaker:'me',text:mediaNote(partial),status:'active',quote:partial.quote===undefined?(role()?.id===r.id?quotingMessage:null):partial.quote};
+    if(!acceptPhoneMessage(r,item))return;
+    if(role()?.id===r.id){chatPanel='';render(false);}
   }
 
   async function sendFileAttachment(
@@ -5359,7 +5067,8 @@ export function initElsewhereApp(): void {
     kind: 'photo' | 'sticker' | 'voice',
     caption = ''
   ): Promise<void> {
-    if (!file) return;
+    const owner=role(),quote=quotingMessage;
+    if (!file||!owner) return;
     const allowed =
       kind === 'voice'
         ? file.type.startsWith('audio/')
@@ -5374,10 +5083,6 @@ export function initElsewhereApp(): void {
       notify('附件不能超过 8MB');
       return;
     }
-    if (busy) {
-      notify('请等当前消息处理结束');
-      return;
-    }
     const id = uid();
     try {
       await mediaPut(id, file);
@@ -5385,8 +5090,8 @@ export function initElsewhereApp(): void {
         kind,
         mediaId: id,
         caption: caption.trim().slice(0, 800),
-        seconds: 0,
-      });
+        seconds: 0,quote,
+      },owner);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       notify('文件保存失败：' + msg);
@@ -5394,10 +5099,7 @@ export function initElsewhereApp(): void {
   }
 
   async function beginRecording(): Promise<void> {
-    if (busy) {
-      notify('当前正在处理消息');
-      return;
-    }
+    const owner=role();if(!owner)return;
     if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
       notify('浏览器不支持直接录音；请使用「选择音频文件」');
       return;
@@ -5454,7 +5156,7 @@ export function initElsewhereApp(): void {
             mediaId: id,
             seconds: elapsed,
             caption: content.trim(),
-          });
+          },owner);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           notify('录音保存失败：' + msg);
@@ -5479,9 +5181,16 @@ export function initElsewhereApp(): void {
     text: string
   ): Promise<void> {
     const r = role();
+    if(kind==='chat'&&r&&text.trim()&&!isArrival(r,text)){
+      const item:ChatMessage={id:uid(),speaker:'me',text:text.trim(),at:now(),kind:'chat',status:'active',quote:quotingMessage||null};
+      if(acceptPhoneMessage(r,item)){
+        chatDraft='';const input=$<HTMLTextAreaElement>('#message-input');if(input)input.value='';render(false);
+      }
+      return;
+    }
     if (!r || busy || !text.trim()) return;
+    if(kind==='chat'){chatDraft='';const input=$<HTMLTextAreaElement>('#message-input');if(input)input.value='';}
     busy = true;
-    const focused = kind === 'chat' && isFocused(r);
     const at = now();
     const obj: ChatMessage = {
       id: uid(),
@@ -5493,7 +5202,7 @@ export function initElsewhereApp(): void {
       quote: quotingMessage || null,
     };
     quotingMessage = null;
-    let useKind: 'chat' | 'scene' | 'play' = kind;
+    const useKind: 'scene' | 'play' = kind==='play'?'play':'scene';
     if (kind === 'play' && r.play?.paused) {
       busy = false;
       go('intermission');
@@ -5505,7 +5214,6 @@ export function initElsewhereApp(): void {
       eMemory(r, obj.text, 'me', 'chat', at, obj.id);
       if (isArrival(r, obj.text)) {
         beginEncounter(r, obj.text);
-        useKind = 'scene';
         view = 'novel';
         const sceneMsgId = uid();
         r.scene!.messages.push({
@@ -5537,9 +5245,7 @@ export function initElsewhereApp(): void {
         data.settings.mode === 'api'
           ? await apiReply(r, useKind, obj.text)
           : demoReply(r, useKind, obj.text);
-      if (useKind === 'chat') {
-        queueChatReply(r, reply, obj.id, focused);
-      } else {
+      {
         const p = useKind === 'play' ? r.play : r.scene;
         if (!p) throw new Error('当前场景已关闭');
         const item: ChatMessage = {
@@ -5575,12 +5281,44 @@ export function initElsewhereApp(): void {
     }
   }
 
+  async function regeneratePhoneReply(r:RoleData,id:string):Promise<void> {
+    if(activeChatRequests.has(r.id)||r.chatTiming?.inFlight||r.chatTiming?.pending.length){notify('请等待当前消息批次回复完成后再重抽。');return;}
+    if(!token.trim()||!canUseRealModel(data.settings)){notify('请先连接 API，原回复已保留。');return;}
+    const plan=buildPhoneRegeneration(data,r,id,now());
+    if(!plan){notify('这条回复的有效来源不完整，原记录已保留。');return;}
+    const controller=new AbortController(),revision=chatRevisionKey(r),scene=r.scene,play=r.play;
+    activeChatRequests.set(r.id,controller);
+    if(view==='chat'&&role()?.id===r.id)patchDynamicRegionsOnTick();
+    try{
+      const text=await requestPhoneReply(r,plan.messages,controller.signal);
+      if(!data.roles.includes(r)||chatRevisionKey(r)!==revision||r.scene!==scene||r.play!==play||!getActiveMessages(r.chats).some(m=>m.id===id))return;
+      const bubbles=splitChatBubbles(text,r);
+      if(!bubbles.length)throw new Error('回复中没有有效的手机消息');
+      const before={chats:structuredClone(r.chats),events:structuredClone(r.events),messageRevisions:structuredClone(r.messageRevisions),pendingReplies:structuredClone(r.pendingReplies),firstMessageState:structuredClone(r.firstMessageState)};
+      const insertAt=Math.max(...plan.targetIds.map(target=>r.chats.findIndex(m=>m.id===target)))+1;
+      if(!prepareRegenerateReply(r,'chat',id,now()).ok)return;
+      const turnId=makeUid('turn'),messages=bubbles.map((bubble,i):ChatMessage=>({id:uid(),speaker:'char',kind:'chat',text:bubble,at:plan.targetAt+i,status:'active',replyTurnId:turnId,replyTo:plan.sourceIds.at(-1),replySourceIds:plan.sourceIds}));
+      r.chats.splice(insertAt,0,...messages);
+      for(const item of messages)eMemory(r,item.text,'char','chat',item.at,item.id);
+      r.firstMessageState={status:'ready',updatedAt:now()};
+      if(!save()){Object.assign(r,before);throw new Error('重抽回复未能保存，原回复已保留');}
+    }catch(error){notify('重抽未完成：'+(error instanceof Error&&error.name!=='AbortError'?error.message:'来源已变化或请求已中断'));}
+    finally{
+      if(activeChatRequests.get(r.id)===controller){activeChatRequests.delete(r.id);chatTyping.delete(r.id);}
+      if(view==='chat'&&role()?.id===r.id)patchDynamicRegionsOnTick();
+    }
+  }
+
   async function regenerateMessageReply(
     scope: RevisionScope,
     charMessageId: string
   ): Promise<void> {
     const r = role();
-    if (!r || busy) return;
+    if (!r) return;
+    if(scope==='chat'){
+      await regeneratePhoneReply(r,charMessageId);return;
+    }
+    if(busy)return;
     const prep = prepareRegenerateReply(r, scope, charMessageId, now());
     if (!prep.ok) {
       notify(prep.reason || '无法重抽该条消息');
@@ -5600,10 +5338,7 @@ export function initElsewhereApp(): void {
         data.settings.mode === 'api'
           ? await apiReply(r, scope, promptText)
           : demoReply(r, scope, promptText);
-      if (scope === 'chat') {
-        // Deliver regenerated reply immediately so the user sees the new version right away
-        queueChatReply(r, reply, replyToId, true);
-      } else {
+      {
         const p = scope === 'play' ? r.play : r.scene;
         if (p) {
           const item: ChatMessage = {
@@ -5821,7 +5556,7 @@ export function initElsewhereApp(): void {
       if(!window.confirm(`仅清理当前奈恩的互动：${r.chats.length} 条聊天、${r.diaries.length} 篇日记、${r.events.length} 条事件，以及见面／戏剧／足迹状态。若有真实记录请取消。角色资料与其他角色保留；先创建恢复副本。本操作仅执行一次，确认继续？`))return;
       const result=resetNainStart(data,r.id,localStorage,now());
       data=result.data;
-      if(result.cleaned){chatDraft='';novelDraft='';intermissionDraft='';focusedRole=null;render(false);notify('奈恩已恢复到等待 API 首条消息的起点，恢复副本已保存。');}
+      if(result.cleaned){chatDraft='';novelDraft='';intermissionDraft='';render(false);notify('奈恩已恢复到等待 API 首条消息的起点，恢复副本已保存。');}
       else notify(result.error||'当前角色已经清理过，未重复执行。');
       return;
     }
@@ -5847,7 +5582,7 @@ export function initElsewhereApp(): void {
     }
     if(act==='senduploadedsticker'){
       const item=uploadedStickers(r?.chats||[]).find(item=>item.mediaId===b.dataset.mediaId);
-      if(item&&!busy)void sendRichMessage({kind:'sticker',mediaId:item.mediaId,caption:item.caption});
+      if(item)void sendRichMessage({kind:'sticker',mediaId:item.mediaId,caption:item.caption});
       return;
     }
     if (act === 'recordtoggle') {
@@ -5872,7 +5607,6 @@ export function initElsewhereApp(): void {
         go('focus');
         return;
       }
-      focusedRole = null;
       data.selected = b.dataset.id || null;
       r = role();
       if (r) {
@@ -5950,16 +5684,9 @@ export function initElsewhereApp(): void {
       go('roleform');
       return;
     }
+    if(act==='retrychatbatch'){if(r){retryChatTiming(r);if(save()){pumpChatSchedules();render(false);}}return;}
     if (act === 'focuschat') {
       if (r) requestChatFocus(r);
-      return;
-    }
-    if (act === 'declinechat') {
-      if (r?.chatInvite?.status === 'offered') {
-        r.chatInvite = null;
-        save();
-        render();
-      }
       return;
     }
     if (act === 'startfocus') {
@@ -6118,6 +5845,7 @@ export function initElsewhereApp(): void {
       return;
     }
     if (act === 'togglerevisions') {
+      if(view==='chat')return;
       showRevisionsDrawer = !showRevisionsDrawer;
       render(false);
       return;
@@ -6181,6 +5909,7 @@ export function initElsewhereApp(): void {
         notify(res.reason || '撤回失败');
         return;
       }
+      if(scope==='chat')revisePhoneSchedule(r);
       if (quotingMessage?.id === b.dataset.id) quotingMessage = null;
       if (editingMessageId === b.dataset.id) editingMessageId = null;
       syslog('revision', `撤回 ${scope} 消息`, {
@@ -6624,28 +6353,16 @@ export function initElsewhereApp(): void {
     }
     if (act === 'resetbubble') {
       if (!r) return;
+      const previous = r.bubbleCSS;
       r.bubbleCSS = '';
       syslog('ui', '清除角色 CSS');
-      save();
+      if (!save()) { r.bubbleCSS = previous; return; }
+      const editor = document.querySelector<HTMLTextAreaElement>('#bubble-form [name="css"]');
+      if (editor) editor.value = '';
       render(false);
       return;
     }
-    if (act === 'tasktoggle' || act === 'taskdelete') {
-      const kind = b.dataset.kind as 'ddl' | 'todo';
-      const list = data.sharedTasks?.[kind];
-      if (!Array.isArray(list)) return;
-      const i = list.findIndex((x) => x.id === b.dataset.id);
-      if (i < 0) return;
-      if (act === 'tasktoggle') list[i].done = !list[i].done;
-      else list.splice(i, 1);
-      syslog(
-        'task',
-        `${kind} ${act === 'tasktoggle' ? '完成状态调整' : '删除'}项目`
-      );
-      save();
-      render(false);
-      return;
-    }
+    if (act?.startsWith('hometask')) { homeTasks.handle(act,b); return; }
     if (act === 'export') {
       exportData();
       return;
@@ -6706,40 +6423,10 @@ export function initElsewhereApp(): void {
         targetMessageId: msgId,
         revisionId: res.revision?.id,
       });
-      if (res.hadPendingReply && scope === 'chat') {
-        const focused = isFocused(r);
-        (data.settings.mode === 'api'
-          ? apiReply(r, 'chat', newText)
-          : Promise.resolve(demoReply(r, 'chat', newText))
-        )
-          .then((reply) => {
-            queueChatReply(r, reply, msgId, focused);
-            render(false);
-          })
-          .catch(() => {});
-      }
+      if(scope==='chat'){revisePhoneSchedule(r);if(r.chats.find(m=>m.id===msgId)?.speaker==='me')enqueueChat(r,msgId,now());}
       save();
       render(false);
       notify('消息已修改，旧版本已归档并从正式上下文移除');
-      return;
-    }
-
-    if (f.dataset.taskAdd) {
-      const kind = f.dataset.taskAdd as 'ddl' | 'todo';
-      const text = String(fd.get('text') || '').trim();
-      if (text && data.sharedTasks?.[kind]) {
-        data.sharedTasks[kind].push({
-          id: uid(),
-          text,
-          due: kind === 'ddl' ? String(fd.get('due') || '') : '',
-          done: false,
-          at: Date.now(),
-        });
-        syslog('task', `新增${kind}项目`);
-        f.reset();
-        save();
-        render(false);
-      }
       return;
     }
 
@@ -6940,7 +6627,6 @@ export function initElsewhereApp(): void {
       data.selected = null;
       editingRoleId = null;
       deleteRoleId = null;
-      focusedRole = null;
       syslog('role', `已删除角色及其存档：${target.name}`);
       save();
       go('landing');
@@ -6951,9 +6637,8 @@ export function initElsewhereApp(): void {
     if (f.id === 'message-form') {
       const inputEl = $('#message-input') as HTMLTextAreaElement | null;
       const t = inputEl?.value || '';
-      chatDraft = '';
-      if (inputEl) inputEl.value = '';
-      submitText('chat', t);
+      if(isComposing||!t.trim())return;
+      void submitText('chat',t);
       return;
     }
 
@@ -7059,9 +6744,15 @@ export function initElsewhereApp(): void {
     if (f.id === 'bubble-form') {
       const r = role();
       if (!r) return;
-      r.bubbleCSS = String(fd.get('css') || '').slice(0, 12000);
+      const css = String(fd.get('css') || '');
+      if (css.length > BUBBLE_CSS_LIMIT || (css.trim() && !safeBubbleCSS(css))) {
+        notify('CSS 未保存：最多 12000 字符，请使用支持的气泡选择器，不含外部资源或定位覆盖。');
+        return;
+      }
+      const previous = r.bubbleCSS;
+      r.bubbleCSS = css;
       syslog('ui', '更新角色聊天气泡 CSS');
-      save();
+      if (!save()) { r.bubbleCSS = previous; return; }
       render(false);
       notify('气泡样式已保存');
       return;
@@ -7084,6 +6775,30 @@ export function initElsewhereApp(): void {
 
   appRoot.addEventListener('change', (e) => {
     const el = e.target as HTMLInputElement;
+    if (el.id === 'bubble-css-file' && el.files?.[0]) {
+      const file = el.files[0];
+      el.value = '';
+      const editor = document.querySelector<HTMLTextAreaElement>('#bubble-form [name="css"]');
+      if (!editor) return;
+      if (!/\.css$/i.test(file.name) || file.size > BUBBLE_CSS_LIMIT) {
+        notify('请选择 12KB 以内的 .css 文件；当前样式未改变。');
+        return;
+      }
+      const readId = ++bubbleCssRead;
+      const owner = role()?.id, before = editor.value;
+      void file.text().then(css => {
+        if (readId !== bubbleCssRead || !editor.isConnected || role()?.id !== owner || editor.value !== before) return;
+        if (!css.trim() || !safeBubbleCSS(css)) {
+          notify('未导入：未找到支持的气泡规则，或包含外部资源／不安全 CSS。当前样式未改变。');
+          return;
+        }
+        editor.value = css;
+        editor.focus({preventScroll:true});
+        notify('CSS 已载入编辑器，点击「应用气泡 CSS」才会保存。');
+      }).catch(() => notify('CSS 文件读取失败；当前样式未改变。'));
+      return;
+    }
+
     if (el.id === 'focus-minutes-slider') {
       ensureFocusData();
       const taskInputEl = document.getElementById('focus-task-input') as HTMLInputElement | null;
@@ -7334,6 +7049,7 @@ export function initElsewhereApp(): void {
   });
 
   for (const roleItem of data.roles) {
+    recoverChatTiming(roleItem);
     syncRoleDiaryTasks(roleItem, data.settings, now(), { resetGenerating: true });
   }
   save();
@@ -7341,14 +7057,15 @@ export function initElsewhereApp(): void {
     void processDiaryQueue();
   }
 
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden){pumpChatSchedules();if(view==='home')homeTasks.refresh();}});
+  window.addEventListener('pageshow',()=>{pumpChatSchedules();if(view==='home')homeTasks.refresh();});
+
   if (typeof setInterval === 'function') {
     setInterval(() => {
-      const r = role();
-      let update = syncFocusMoments();
-      if (r) {
-        update = deliverPending(r) || update;
-        update = resolveChatInvite(r) || update;
-      }
+      if(view==='home')homeTasks.refresh();
+      pumpChatSchedules();
+      let chatDelivered=false;for(const item of data.roles){if(deliverPending(item)&&item.id===data.selected)chatDelivered=true;}
+      let update = syncFocusMoments() || chatDelivered;
       update = completeFocusIfDue() || update;
 
       // Midnight (00:00) local calendar date rollover detection

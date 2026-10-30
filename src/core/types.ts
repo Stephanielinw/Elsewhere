@@ -23,6 +23,7 @@ export interface ChatMessage {
   quote?: MessageQuote | null;
   replyTo?: string;
   replyTurnId?: string;
+  replySourceIds?: string[];
   proactive?: boolean;
   // Media & rich message fields
   sticker?: string;
@@ -146,11 +147,37 @@ export interface PlayData {
   revisions?: PlayRevision[];
 }
 
+export interface ChatBatch {
+  id: string;
+  roleId: string;
+  generation: number;
+  sources: ChatMessage[];
+  quietUntil: number;
+  replyDueAt: number;
+  revisionKey: string;
+  sceneId: string | null;
+  playId: string | null;
+}
+
+export interface ChatTimingState {
+  version: 1;
+  focused: boolean;
+  generation: number;
+  pending: string[];
+  quietUntil: number;
+  replyDueAt?: number;
+  inFlight?: ChatBatch;
+  blocked?: 'api' | 'failed';
+  error?: string;
+}
+
 export interface PendingReplyJob {
   id: string;
   replyTo: string;
   replyTurnId?: string;
   bubbles: string[];
+  sources?: ChatMessage[];
+  chatBatchId?: string;
   dueAt: number;
 }
 
@@ -318,6 +345,7 @@ export interface RoleData {
   diaryDay: string;
   lastInvitation: number;
   pendingReplies?: PendingReplyJob[];
+  chatTiming?: ChatTimingState;
   chatInvite?: ChatInviteState | null;
   messageRevisions?: MessageRevisionRecord[];
   firstMessageState?: FirstMessageState;
@@ -427,6 +455,7 @@ export interface FocusState {
 }
 
 export interface SharedTaskItem {
+  completedAt?: number;
   id: string;
   text: string;
   due?: string;

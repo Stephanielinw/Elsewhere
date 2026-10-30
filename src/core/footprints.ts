@@ -1,3 +1,4 @@
+import {uiIcon} from '../uiIcons';
 import type {
   ChatMessage,
   DailyFootprintItem,
@@ -254,7 +255,7 @@ export function renderSafeFootprintArtifact(artifact: FootprintArtifact): string
             .map((it) => {
               const checkMark =
                 typeof it.checked === 'boolean'
-                  ? `<span class="fp-item-check">${it.checked ? '☑' : '☐'}</span>`
+                  ? `<span class="fp-item-check">${uiIcon(it.checked?'checked':'square')}</span>`
                   : '';
               const qtyPart = it.qty
                 ? `<span class="fp-item-qty">${escHtml(it.qty)}</span>`

@@ -1,14 +1,15 @@
+import {plainUiLabel} from './uiIcons';
 import type { FruitPreset, FruitProfile, FruitPrompt } from './core/fruit/types';
 
 export const fruitSections = [
-  {id:'story',icon:'✦',title:'剧情控制',description:'把握推进节奏，留下下一次相遇的余韵。'},
-  {id:'style',icon:'✎',title:'正文风格',description:'选择叙述的质感，让故事更像你想读的那一本。'},
-  {id:'output',icon:'◫',title:'非正文输出',description:'正文之外的信息，按需要轻轻打开。'},
-  {id:'character',icon:'♧',title:'角色表现',description:'保留人物的性格、关系与自然反应。'},
-  {id:'language',icon:'Aa',title:'语言与字数',description:'从短暂互动到长篇叙事，自由决定这一页的长度。'},
-  {id:'memory',icon:'◎',title:'记忆与约束',description:'让身份、场景与已有经历保持连续。'},
-  {id:'boundary',icon:'◇',title:'内容选项与兼容信息',description:'内容开关由你选择；不兼容格式单独提示。'},
-  {id:'advanced',icon:'⌘',title:'高级条目',description:'模型专用、结构控制及尚未确认语义的配置。'},
+  {id:'story',icon:'sparkles',title:'剧情控制',description:'把握推进节奏，留下下一次相遇的余韵。'},
+  {id:'style',icon:'edit',title:'正文风格',description:'选择叙述的质感，让故事更像你想读的那一本。'},
+  {id:'output',icon:'file',title:'非正文输出',description:'正文之外的信息，按需要轻轻打开。'},
+  {id:'character',icon:'profile',title:'角色表现',description:'保留人物的性格、关系与自然反应。'},
+  {id:'language',icon:'language',title:'语言与字数',description:'从短暂互动到长篇叙事，自由决定这一页的长度。'},
+  {id:'memory',icon:'memory',title:'记忆与约束',description:'让身份、场景与已有经历保持连续。'},
+  {id:'boundary',icon:'shield',title:'内容选项与兼容信息',description:'内容开关由你选择；不兼容格式单独提示。'},
+  {id:'advanced',icon:'settings',title:'高级条目',description:'模型专用、结构控制及尚未确认语义的配置。'},
 ] as const;
 export type FruitSectionId = typeof fruitSections[number]['id'];
 const labels: Record<string,[string,string]> = {
@@ -30,8 +31,8 @@ const labels: Record<string,[string,string]> = {
   '角色表':['人物辅助信息','整理本轮人物信息，供辅助查看。'],
 };
 export function cleanFruitTitle(name:string):string {
-  return name.replace(/[@#][^\s｜|]+/gu,'').split(/[｜|]/u)[0]
-    .replace(/^[\s\p{Extended_Pictographic}\uFE0F\u200D━─—=·📌]+/u,'').replace(/[━─—=]+$/u,'').trim();
+  return plainUiLabel(name.replace(/[@#][^\s｜|]+/gu,'').split(/[｜|]/u)[0]
+    .replace(/^[\s\p{Extended_Pictographic}\uFE0F\u200D━─—=·📌]+/u,'').replace(/[━─—=]+$/u,'').trim());
 }
 export function describeFruitPrompt(prompt:FruitPrompt) {
   const clean=cleanFruitTitle(prompt.name);

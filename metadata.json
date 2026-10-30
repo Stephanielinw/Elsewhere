@@ -1,0 +1,6 @@
+{
+  "name": "Elsewhere · 一角色一手机",
+  "description": "以角色为中心、具有真实手机操作体验的 AI 角色扮演与生活模拟应用。",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

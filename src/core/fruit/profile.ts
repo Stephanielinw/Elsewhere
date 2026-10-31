@@ -1,9 +1,10 @@
 import {fruitSafetyReason,validateProfile,validatePromptEdit} from './preset';
+import {isNativePreset,projectNativeProfile} from './nativePreset';
 import type {FruitCustomPrompt,FruitMode,FruitPreset,FruitProfile,FruitPrompt,FruitPromptEdit} from './types';
 export const isPromptHeading=(p:FruitPrompt)=>/^(?:━|——|==|---)/u.test(p.name.trim())||/display-section/.test(p.identifier);
 export const isPromptPinned=(p:FruitPrompt)=>p.marker||isPromptHeading(p)||p.position!==0||/必开.*(?:别动|固定位置)|勿动/.test(p.name);
 export function applyFruitProfile(preset:FruitPreset,input:FruitProfile):FruitPreset {
-  const profile=validateProfile(input),byId=new Map(preset.prompts.map(p=>[p.identifier,p]));
+  const profile=isNativePreset(preset)?projectNativeProfile(preset,input):validateProfile(input),byId=new Map(preset.prompts.map(p=>[p.identifier,p]));
   for(const [id,patch]of Object.entries(profile.edits||{})){
     const original=byId.get(id);if(!original)throw new Error('编辑引用的原条目已不存在，请更新配置');
     if(original.marker)throw new Error('Marker 不支持正文或注入编辑');if(original.blockedReason)throw new Error('受保护条目不可编辑或启用');

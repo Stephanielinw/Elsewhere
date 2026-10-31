@@ -1,6 +1,8 @@
 import {createFruitState,object,parseFruitPreset,validateProfile,isFruitDocument} from './preset';
-import {decodeFruitDocument,openFruitDatabase} from './storage';
+import {decodeFruitDocument,openFruitDatabase,openFruitDatabaseReadonly} from './storage';
 import {applyFruitProfile} from './profile';
+import {nativePreset,isNativePreset} from './nativePreset';
+import type {ConversationMode} from './nativePreset';
 import type {FruitMode,FruitPreset,FruitProfile,FruitState} from './types';
 export interface PresetEntry {id:string;kind:'native'|'fruit'|'st';preset:FruitPreset;profiles:Record<FruitMode,FruitProfile>;enabled:boolean}
 export interface PresetLibrary {schema:2;revision:number;selectedId:string;defaults:Record<FruitMode,string>;entries:PresetEntry[]}
@@ -24,7 +26,7 @@ export async function decodePresetLibrary(value:unknown,native:FruitPreset):Prom
     if(!object(item)||typeof item.id!=='string'||ids.has(item.id)||!['native','fruit','st'].includes(String(item.kind))||typeof item.enabled!=='boolean'||!object(item.profiles))throw new Error('预设库条目无效，原件保留');ids.add(item.id);
     if(!(item.raw instanceof Uint8Array)||typeof item.fileName!=='string'||typeof item.importedAt!=='number')throw new Error('预设原件记录损坏');
     const preset=item.kind==='native'?native:await parseFruitPreset(item.raw,item.fileName,item.importedAt),profiles={meeting:validateProfile(item.profiles.meeting),theatre:validateProfile(item.profiles.theatre)};
-    for(const p of Object.values(profiles))applyFruitProfile(preset,p);
+    for(const mode of ['meeting','theatre']as const)applyFruitProfile(item.kind==='native'&&isNativePreset(native)?nativePreset(mode):preset,profiles[mode]);
     const kind=item.kind==='native'?'native':item.kind==='fruit'?'fruit':'st';entries.push({id:item.id,kind,preset,profiles,enabled:item.enabled});
   }
   if(entries.filter(e=>e.kind==='native').length!==1||!entries.some(e=>e.id==='native'&&e.kind==='native')||!ids.has(value.selectedId)||typeof value.defaults.meeting!=='string'||typeof value.defaults.theatre!=='string'||!ids.has(value.defaults.meeting)||!ids.has(value.defaults.theatre))throw new Error('预设选择或默认值无效，原记录保留');
@@ -36,11 +38,11 @@ function serialize(library:PresetLibrary){
 }
 export class PresetLibraryRepository {
   constructor(private native:FruitPreset){}
-  async load():Promise<PresetLibrary>{
-    const db=await openFruitDatabase();let records:{library:unknown;legacy:unknown};
-    try{records=await new Promise((resolve,reject)=>{const tx=db.transaction([STORE,'documents'],'readonly'),a=tx.objectStore(STORE).get(KEY),b=tx.objectStore('documents').get('current');tx.oncomplete=()=>resolve({library:a.result,legacy:b.result});tx.onabort=()=>reject(new Error('读取预设库失败，原数据保留'));});}finally{db.close();}
+  async load(persistMigration=true):Promise<PresetLibrary>{
+    const db=persistMigration?await openFruitDatabase():await openFruitDatabaseReadonly();let records:{library:unknown;legacy:unknown}={library:undefined,legacy:undefined};
+    if(db)try{records=await new Promise((resolve,reject)=>{const stores=db.objectStoreNames.contains(STORE)?[STORE,'documents']:['documents'],tx=db.transaction(stores,'readonly'),a=stores.includes(STORE)?tx.objectStore(STORE).get(KEY):null,b=tx.objectStore('documents').get('current');tx.oncomplete=()=>resolve({library:a?.result,legacy:b.result});tx.onabort=()=>reject(new Error('读取预设库失败，原数据保留'));});}finally{db.close();}
     if(records.library!==undefined)return decodePresetLibrary(records.library,this.native);
-    const legacy=await decodeFruitDocument(records.legacy),migrated=migrateLegacyLibrary(legacy,this.native);return this.save(migrated,0,records.legacy);
+    const legacy=await decodeFruitDocument(records.legacy),migrated=migrateLegacyLibrary(legacy,this.native);return persistMigration?this.save(migrated,0,records.legacy):migrated;
   }
   async save(candidate:PresetLibrary,expectedRevision:number,legacyBackup?:unknown):Promise<PresetLibrary>{
     const next={...candidate,revision:expectedRevision+1},document=serialize(next);await decodePresetLibrary(document,this.native);
@@ -49,4 +51,11 @@ export class PresetLibraryRepository {
       get.onsuccess=()=>{const old:unknown=get.result;const revision=old===undefined?0:object(old)&&typeof old.revision==='number'?old.revision:-1;if(revision!==expectedRevision){reason='其他标签页已修改预设库，请重新读取后再保存，避免覆盖';tx.abort();return;}try{store.put(document,KEY);if(legacyBackup!==undefined)tx.objectStore('documents').put(legacyBackup,'terminal-ux-migration-backup');}catch{tx.abort();}};
       tx.oncomplete=()=>resolve();tx.onabort=()=>reject(new Error(reason));tx.onerror=()=>reject(new Error(reason));});return next;}finally{db.close();}
   }
+}
+/** Request reads must never initialize, migrate or save a user's configuration. */
+export async function loadNativeRequestProfile(mode:ConversationMode){
+ const library=await new PresetLibraryRepository(nativePreset('meeting')).load(false);
+ const slot=mode==='theatre'||mode==='intermission'?'theatre':'meeting',entry=library.entries.find(e=>e.id==='native'&&e.kind==='native');
+ if(!entry)throw new Error('原生预设不存在，原配置保留，请在预设 App 检查');
+ return {profile:structuredClone(entry.profiles[slot]),revision:library.revision,requestedPresetId:mode==='meeting'||mode==='theatre'?library.defaults[slot]:'native',actualPresetId:'native' as const};
 }

@@ -15,8 +15,8 @@
 .home-desktop{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;padding:1px 23px 0;color:white;scrollbar-width:none}.home-desktop::-webkit-scrollbar{display:none}
 .homescreen-clock{text-align:center;margin:24px 0 23px;text-shadow:0 2px 14px #271a4226}.homescreen-date{font-size:15px;letter-spacing:1px;font-weight:550}.homescreen-time{font-size:76px;font-weight:230;letter-spacing:-5px;line-height:1.17;font-variant-numeric:tabular-nums}
 .home-widget{border:1px solid #ffffff6a;border-radius:25px;padding:14px 15px 13px;width:100%;text-align:left;background:#ffffff48;box-shadow:0 12px 38px #29334c26;color:white;backdrop-filter:blur(24px) saturate(140%);-webkit-backdrop-filter:blur(24px) saturate(140%)}.home-widget-top,.widget-person,.widget-bottom{display:flex;align-items:center;gap:10px}.widget-person{flex:1}.widget-avatar{height:43px;width:43px;display:grid;place-items:center;border-radius:50%;font-size:25px;background:#ffffff64}.widget-person b{font-size:16px;display:block;font-weight:650}.widget-person small{font-size:11px;display:block;color:#fffe;margin-top:4px}.widget-arrow{font-size:28px;color:#ffff}.widget-divider{height:1px;background:#ffffff43;margin:10px 0}.widget-bottom{justify-content:space-between;align-items:flex-start}.widget-caption{font-size:11px;line-height:1.5;opacity:.95;max-width:195px}.widget-action{font-size:10px;font-weight:650;white-space:nowrap}
-.home-apps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));justify-items:stretch;gap:22px 4px;margin:29px 0 8px}.app-icon{background:none;color:inherit;border:0;display:flex;align-items:center;flex-direction:column;gap:7px;min-width:0;padding:0 1px;font-size:11px;font-weight:560;text-shadow:0 1px 4px #3b2d5440}.tile{width:60px;height:60px;border-radius:15px;display:grid;place-items:center;background:linear-gradient(145deg,#8c8cb7,#554f88);color:#fff;box-shadow:inset 0 1px 1px #ffffff70,0 6px 15px #443e7145;position:relative;overflow:hidden}.tile:after{content:"";position:absolute;inset:0;border-radius:inherit;background:linear-gradient(156deg,#ffffff49,transparent 48%);pointer-events:none}.app-icon:active .tile{transform:scale(.94)}.app-symbol{height:31px;width:31px;filter:drop-shadow(0 1px 1px #0001)}.tile-chat{background:linear-gradient(148deg,#67dca7,#21a777)}.tile-diary{background:linear-gradient(145deg,#f2c36b,#d98950)}.tile-focus{background:linear-gradient(135deg,#f58e87,#dc5b66)}.tile-monitor{background:linear-gradient(145deg,#9d9da7,#5c627c)}.tile-location{background:linear-gradient(145deg,#76c6f1,#3a88d7)}.tile-drama{background:linear-gradient(145deg,#c9a5eb,#9270c0)}.tile-memories{background:linear-gradient(145deg,#76c9cf,#3c9d9e)}.tile-terminal{background:linear-gradient(145deg,#9295a5,#525967)}.tile-profile{background:linear-gradient(145deg,#eaa8b5,#c47f92)}
-.home-ongoing{width:100%;border:1px solid #ffffff67;color:white;background:#ffffff35;backdrop-filter:blur(18px);border-radius:15px;text-align:left;padding:10px 14px;margin-top:8px;font-size:12px}.home-ongoing span{float:right}.page-dots{display:flex;gap:5px;justify-content:center;align-items:center;margin:auto 0 10px;padding-top:17px}.page-dots span{width:5px;height:5px;border-radius:100%;background:#fff5}.page-dots span:first-child{background:#fff}
+.home-apps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));justify-items:stretch;gap:22px 4px;margin:29px 0 8px}.app-icon{background:none;color:inherit;border:0;display:flex;align-items:center;flex-direction:column;gap:7px;min-width:0;padding:0 1px;font-size:11px;font-weight:560;text-shadow:0 1px 4px #3b2d5440}.tile{width:60px;height:60px;border-radius:15px;display:grid;place-items:center;background:transparent;color:var(--accent);box-shadow:inset 0 1px 1px #ffffff70,0 6px 15px #443e7145;position:relative;overflow:hidden}.tile:after{content:"";position:absolute;inset:0;border-radius:inherit;background:linear-gradient(156deg,#ffffff49,transparent 48%);pointer-events:none}.app-icon:active .tile{transform:scale(.94)}.app-symbol{height:31px;width:31px;filter:drop-shadow(0 1px 1px #0001)}
+.home-ongoing{width:100%;border:1px solid #ffffff67;color:white;background:#ffffff35;backdrop-filter:blur(18px);border-radius:15px;text-align:left;padding:10px 14px;margin-top:8px;font-size:12px}.home-ongoing span{float:right}
 .dock{margin:0 17px 1px;padding:10px 6px 7px;background:#f8f8ff43;border:1px solid #ffffff5a;border-radius:28px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));backdrop-filter:blur(25px) saturate(160%);-webkit-backdrop-filter:blur(25px) saturate(160%);flex-shrink:0}.dock .app-icon{gap:0}.dock .app-name{display:none}.dock .tile{height:56px;width:56px;border-radius:16px}
 /* Character switcher — like selecting a phone profile, not a dashboard. */
 .landing{overflow:auto;flex:1;padding:30px 22px 10px;display:flex;flex-direction:column;scrollbar-width:none}.landing-heading{margin-top:22px}.landing-mark{height:57px;width:57px;display:grid;place-items:center;border-radius:18px;border:1px solid #ffffff63;background:#ffffff36;backdrop-filter:blur(10px);font-size:32px;font-family:Georgia,serif;font-style:italic}.logo{font-size:10px;letter-spacing:2.3px;margin-top:17px;color:#fff9}.landing .brand{font-size:35px;font-weight:730;letter-spacing:-1px;margin:5px 0 7px}.landing .lead{font-size:13px;color:#fffef;margin:0}.login-list{margin-top:28px;border-radius:24px;overflow:hidden;background:#ffffffed;box-shadow:0 20px 50px #443c6050;color:#2f2b38}.login-title{font-size:15px;font-weight:750;padding:20px 17px 9px;display:flex;justify-content:space-between}.login-title span{font-size:11px;font-weight:450;color:#918b99}.role{width:calc(100% - 25px);margin:4px 12px 0;padding:11px 6px;border:0;border-bottom:1px solid #eae6ec;background:transparent;display:flex;gap:12px;align-items:center;text-align:left;color:#2f2b38}.role:last-child{border-bottom:none;margin-bottom:14px}.role .who{font-weight:660;font-size:15px}.role .about{color:#99929d;margin-top:4px;font-size:11px}.login-role-info{min-width:0;flex:1}.role .right{color:#b3acb9;font-size:25px}.avatar{height:47px;width:47px;display:grid;place-items:center;background:linear-gradient(140deg,#e6d9ec,#b9a4cd);border-radius:50%;font-size:24px;flex-shrink:0}.avatar.sm{width:34px;height:34px;font-size:19px}.avatar.large{width:64px;height:64px;font-size:33px}.new-role .avatar{color:#7e649d;background:#f1e9f4;font-size:26px}.footer-note{text-align:center;color:#fff9;font-size:11px;line-height:1.6;margin:auto 0 12px;padding-top:20px}
@@ -62,7 +62,7 @@ html,body,#app{width:100%;height:100%;min-height:100dvh}
 .home-apps{margin:26px 0 16px;gap:18px 8px;max-width:600px;align-self:center;width:100%}
 .app-icon{text-shadow:none;color:var(--ink)}.tile{box-shadow:inset 0 1px 0 #ffffff75,0 6px 14px #00000014;border-radius:20px}
 .home-ongoing{color:var(--ink);background:var(--surface);border-color:var(--surface2)}
-.page-dots{margin:12px 0}.page-dots span{background:var(--muted);opacity:.4}.page-dots span:first-child{background:var(--accent);opacity:1}
+
 .dock{width:min(480px,calc(100% - 34px));margin:4px auto 5px;background:color-mix(in srgb,var(--surface) 83%,transparent);border-color:color-mix(in srgb,var(--accent) 16%,transparent);box-shadow:0 3px 16px #0000000b}
 .landing{width:min(650px,100%);margin:auto;flex:auto;padding:30px 22px 25px}.landing-heading{color:var(--ink)}.landing-mark{color:var(--accent);background:var(--surface);border-color:var(--surface2)}.landing .lead{color:var(--muted)}.logo{color:var(--muted)}.login-list{box-shadow:0 14px 42px #00000010;background:var(--surface);color:var(--ink)}.login-title,.role{color:var(--ink)}.role{border-color:var(--surface2)}.footer-note{color:var(--muted)}
 .chat-view{background:var(--bg)}.chat-header,.chat-interactions,.compose,.chat-shortcuts{background:var(--surface);border-color:var(--surface2)}.chat-header{height:75px}.chat-conversation{width:min(950px,100%);align-self:center;padding:16px clamp(13px,3vw,40px)}.chat-shortcuts{justify-content:center;gap:30px}.chat-shortcuts button{color:var(--accent);padding:0 10px}.chat-shortcuts svg{height:20px;width:20px}.chat-privacy{background:var(--surface2);color:var(--muted)}
@@ -120,12 +120,12 @@ html,body,#app{width:100%;height:100%;min-height:100dvh}
 .home-widget,.mini-widget,.home-ongoing,.login-list,.card,.entry,.focus-card{background:var(--glass-fill)!important;border:1px solid var(--glass-stroke)!important;box-shadow:var(--glass-darkshadow);backdrop-filter:blur(28px) saturate(185%);-webkit-backdrop-filter:blur(28px) saturate(185%)}
 .home-widget{color:var(--ink);border-radius:29px}.home-widget .widget-person small{color:var(--muted)}.widget-divider{background:#ffffffa1}.widget-caption{color:var(--ink)}
 .mini-widget{border-radius:24px}.mini-add input,.mini-list{background:rgba(255,255,255,.28)}
-/* Five icons on the desktop; chat, focus, drama and terminal appear ONLY in Dock. */
+/* Shared launcher sizing; common apps stay in Dock. */
 .home-apps{grid-template-columns:repeat(5,minmax(0,1fr));gap:14px 4px;width:100%;max-width:575px;margin:25px auto 12px}
 .home-apps .app-icon{font-size:11px;font-weight:580;text-shadow:none;color:var(--ink)}
 .tile,.dock .tile{width:min(56px,14vw);height:min(56px,14vw);border-radius:17px;box-shadow:inset 0 1.5px 0 #ffffffcf,0 9px 19px #403f6740;border:1px solid #ffffffa8;backdrop-filter:blur(22px) saturate(210%);-webkit-backdrop-filter:blur(22px) saturate(210%)}
 .tile:after{background:linear-gradient(155deg,#ffffffa1 0%,#ffffff20 49%,transparent 76%)}
-.tile-diary{background:linear-gradient(140deg,#fff8d6b0,#f8a361b5)}.tile-monitor{background:linear-gradient(145deg,#d8dbea99,#757b9699)}.tile-location{background:linear-gradient(140deg,#c9f3ffca,#509eedd1)}.tile-memories{background:linear-gradient(135deg,#b2e9e3bc,#5bb5c0d9)}.tile-profile{background:linear-gradient(145deg,#ffe4ecb4,#e68db5c4)}.tile-chat{background:linear-gradient(135deg,#c2ffe5b5,#34be98cd)}.tile-focus{background:linear-gradient(135deg,#ffdfdabd,#ed7c87d0)}.tile-drama{background:linear-gradient(135deg,#eadeffd0,#af87e3c4)}.tile-terminal{background:linear-gradient(135deg,#e5eaf9c9,#69778eae)}
+
 .dock{background:rgba(255,255,255,.37)!important;border:1px solid rgba(255,255,255,.8)!important;box-shadow:0 18px 35px rgba(66,60,92,.16),inset 0 1px 1px #fff!important;border-radius:29px;backdrop-filter:blur(30px) saturate(190%);-webkit-backdrop-filter:blur(30px) saturate(190%)}
 .dock .tile{width:min(55px,13vw);height:min(55px,13vw)}
 .app-view .top,.chat-view .chat-header,.intermission-view .top{background:rgba(255,255,255,.31)!important;border-bottom:1px solid rgba(255,255,255,.62)!important;backdrop-filter:blur(30px) saturate(185%);-webkit-backdrop-filter:blur(30px) saturate(185%)}
@@ -2017,7 +2017,7 @@ html,body,#app{width:100%;height:100%;min-height:100dvh}
 
 /* APP-UX: compact native launcher, with presets separated from API connections. */
 .home-apps{grid-template-columns:repeat(3,minmax(0,1fr));max-width:340px;gap:20px 15px}
-.tile-presets{background:linear-gradient(145deg,#bca5de,#8a73b0)}
+
 
 #fruit-preset-root>.terminal-library-status{position:sticky;top:0;z-index:6;padding:8px 12px;border:1px solid #ffffffae;border-radius:12px;background:color-mix(in srgb,var(--surface) 92%,transparent);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
 #fruit-preset-root>.terminal-library-status[data-save-state="failed"]{color:#964f4b;border-color:#c47f7a66}
@@ -2052,7 +2052,7 @@ html,body,#app{width:100%;height:100%;min-height:100dvh}
 .terminal-section-title{font-size:16px;margin:22px 0 12px;line-height:1.6}
 .terminal-page .card,.terminal-page form,.terminal-page .field{min-width:0;max-width:100%}
 .terminal-page .row{flex-wrap:wrap}
-.terminal-other-settings>summary{padding:14px 0;font-size:15px;font-weight:650;cursor:pointer}
+
 .terminal-page .log-row summary{overflow-wrap:anywhere}
 .bubble-css-import{display:inline-block;cursor:pointer;margin:12px 0 6px}
 #bubble-form .bubble-editor{margin:10px 0}
@@ -2151,7 +2151,7 @@ html,body,#app{width:100%;height:100%;min-height:100dvh}
 .terminal-settings p.sub{margin:10px 0;font-size:12px;line-height:1.65}
 .terminal-settings [hidden]{display:none!important}
 .terminal-settings .terminal-label:first-child{margin-top:0}
-.terminal-other-settings>summary{padding:14px 0}
+
 .terminal-wallpaper-line{display:flex;gap:18px;align-items:center;margin:20px 0}
 .terminal-wallpaper-line>div:last-child{display:flex;flex:1;min-width:0;gap:10px;flex-wrap:wrap}
 .terminal-wallpaper-line p{flex-basis:100%}
@@ -2179,3 +2179,27 @@ html,body,#app{width:100%;height:100%;min-height:100dvh}
 .wallpaper.has-custom-wallpaper:after{display:none}
 .wallpaper-image{display:block;width:100%;height:100%;object-fit:cover}
 @media(max-width:600px){.terminal-bubble-columns{grid-template-columns:1fr;gap:12px}.terminal-settings{padding:16px}.terminal-settings .field{min-width:0;max-width:100%}.terminal-wallpaper-line{gap:12px}.terminal-wallpaper-preview{width:90px;height:135px}.terminal-wallpaper-line .btn{width:100%}.terminal-font-preview{font-size:18px}}
+
+/* Both page indicators and Dock are siblings of the scrolling pages. */
+.home-launcher{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.home-topbar-area{flex:none;width:min(780px,100%);margin:0 auto;padding:0 26px 10px}
+.home-pages{display:flex;flex:1;min-height:0;overflow-x:auto;overflow-y:hidden;direction:ltr;scroll-snap-type:x mandatory;overscroll-behavior-x:contain;scrollbar-width:none}
+.home-pages::-webkit-scrollbar{display:none}
+.home-page{flex:0 0 100%;min-width:0;min-height:0;display:flex;flex-direction:column;direction:ltr;scroll-snap-align:start;scroll-snap-stop:always}
+.home-page>.home-desktop{padding-top:0;padding-bottom:16px;overscroll-behavior-y:contain}
+.home-page-apps .home-apps{margin-top:26px;align-items:start}
+.page-dots{flex:none;display:flex;gap:0;align-items:center;justify-content:center;margin:0;padding:4px 0}
+.page-dots button{display:grid;place-items:center;width:24px;height:24px;border:0;padding:0;background:transparent;border-radius:12px}
+.page-dots span{width:5px;height:5px;border-radius:50%;background:var(--muted);opacity:.35}
+.page-dots button:first-child span{transform:translateX(5px)}
+.page-dots button:last-child span{transform:translateX(-5px)}
+.page-dots .is-active span{background:var(--accent);opacity:1}
+.home-pages{cursor:grab}
+.home-pages.is-dragging{scroll-snap-type:none}
+.home-pages.is-dragging,.home-pages.is-dragging *{cursor:grabbing!important;user-select:none;-webkit-user-select:none}
+/* Glass belongs behind the SVG, whose foreground follows the current theme. */
+.tile,.dock .tile{background:transparent;color:var(--accent);border-color:color-mix(in srgb,var(--accent) 20%,#ffffff80);box-shadow:inset 0 1px 0 #ffffff90,0 5px 14px #30243f18;-webkit-backdrop-filter:none;backdrop-filter:none}
+.tile:before{content:"";position:absolute;inset:0;border-radius:inherit;background:color-mix(in srgb,var(--surface) 24%,transparent);-webkit-backdrop-filter:blur(18px) saturate(125%);backdrop-filter:blur(18px) saturate(125%)}
+.tile .app-symbol{position:relative;z-index:1;color:var(--accent);filter:none}
+@media(max-width:620px){.home-topbar-area{padding-left:18px;padding-right:18px}}
+@media(prefers-reduced-transparency:reduce){.tile:before{background:var(--surface);-webkit-backdrop-filter:none;backdrop-filter:none}}

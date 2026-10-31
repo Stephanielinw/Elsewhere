@@ -3,6 +3,17 @@ import type { FruitState } from './types';
 
 export const FRUIT_DATABASE='elsewhere-fruit-private-v1';
 const STORE='documents',KEY='current';
+/** Open only an existing version; a generation request must not create or upgrade storage. */
+export async function openFruitDatabaseReadonly():Promise<IDBDatabase|null>{
+  if(typeof indexedDB.databases==='function'&&!(await indexedDB.databases()).some(db=>db.name===FRUIT_DATABASE))return null;
+  return new Promise((resolve,reject)=>{
+    const request=indexedDB.open(FRUIT_DATABASE);let absent=false,blocked=false;
+    request.onupgradeneeded=()=>{absent=true;request.transaction?.abort();};
+    request.onsuccess=()=>{const db=request.result;if(blocked){db.close();return;}db.onversionchange=()=>db.close();resolve(db);};
+    request.onerror=()=>absent?resolve(null):reject(new Error('无法读取私有预设库，原配置保留'));
+    request.onblocked=()=>{blocked=true;reject(new Error('私有预设库正在变更，请稍后重试'));};
+  });
+}
 export function openFruitDatabase():Promise<IDBDatabase>{
   return new Promise((resolve,reject)=>{
     const request=indexedDB.open(FRUIT_DATABASE,2);let blocked=false;

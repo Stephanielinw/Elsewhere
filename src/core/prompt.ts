@@ -1,4 +1,8 @@
-import type { AppData, EventRecord, RoleData } from './types';
+import {compileConversationPrompt,requestMessages,type ConversationCompilation,type ConversationContext} from './conversationPrompt';
+import {nativePreset} from './fruit/nativePreset';
+import {createFruitState} from './fruit/preset';
+import type {FruitContext,FruitProfile} from './fruit/types';
+import type { AppData, EventRecord, RoleData, ChatMessage } from './types';
 import { formatMessageContentForModel, getActiveMessages } from './revisions';
 import { getRoleKnownEvents, getSharedUserDiariesForRole } from './diary';
 
@@ -156,17 +160,20 @@ export function userTasksSummary(data: AppData): string {
     .join('；');
 }
 
-export function buildMessagesForModel(
+export function compileNativeConversation(
   data: AppData,
   r: RoleData,
   kind: 'chat' | 'scene' | 'play' | 'intermission',
   input: string,
-  options: { isFocused?: boolean; nowTs?: number } = {}
-): { role: string; content: string }[] {
+  options: NativePromptOptions = {}
+): ConversationCompilation {
   const nowTs = options.nowTs ?? Date.now();
   const isFocused = Boolean(options.isFocused);
   let base = '';
   let facts = '';
+  let recalled:EventRecord[]=[];
+  const allMessages=[...r.chats,...(r.scene?.messages||[]),...(r.play?.messages||[]),...(r.play?.intermissionMessages||[]),...(r.meetings||[]).flatMap(s=>s.messages),...r.plays.flatMap(p=>[...p.messages,...(p.intermissionMessages||[])])];
+  const validIds=new Set(getActiveMessages(allMessages).map(m=>m.id));
 
   if (kind === 'intermission') {
     const p = r.play!;
@@ -179,36 +186,24 @@ export function buildMessagesForModel(
       .slice(-3)
       .map((v) => v.messages.map((m) => m.text).join(' / '))
       .join(' / ')
-      .slice(0, 2000)}。保持自身性格，回答要像一个真实的演员。`;
+      .slice(0, 2000)}。`;
   } else if (kind === 'play') {
     const p = r.play!;
-    base = `你正在参与一段独立、封闭的虚构戏剧。仅作为剧中角色行动，不知道剧外的手机、聊天、角色本人真实身份、用户真实身份、日记或其他生活记录。剧名：${p.title}。世界规则与开场：${p.world}。用户在剧内的身份：${p.user}。你在剧内的身份：${p.char}。推进场景、表现人物心理与自身动作，不代替用户做出选择。剧内角色之间的关系仅以剧本及本场对白为准。使用中文进行自然的沉浸式叙事。`;
+    base = `你正在参与一段独立、封闭的虚构戏剧。仅作为剧中角色行动，不知道剧外的手机、聊天、角色本人真实身份、用户真实身份、日记或其他生活记录。剧名：${p.title}。世界规则与开场：${p.world}。用户在剧内的身份：${p.user}。你在剧内的身份：${p.char}。推进场景、表现人物心理与自身动作，不代替用户做出选择。剧内角色之间的关系仅以剧本及本场对白为准。`;
   } else {
     const a = routine(r, nowTs);
-    facts = retrieve(r, input, 12, nowTs)
+    const candidates=r.events.filter(e=>e.kind!=='drama'&&e.at<=nowTs&&(!e.messageId||validIds.has(e.messageId)));
+    recalled=retrieve({...r,events:candidates},input,12,nowTs);
+    facts = recalled
       .map((e) => `[${dt(e.at)} | ${e.kind} | ${e.id}] ${e.title}: ${e.detail}`)
       .join('\n');
     const sharedDiaries = getSharedUserDiariesForRole(r)
+      .filter(d=>d.at<=nowTs)
       .slice(-5)
       .map((d) => `[${dt(d.at)} 用户主动分享给你的日记] ${d.text}`)
       .join('\n');
 
-    const isLaconic = /话少|寡言|惜字如金|简短|冷淡/.test(
-      `${r.traits || ''} ${r.profile || ''}`
-    );
-    base = `你在扮演名为${r.name}的虚构人物（不是AI助手），有独立生活、工作、偏好和主观感受。身份：${r.job}。性格：${r.traits}。人设：${r.profile}。前史节点与未发生剧情边界：${r.canonNotes || '以用户设定为准'}。用户身份设定：${identityContext(data, r)}。你和用户目前的关系：${r.relationship}。此刻地点：${r.scene?.where || a.where}。正在做：${r.scene ? '与用户当面交谈' : a.doing}。当前日期时间：${dt(nowTs)}。保持人设一致，但不要机械附和，不替用户决定行为。禁止假装知道没有获悉的私事。所附历史是有来源的部分检索结果，不确定时不要编造。回复使用自然中文。`;
-    base +=
-      kind === 'chat'
-        ? `你正在用手机和用户发消息。请按你本人的打字与说话习惯组织回复：${
-            isLaconic
-              ? '你平时打字偏简短克制，通常发 1 条（必要时最多 2 条）自然短消息即可。'
-              : '一次回复可以由 1 至 3 条（偶尔最多 4 条）独立的手机消息气泡组成，每条气泡用换行符（\\n）或 ||| 分隔，表现自然的短句、回应、补充或追问；不要机械地按每个句号切碎，也不必每次强行拆成多条。'
-          }日常聊天只展示手机消息正文，严禁混入小说式第三人称旁白、神态动作描写（如*动作*或括号动作）、时间戳或「${r.name}：」前缀。${
-            isFocused
-              ? '当前处于「专心聊」状态，双方都在手机前专注交谈，请自然连贯地回应；仍保有自己的性格与主见。'
-              : '你仍在照常生活，不必总是立刻有空；但不要声称已执行未发生的行动。'
-          }`
-        : '你正在和用户面对面相处，采用文字小说式描写场景与自己的言语动作。只写你自己的回应，不替用户行动。';
+    base = `你在扮演名为${r.name}的虚构人物（不是AI助手），有独立生活、工作、偏好和主观感受。身份：${r.job}。性格：${r.traits}。人设：${r.profile}。前史节点与未发生剧情边界：${r.canonNotes || '以用户设定为准'}。用户身份设定：${identityContext(data, r)}。你和用户目前的关系：${r.relationship}。此刻地点：${r.scene?.where || a.where}。正在做：${r.scene ? '与用户当面交谈' : a.doing}。当前日期时间：${dt(nowTs)}。保持人设一致，但不要机械附和，不替用户决定行为。禁止假装知道没有获悉的私事。所附历史是有来源的部分检索结果，不确定时不要编造。`;
     base += `\n\n玩家共享 DDL / 待办（所有角色可见，只能关心提醒，不得擅自改动）：${userTasksSummary(data) || '无'}。`;
     if (sharedDiaries) {
       base += `\n\n用户曾主动分享给你的个人日记（未在此列出的私人日记你不知情）：\n${sharedDiaries}`;
@@ -216,85 +211,35 @@ export function buildMessagesForModel(
     base += `\n\n可检索的剧外经历（并非保证完整，剧内虚构剧情不等于现实历史）：\n${facts || '暂无'}`;
   }
 
-  const messages: { role: string; content: string }[] = [{ role: 'system', content: base }];
-  const rawArr =
-    kind === 'chat'
-      ? r.chats
-      : kind === 'scene'
-      ? r.scene?.messages || []
-      : kind === 'intermission'
-      ? r.play?.intermissionMessages || []
-      : r.play?.messages || [];
-
-  const activeArr = getActiveMessages(rawArr);
-  const userName = identityName(data, r);
-  const history = activeArr
-    .slice(-30)
-    .filter((m) => m.speaker !== 'note')
-    .map((m) => ({
-      role: m.speaker === 'me' ? 'user' : 'assistant',
-      content: formatMessageContentForModel(m, r.name, userName),
-    }));
-
-  const allowedRole = (roleStr?: string): string =>
-    roleStr && ['system', 'user', 'assistant'].includes(roleStr) ? roleStr : 'system';
-
-  const macros = (str: string): string =>
-    String(str || '').replace(
-      /\{\{(char|user|time|date|personality|description)\}\}/gi,
-      (_, key: string) =>
-        ({
-          char: kind === 'play' ? r.play!.char : r.name,
-          user: kind === 'play' ? r.play!.user : userName,
-          time: hm(nowTs),
-          date: dateStr(nowTs),
-          personality: kind === 'play' ? r.play!.char : r.traits,
-          description: kind === 'play' ? r.play!.world : r.profile,
-        }[key.toLowerCase() as 'char' | 'user' | 'time' | 'date' | 'personality' | 'description'] ||
-        '')
-    );
-
-  const preset = (r?.preset || data.preset)?.prompts || [];
-  let historyInserted = false;
-  const tail: { depth: number; item: { role: string; content: string } }[] = [];
-
-  for (const p of preset) {
-    if (!p.enabled) continue;
-    if (p.marker) {
-      if (/chatHistory/i.test(String(p.identifier || '')) && !historyInserted) {
-        messages.push(...history);
-        historyInserted = true;
-      }
-      continue;
-    }
-    if (!p.content) continue;
-    const item = { role: allowedRole(p.role), content: macros(p.content) };
-    if (Number(p.injection_position) === 1) {
-      tail.push({ depth: Math.max(0, Number(p.injection_depth) || 0), item });
-    } else {
-      messages.push(item);
-    }
-  }
-
-  if (!historyInserted) messages.push(...history);
-  for (const { depth, item } of tail) {
-    const at = Math.max(1, messages.length - depth);
-    messages.splice(at, 0, item);
-  }
-
-  messages.push({
-    role: 'system',
-    content:
-      kind === 'chat'
-        ? '输出必须是纯文字手机聊天消息（可用换行或 ||| 分隔自然的多条气泡），严禁包含小说场景旁白、动作描写或角色名前缀。'
-        : kind === 'scene'
-        ? '这是面对面的文字小说，仅描述自己和环境，不替用户行动。'
-        : kind === 'intermission'
-        ? '这里是幕间讨论。你是戏外演员本人；不推进戏内剧情，不擅自操控用户。'
-        : '这是独立戏剧世界，严格遵守本剧角色人设；不要透露戏外知识。',
-  });
-
-  return messages;
+  const mode=kind==='scene'?'meeting':kind==='play'?'theatre':kind;
+  const scope=kind==='play'?'play:'+r.play!.id:kind==='intermission'?'intermission:'+r.play!.id:'real:'+r.id;
+  const raw=kind==='chat'?r.chats:kind==='scene'?r.scene?.messages:kind==='play'?r.play?.messages:r.play?.intermissionMessages;
+  const userName=identityName(data,r),safeContent=(m:ChatMessage)=>m.quote&&allMessages.some(source=>source.id===m.quote!.id&&!getActiveMessages([source]).length)?m.text:formatMessageContentForModel(m,r.name,userName);
+  const history=getActiveMessages(raw).filter(m=>m.speaker!=='note'&&m.at<=nowTs).slice(-30).map(m=>({id:m.id,role:m.speaker==='me'?'user' as const:'assistant' as const,text:safeContent(m),knownBy:[r.id],at:m.at,scope,active:true,revisionValid:true}));
+  const isLaconic=/话少|寡言|惜字如金|简短|冷淡/.test(`${r.traits||''} ${r.profile||''}`);
+  const values={char:kind==='play'?r.play!.char:r.name,user:kind==='play'?r.play!.user:userName,time:hm(nowTs),date:dateStr(nowTs),personality:kind==='play'?r.play!.char:r.traits,description:kind==='play'?r.play!.world:r.profile,
+    native_bubbles:isLaconic?'你平时打字偏简短克制，通常发 1 条（必要时最多 2 条）自然短消息即可。':'一次回复可以由 1 至 3 条（偶尔最多 4 条）独立的手机消息气泡组成，每条气泡用换行符（\\n）或 ||| 分隔，表现自然的短句、回应、补充或追问；不要机械地按每个句号切碎，也不必每次强行拆成多条。',
+    native_life:isFocused?'当前处于「专心聊」状态，双方都在手机前专注交谈，请自然连贯地回应；仍保有自己的性格与主见。':'你仍在照常生活，不必总是立刻有空；但不要声称已执行未发生的行动。',
+    native_novel_rule:kind==='play'?'使用中文进行自然的沉浸式叙事。推进场景、表现人物心理与自身动作，不代替用户做出选择。':'你正在和用户面对面相处，采用文字小说式描写场景与自己的言语动作。回复使用自然中文。只写你自己的回应，不替用户行动。',
+    native_output_rule:kind==='play'?'这是独立戏剧世界，严格遵守本剧角色人设；不要透露戏外知识。':'这是面对面的文字小说，仅描述自己和环境，不替用户行动。'};
+  if(options.profile&&(kind==='scene'||kind==='play'))values.native_output_rule+=`目标 ${options.profile.length.min}–${options.profile.length.max} 字，按剧情自然取舍，不凑字数。${options.profile.style?`文风：${options.profile.style}。`:''}`;
+  const factsForContext:FruitContext['facts']=[
+    {id:'identity:'+r.id,text:kind==='play'?r.play!.char:r.profile,layer:'identity',marker:'charDescription',at:nowTs,scope,knownBy:[r.id],active:true,revisionValid:true},
+    {id:'relationship:'+r.id,text:kind==='play'?'仅以当前戏内关系为准':r.relationship,layer:'relationship',at:nowTs,scope,knownBy:[r.id],active:true,revisionValid:true},
+    {id:'state:'+r.id,text:kind==='play'?r.play!.world:dt(nowTs),layer:'currentState',at:nowTs,scope,knownBy:[r.id],active:true,revisionValid:true},
+    ...recalled.map(e=>({id:e.id,text:e.detail,layer:'episodic' as const,at:e.at,scope,knownBy:e.knownBy?.length?e.knownBy:[r.id],active:true,revisionValid:true})),
+  ];
+  const currentInputs=(options.currentInputs||[]).map(m=>({id:m.id,role:'user' as const,text:`[消息 ID=${m.id}; createdAt=${new Date(m.at).toISOString()}; 本地发送时间=${new Date(m.at).toLocaleString('zh-CN',{hour12:false})}]\n${safeContent(m)}`,knownBy:[r.id],at:m.at,scope,active:m.speaker==='me'&&!['retracted','superseded','deleted'].includes(String(m.status)),revisionValid:true}));
+  const context:ConversationContext={source:'native-live',mode,actorId:r.id,scope,now:nowTs,user:values.user,char:values.char,facts:factsForContext,history,examples:[],capabilities:{keywordRetrieval:true,semanticRetrieval:false,completeRevisionChain:false},native:{protectedText:options.openingTask?base+'\n'+options.openingTask:base,values,legacy:options.skipLegacyOnce?null:(r.preset||data.preset),currentInputs,suffix:kind==='intermission'?'这里是幕间讨论。你是戏外演员本人；不推进戏内剧情，不擅自操控用户。':undefined}};
+  return compileConversationPrompt(nativePreset(kind==='play'||kind==='intermission'?'theatre':'meeting'),options.profile||createFruitState().profiles.meeting,context,{purpose:'request'});
+}
+export interface NativePromptOptions {isFocused?:boolean;nowTs?:number;profile?:FruitProfile;currentInputs?:ChatMessage[];skipLegacyOnce?:boolean;openingTask?:string}
+export function compileOpeningPrompt(data:AppData,r:RoleData,at:number,options:NativePromptOptions={}){
+ const copy={...r,chats:[],events:[]};
+ return compileNativeConversation(data,copy,'chat','',{...options,nowTs:at,openingTask:`所在区域/世界观：${r.place||'以角色设定为准'}。\n向对方发送第一条手机消息，由你主动发出。必须严格符合性格、关系起点和已有前史，不假装已经有过未发生的对话。采用纯手机短消息格式，1～3小段自然文字，不写环境旁白或动作括号，不使用千篇一律的客服寒暄。`});
+}
+export function buildMessagesForModel(data:AppData,r:RoleData,kind:'chat'|'scene'|'play'|'intermission',input:string,options:NativePromptOptions={}):{role:string;content:string}[]{
+ return requestMessages(compileNativeConversation(data,r,kind,input,options));
 }
 
 function sanitizeSingleBubbleText(

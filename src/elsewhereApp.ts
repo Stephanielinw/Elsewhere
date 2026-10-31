@@ -1,8 +1,12 @@
+import {compileNativeConversation,compileOpeningPrompt,type NativePromptOptions} from './core/prompt';
+import {ConversationCompileError,requestMessages,promptStructure,type ConversationCompilation} from './core/conversationPrompt';
+import {loadNativeRequestProfile} from './core/fruit/library';
 import {monitorItemsForDisplay,newestMonitorFirst} from './core/monitorPresentation';
 import {uiIcon,plainUiLabel} from './uiIcons';
 import {chatTiming,setChatFocused,enqueueChat,prepareChatDue,claimChatBatch,chatBatchValid,chatRevisionKey,completeChatBatch,failChatBatch,recoverChatTiming,retryChatTiming,reviseChatTiming,sourceStillValid} from './core/chatScheduler';
-import {buildChatBatchMessages,buildPhoneRegeneration,readChatResponse} from './core/chatBatchPrompt';
+import {compileChatBatchPrompt,buildPhoneRegeneration,readChatResponse} from './core/chatBatchPrompt';
 import {createHomeTasks} from './homeTasksView';
+import {createHomePager} from './homePager';
 import {safeBubbleCSS} from './core/bubbleCss';
 import {DEVICE_API_KEY,readDeviceApiKey,saveDeviceApiKey} from './core/deviceApiKey';
 import {createTerminalAppearance,appearanceFontFamily,hydrateAppearanceFont} from './terminalAppearance';
@@ -82,7 +86,6 @@ import {
 } from './core/diary';
 import {
   applyGeneratedFirstMessage,
-  buildFirstMessagePrompt,
   canUseRealModel,
   initNewRoleFirstMessageState,
   awaitingFirstMessage,
@@ -94,7 +97,6 @@ import {
   shouldDeferFullRenderOnTick,
 } from './core/domGuard';
 import {
-  buildMessagesForModel,
   dateStr,
   dt,
   hm,
@@ -1542,6 +1544,39 @@ export function initElsewhereApp(): void {
     return 30000+characterOffset;
   }
 
+  const promptTraces=new Map<string,ReturnType<typeof promptStructure>&{profileRevision:number;requestedPresetId:string;actualPresetId:string}>();
+  async function promptRecovery(r:RoleData,error:ConversationCompileError):Promise<'retry'|'native'|'cancel'>{
+    return new Promise(resolve=>{
+      const dialog=document.createElement('dialog');dialog.className='fruit-dialog';
+      const problems=error.compilation.diagnostics.filter(d=>d.severity==='error'),legacyOnly=problems.length>0&&problems.every(d=>d.sourceId?.startsWith('legacy:'));
+      dialog.innerHTML=`<div class="fruit-dialog-body"><h2>这次请求尚未发送</h2><p>配置和已发送消息均已保留。请检查不兼容条目，或仅本次不加载旧附加预设。</p><ul>${problems.map(d=>`<li>${esc(d.sourceId||'配置')} · ${esc(d.code)}</li>`).join('')}</ul><div class="row"><button class="btn" data-prompt-recover="retry">重试</button>${legacyOnly?'<button class="btn secondary" data-prompt-recover="native">本次仅使用原生</button>':''}<button class="btn secondary" data-prompt-recover="export">导出旧配置</button><button class="btn ghost" data-prompt-recover="cancel">取消</button></div></div>`;
+      const finish=(choice:'retry'|'native'|'cancel')=>{dialog.close();dialog.remove();resolve(choice);};
+      dialog.addEventListener('cancel',e=>{e.preventDefault();finish('cancel');});
+      dialog.addEventListener('click',event=>{const action=event.target instanceof Element?event.target.closest<HTMLElement>('[data-prompt-recover]')?.dataset.promptRecover:'';
+        if(action==='export'){const legacy=r.preset||data.preset;if(!legacy){notify('当前没有旧附加预设');return;}const url=URL.createObjectURL(new Blob([JSON.stringify(legacy,null,2)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download='Elsewhere-legacy-preset.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);return;}
+        if(action==='retry'||action==='native'||action==='cancel')finish(action);
+      });document.body.append(dialog);dialog.showModal();
+    });
+  }
+  async function compileRequest(r:RoleData,kind:'chat'|'scene'|'play'|'intermission',build:(options:NativePromptOptions)=>ConversationCompilation,valid:()=>boolean){
+    let skipLegacyOnce=false;
+    while(true){
+      const mode=kind==='scene'?'meeting':kind==='play'?'theatre':kind,snapshot=await loadNativeRequestProfile(mode);
+      if(!valid())throw new Error('请求来源已变化，未发送');
+      try{
+        const compilation=build({profile:snapshot.profile,skipLegacyOnce});
+        promptTraces.set(r.id,{...promptStructure(compilation),profileRevision:snapshot.revision,requestedPresetId:snapshot.requestedPresetId,actualPresetId:snapshot.actualPresetId});
+        const messages=requestMessages(compilation);
+        if(snapshot.requestedPresetId!=='native')notify('统一引擎第一阶段：本次实际使用 Elsewhere 原生预设；所选第三方预设仍仅用于隔离预览。');
+        return messages;
+      }catch(error){
+        if(!(error instanceof ConversationCompileError))throw error;
+        const action=await promptRecovery(r,error);if(action==='cancel')throw new Error('Prompt 编译未完成，请在预设 App 检查配置；原消息保留');
+        if(action==='native')skipLegacyOnce=true;
+      }
+    }
+  }
+
   async function requestPhoneReply(r:RoleData,messages:{role:string;content:string}[],signal:AbortSignal,task:'chat'|'first-message'='chat'):Promise<string> {
       const settings={...data.settings};
       const pendingResponse=fetch(settings.endpoint.trim().replace(/\/+$/,'')+'/chat/completions',{
@@ -1557,7 +1592,8 @@ export function initElsewhereApp(): void {
   async function runChatBatch(r:RoleData,batch:ChatBatch):Promise<void> {
     const controller=new AbortController();activeChatRequests.set(r.id,controller);
     try{
-      const text=await requestPhoneReply(r,buildChatBatchMessages(data,r,batch,now()),controller.signal);
+      const messages=await compileRequest(r,'chat',options=>compileChatBatchPrompt(data,r,batch,now(),options),()=>data.roles.includes(r)&&chatBatchValid(r,batch));
+      const text=await requestPhoneReply(r,messages,controller.signal);
       if(!data.roles.includes(r)||!chatBatchValid(r,batch)){
         if(r.chatTiming?.inFlight?.id===batch.id){reviseChatTiming(r,now());save();}
         return;
@@ -2470,6 +2506,7 @@ export function initElsewhereApp(): void {
     );
   }
 
+  const homePager=createHomePager();
   const homeTasks=createHomeTasks({tasks:()=>data.sharedTasks!,save,notify,glyph});
 
   function screenHome(): string {
@@ -2496,7 +2533,7 @@ export function initElsewhereApp(): void {
       : esc(a.doing);
 
     return shell(
-      `<div class="home-desktop"><div class="home-topbar-shell"><div class="home-topbar-glass" aria-hidden="true"></div><nav class="home-topbar-content" aria-label="首页导航"><span class="home-topbar-brand">ELSEWHERE</span><div class="home-topbar-links"><button type="button" class="home-topbar-button" data-action="view" data-view="userprofile" aria-label="编辑我的资料">我的资料</button><button type="button" class="home-topbar-button" data-action="view" data-view="roleinfo">角色资料</button></div><button type="button" class="home-topbar-button home-role-switch" data-action="view" data-view="landing" aria-label="切换角色" title="当前角色：${esc(r.name)}"><b class="home-role-name">${esc(r.name)}</b><span>切换角色</span>${uiIcon('down')}</button></nav></div>
+      `<div class="home-launcher"><div class="home-topbar-area"><div class="home-topbar-shell"><div class="home-topbar-glass" aria-hidden="true"></div><nav class="home-topbar-content" aria-label="首页导航"><span class="home-topbar-brand">ELSEWHERE</span><div class="home-topbar-links"><button type="button" class="home-topbar-button" data-action="view" data-view="userprofile" aria-label="编辑我的资料">我的资料</button><button type="button" class="home-topbar-button" data-action="view" data-view="roleinfo">角色资料</button></div><button type="button" class="home-topbar-button home-role-switch" data-action="view" data-view="landing" aria-label="切换角色" title="当前角色：${esc(r.name)}"><b class="home-role-name">${esc(r.name)}</b><span>切换角色</span>${uiIcon('down')}</button></nav></div></div><div class="home-pages" tabindex="0" aria-label="手机桌面分页"><section class="home-page" aria-label="第一页：时钟与任务"><div class="home-desktop">
  <div class="homescreen-clock"><div class="homescreen-date">${
    when.getMonth() + 1
  }月${when.getDate()}日 · ${
@@ -2509,13 +2546,7 @@ export function initElsewhereApp(): void {
         a.where
       )}</small></div></div><span class="widget-arrow">›</span></div><div class="widget-divider"></div><div class="widget-bottom"><span class="widget-caption">${captionText}</span><span class="widget-action">打开聊天 →</span></div></button>
  <div class="shared-widgets" id="home-task-cards">${homeTasks.renderCards()}</div>
- <div class="home-apps">${[
-   ['diary', '日记'],
-   ['monitor', '监控'],
-   ['presets', '预设'],
- ]
-   .map(([id, name]) => appTile(id, name))
-   .join('')}</div>
+
  ${
    activeFocus()
      ? `<button class="home-ongoing" data-action="view" data-view="focus">专注 · 正在${
@@ -2530,7 +2561,15 @@ export function initElsewhereApp(): void {
        } <span>›</span></button>`
      : ''
  }
- <div class="page-dots"><span></span><span></span></div></div>`
+ </div></section><section class="home-page home-page-apps" aria-label="第二页：应用"><div class="home-desktop">
+ <div class="home-apps">${[
+   ['diary', '日记'],
+   ['monitor', '监控'],
+   ['presets', '预设'],
+ ]
+   .map(([id, name]) => appTile(id, name))
+   .join('')}</div>
+ </div></section></div></div><nav class="page-dots" aria-label="桌面分页"><button type="button" data-home-page="0" aria-label="第一页：时钟与任务"><span></span></button><button type="button" data-home-page="1" aria-label="第二页：日记、监控与预设"><span></span></button></nav>`
     );
   }
 
@@ -4259,14 +4298,14 @@ export function initElsewhereApp(): void {
 
   function screenTerminal(): string {
     const cards = phoneSettingsCards();
-    return shell(`${header('终端','home')}<div class="viewport terminal-page"><details class="card terminal-settings" open><summary><span>01｜API 与模型</span>${uiIcon('down')}</summary><div id="terminal-api-root"></div></details><details class="card terminal-settings" data-style-panel><summary><span>02｜外观与主题</span>${uiIcon('down')}</summary><div data-style-body="appearance"></div></details><details class="card terminal-settings" data-style-panel><summary><span>03｜聊天气泡自定义</span>${uiIcon('down')}</summary><div data-style-body="bubbles"></div></details><details class="terminal-other-settings terminal-settings"><summary><span>04｜其他手机设置</span>${uiIcon('down')}</summary>${cards.frames}${cards.logs}${cards.backup}</details></div>`);
+    return shell(`${header('终端','home')}<div class="viewport terminal-page"><details class="card terminal-settings" open><summary><span>01｜API 与模型</span>${uiIcon('down')}</summary><div id="terminal-api-root"></div></details><details class="card terminal-settings" data-style-panel><summary><span>02｜外观与主题</span>${uiIcon('down')}</summary><div data-style-body="appearance"></div></details><details class="card terminal-settings" data-style-panel><summary><span>03｜聊天气泡自定义</span>${uiIcon('down')}</summary><div data-style-body="bubbles"></div></details><details class="card terminal-other-settings terminal-settings"><summary><span>04｜其他手机设置</span>${uiIcon('down')}</summary>${cards.frames}${cards.logs}${cards.backup}</details></div>`);
   }
   function screenPresets(): string {
-    return shell(`${header('预设','home')}<div class="viewport"><div class="h2">预设</div><p class="sub">独立管理小说模式。即时设置自动保存；正文确认后才提交。当前仍只做隔离预览。</p><div class="card" id="fruit-preset-root"></div></div>`);
+    return shell(`${header('预设','home')}<div class="viewport"><div class="h2">预设</div><p class="sub">统一引擎第一阶段：原生规则用于实际对话；果实及其他 ST 预设仍仅隔离预览。即时设置自动保存，正文确认后提交。</p><div class="card" id="fruit-preset-root"></div></div>`);
   }
   function phoneSettingsCards() {
     const r=role()!;
-    return { logs: `<div class="card"><h3>系统 Log</h3><p>查看本地事件、API 请求状态、模式切换和错误；不会记录 API Key。详细 Prompt 仅在本次请求记录一份脱敏摘要。</p><div class="row"><button class="btn small secondary" data-action="exportlogs">导出日志 JSON</button><button class="btn small ghost" data-action="clearlogs">清空日志</button></div><div class="log-list">${
+    return { logs: `<div class="card"><h3>系统 Log</h3><p>查看本地事件、API 请求状态、模式切换和错误；不会记录 API Key。仅展示脱敏消息结构，不展示 Prompt、聊天全文或密钥。</p><div class="row"><button class="btn small secondary" data-action="exportlogs">导出日志 JSON</button><button class="btn small ghost" data-action="clearlogs">清空日志</button></div><details><summary>最近请求结构 · 当前角色</summary><pre>${esc(JSON.stringify(promptTraces.get(r.id)||{status:"当前会话尚无请求",stage:"统一引擎第一阶段"},null,2))}</pre></details><div class="log-list">${
         (data.logs || [])
           .slice(-35)
           .reverse()
@@ -4531,9 +4570,11 @@ export function initElsewhereApp(): void {
     fruitManager.detach();
     terminalApi.detach();
     terminalAppearance.detach();
+    homePager.detach();
     app.innerHTML = markup;
     if(view==='terminal'){terminalApi.mount(document.getElementById('terminal-api-root'));terminalAppearance.mount(document.querySelector('.terminal-page'));}
     if(view==='presets')fruitManager.mount(document.getElementById('fruit-preset-root'));
+    if(view==='home')homePager.mount(document.querySelector<HTMLElement>('.home-view')!);
     restoreUIState(uiSnap, !scroll, document, sameView);
     hydrateMedia();
     if (pendingScrollAnchorSelector) {
@@ -4606,23 +4647,12 @@ export function initElsewhereApp(): void {
     render(!preserveStage);
   }
 
-  function messagesForModel(
-    r: RoleData,
-    kind: 'chat' | 'scene' | 'play' | 'intermission',
-    input: string
-  ) {
-    return buildMessagesForModel(data, r, kind, input, {
-      isFocused: isFocused(r),
-      nowTs: now(),
-    });
-  }
-
   async function apiReply(
     r: RoleData,
     kind: 'chat' | 'scene' | 'play' | 'intermission',
     input: string
   ): Promise<string> {
-    const s = data.settings;
+    const s = {...data.settings},requestToken=token;
     const url = s.endpoint.trim().replace(/\/+$/, '');
     if (!/^https?:\/\//.test(url)) {
       throw new Error('API 地址必须以 http(s) 开头');
@@ -4630,7 +4660,9 @@ export function initElsewhereApp(): void {
     if (!s.model.trim()) {
       throw new Error('请先在终端填写模型 ID');
     }
-    const prompt = messagesForModel(r, kind, input);
+    const source=kind==='scene'?r.scene:r.play;
+    const revision=JSON.stringify(getActiveMessages(kind==='scene'?r.scene?.messages:kind==='play'?r.play?.messages:kind==='intermission'?r.play?.intermissionMessages:r.chats));
+    const prompt=await compileRequest(r,kind,options=>compileNativeConversation(data,r,kind,input,{...options,isFocused:isFocused(r),nowTs:now()}),()=>data.roles.includes(r)&&(kind==='chat'||(kind==='scene'?r.scene:r.play)===source)&&revision===JSON.stringify(getActiveMessages(kind==='scene'?r.scene?.messages:kind==='play'?r.play?.messages:kind==='intermission'?r.play?.intermissionMessages:r.chats)));
     syslog('api', `请求 ${kind} · ${s.model}`, {
       messages: prompt.length,
       chars: prompt.reduce((n, m) => n + m.content.length, 0),
@@ -4639,7 +4671,7 @@ export function initElsewhereApp(): void {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(token ? { Authorization: 'Bearer ' + token } : {}),
+        ...(requestToken ? { Authorization: 'Bearer ' + requestToken } : {}),
       },
       body: JSON.stringify({
         model: s.model,
@@ -4685,7 +4717,7 @@ export function initElsewhereApp(): void {
     save();
     render();
     try {
-      const prompt = buildFirstMessagePrompt(r, data.user, dt(now()));
+      const prompt=await compileRequest(r,'chat',options=>compileOpeningPrompt(data,r,now(),options),()=>data.roles.includes(r)&&chatRevisionKey(r)===revision&&r.scene===scene&&r.play===play);
       const rawText=await requestPhoneReply(r,prompt,controller.signal,'first-message');
       if(!data.roles.includes(r)||chatRevisionKey(r)!==revision||r.scene!==scene||r.play!==play)throw new Error('聊天状态已变化，首条消息未写入');
       const bubbles = splitChatBubbles(rawText,r);
@@ -5297,13 +5329,14 @@ export function initElsewhereApp(): void {
   async function regeneratePhoneReply(r:RoleData,id:string):Promise<void> {
     if(activeChatRequests.has(r.id)||r.chatTiming?.inFlight||r.chatTiming?.pending.length){notify('请等待当前消息批次回复完成后再重抽。');return;}
     if(!token.trim()||!canUseRealModel(data.settings)){notify('请先连接 API，原回复已保留。');return;}
-    const plan=buildPhoneRegeneration(data,r,id,now());
-    if(!plan){notify('这条回复的有效来源不完整，原记录已保留。');return;}
+    const regenerated:{plan:ReturnType<typeof buildPhoneRegeneration>}={plan:null};
     const controller=new AbortController(),revision=chatRevisionKey(r),scene=r.scene,play=r.play;
     activeChatRequests.set(r.id,controller);
     if(view==='chat'&&role()?.id===r.id)patchDynamicRegionsOnTick();
     try{
-      const text=await requestPhoneReply(r,plan.messages,controller.signal);
+      const promptMessages=await compileRequest(r,'chat',options=>{regenerated.plan=buildPhoneRegeneration(data,r,id,now(),options);if(!regenerated.plan)throw new Error('有效来源不完整，原记录已保留');return regenerated.plan.compilation;},()=>data.roles.includes(r)&&chatRevisionKey(r)===revision&&r.scene===scene&&r.play===play);
+      const plan=regenerated.plan;if(!plan)throw new Error('有效来源不完整');
+      const text=await requestPhoneReply(r,promptMessages,controller.signal);
       if(!data.roles.includes(r)||chatRevisionKey(r)!==revision||r.scene!==scene||r.play!==play||!getActiveMessages(r.chats).some(m=>m.id===id))return;
       const bubbles=splitChatBubbles(text,r);
       if(!bubbles.length)throw new Error('回复中没有有效的手机消息');

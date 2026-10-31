@@ -325,6 +325,8 @@ export interface RoleData {
   demoStartResetAt?: number;
   theme?: ThemeName;
   font?: 'system' | 'serif';
+  customFontId?: string;
+  wallpaperMediaId?: string;
   bubbleCSS?: string;
   avatarMediaId?: string;
   frameId?: string;
@@ -500,5 +502,7 @@ export interface AppData {
   sharedTasks?: SharedTasksState;
   logs?: SystemLogRecord[];
   customFrames?: CustomAvatarFrame[];
+  customFonts?: {id:string;name:string;mediaId:string}[];
+  bubblePresets?: {id:string;name:string;css:string}[];
 }
 

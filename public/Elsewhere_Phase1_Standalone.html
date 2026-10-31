@@ -16,14 +16,10 @@
 .home-view .wallpaper:after,.landing-view .wallpaper:after{content:"";position:absolute;width:440px;height:440px;border-radius:47% 53% 38% 62%;top:15%;right:-52%;transform:rotate(-25deg);background:linear-gradient(126deg,#ffffff24,#b4c1e01c 37%,#44294a30 78%);filter:blur(9px)}
 .home-view.theme-sand .wallpaper,.landing-view.theme-sand .wallpaper{background:radial-gradient(ellipse at 15% 18%,#f6cdac 0,transparent 52%),radial-gradient(ellipse at 80% 22%,#d7a9a1 0,transparent 50%),radial-gradient(ellipse at 30% 89%,#88766f 0,transparent 64%),#ad8c8b}
 .home-view.theme-blue .wallpaper,.landing-view.theme-blue .wallpaper{background:radial-gradient(ellipse at 12% 17%,#abcce0 0,transparent 48%),radial-gradient(ellipse at 82% 13%,#d6bddc 0,transparent 53%),radial-gradient(ellipse at 70% 85%,#526987 0,transparent 65%),#718caa}
-.island{position:absolute;z-index:12;top:10px;left:50%;transform:translateX(-50%);height:26px;width:94px;border-radius:30px;background:#141218;box-shadow:inset 0 0 0 1px #ffffff0a;pointer-events:none}
-.status{height:52px;flex-shrink:0;padding:16px 24px 0;font-weight:650;font-size:14px;letter-spacing:-.3px;display:flex;align-items:center;justify-content:space-between;position:relative;z-index:5}
-.status-time{font-variant-numeric:tabular-nums}.status-right{display:flex;align-items:center;gap:5px}.battery{width:22px;height:11px;border:1.5px solid currentColor;border-radius:3px;display:inline-flex;padding:2px;position:relative}.battery:after{content:"";position:absolute;right:-3px;top:3px;height:4px;width:2px;border-radius:0 2px 2px 0;background:currentColor;opacity:.65}.battery i{display:block;width:100%;border-radius:1px;background:currentColor}
 .home-indicator{display:flex;flex-shrink:0;height:27px;align-items:center;justify-content:center;position:relative;z-index:10;border:0;background:transparent;color:#1c1b20;padding:0;width:100%}.home-indicator span{height:5px;width:115px;background:currentColor;border-radius:10px}.home-view .home-indicator,.landing-view .home-indicator{color:#fff}
-.home-view .home-indicator{height:23px}.home-view .status,.landing-view .status{color:#fff}
+.home-view .home-indicator{height:23px}
 /* Launcher — an actual phone home screen */
 .home-desktop{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;padding:1px 23px 0;color:white;scrollbar-width:none}.home-desktop::-webkit-scrollbar{display:none}
-.home-toolbar{display:flex;justify-content:space-between;align-items:center;font-size:10px;letter-spacing:2.3px;font-weight:800;color:#fff9;margin-top:7px}.home-toolbar button{border:1px solid #ffffff50;color:white;background:#ffffff24;backdrop-filter:blur(12px);border-radius:30px;padding:5px 10px 5px 7px;font-size:12px;letter-spacing:0}.home-toolbar button span{font-size:10px;margin:0 5px}
 .homescreen-clock{text-align:center;margin:24px 0 23px;text-shadow:0 2px 14px #271a4226}.homescreen-date{font-size:15px;letter-spacing:1px;font-weight:550}.homescreen-time{font-size:76px;font-weight:230;letter-spacing:-5px;line-height:1.17;font-variant-numeric:tabular-nums}
 .home-widget{border:1px solid #ffffff6a;border-radius:25px;padding:14px 15px 13px;width:100%;text-align:left;background:#ffffff48;box-shadow:0 12px 38px #29334c26;color:white;backdrop-filter:blur(24px) saturate(140%);-webkit-backdrop-filter:blur(24px) saturate(140%)}.home-widget-top,.widget-person,.widget-bottom{display:flex;align-items:center;gap:10px}.widget-person{flex:1}.widget-avatar{height:43px;width:43px;display:grid;place-items:center;border-radius:50%;font-size:25px;background:#ffffff64}.widget-person b{font-size:16px;display:block;font-weight:650}.widget-person small{font-size:11px;display:block;color:#fffe;margin-top:4px}.widget-arrow{font-size:28px;color:#ffff}.widget-divider{height:1px;background:#ffffff43;margin:10px 0}.widget-bottom{justify-content:space-between;align-items:flex-start}.widget-caption{font-size:11px;line-height:1.5;opacity:.95;max-width:195px}.widget-action{font-size:10px;font-weight:650;white-space:nowrap}
 .home-apps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));justify-items:stretch;gap:22px 4px;margin:29px 0 8px}.app-icon{background:none;color:inherit;border:0;display:flex;align-items:center;flex-direction:column;gap:7px;min-width:0;padding:0 1px;font-size:11px;font-weight:560;text-shadow:0 1px 4px #3b2d5440}.tile{width:60px;height:60px;border-radius:15px;display:grid;place-items:center;background:linear-gradient(145deg,#8c8cb7,#554f88);color:#fff;box-shadow:inset 0 1px 1px #ffffff70,0 6px 15px #443e7145;position:relative;overflow:hidden}.tile:after{content:"";position:absolute;inset:0;border-radius:inherit;background:linear-gradient(156deg,#ffffff49,transparent 48%);pointer-events:none}.app-icon:active .tile{transform:scale(.94)}.app-symbol{height:31px;width:31px;filter:drop-shadow(0 1px 1px #0001)}.tile-chat{background:linear-gradient(148deg,#67dca7,#21a777)}.tile-diary{background:linear-gradient(145deg,#f2c36b,#d98950)}.tile-focus{background:linear-gradient(135deg,#f58e87,#dc5b66)}.tile-monitor{background:linear-gradient(145deg,#9d9da7,#5c627c)}.tile-location{background:linear-gradient(145deg,#76c6f1,#3a88d7)}.tile-drama{background:linear-gradient(145deg,#c9a5eb,#9270c0)}.tile-memories{background:linear-gradient(145deg,#76c9cf,#3c9d9e)}.tile-terminal{background:linear-gradient(145deg,#9295a5,#525967)}.tile-profile{background:linear-gradient(145deg,#eaa8b5,#c47f92)}
@@ -48,7 +44,7 @@
 .focus-card{padding:22px 15px;border-radius:23px;background:linear-gradient(160deg,#fff,#faf7ff);border:1px solid #ece7f0;text-align:center;margin:14px 0 16px}.focus-kicker{font-size:11px;letter-spacing:1.4px;color:var(--accent);font-weight:770}.focus-standby{font-size:67px;letter-spacing:-4px;margin:36px 0 12px;font-weight:320;font-variant-numeric:tabular-nums;color:#4e3d5c}.focus-ring{height:214px;width:214px;background:conic-gradient(var(--accent) var(--progress,0%),#eee8f1 var(--progress,0%));padding:12px;border-radius:50%;display:grid;place-items:center;margin:22px auto 19px}.focus-ring-inner{background:#fff;height:100%;width:100%;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center}.focus-ring-inner strong{font-size:48px;letter-spacing:-2px;font-variant-numeric:tabular-nums;color:var(--ink);font-weight:500}.focus-ring-inner span{color:var(--muted);font-size:12px;margin-top:7px}.focus-caption{color:#9b91a2;font-size:12px;line-height:1.7;max-width:280px;margin:13px auto}.focus-buttons{display:flex;gap:9px;justify-content:center;margin-top:18px}.focus-buttons .btn{flex:1}.focus-fields{display:grid;grid-template-columns:1fr 1fr;gap:12px}.focus-check{display:flex;align-items:flex-start;gap:8px;font-size:12px;line-height:1.5;margin:14px 0 9px}.focus-check input{accent-color:var(--accent);margin-top:4px}.focus-secondary{margin-top:9px}.focus-companion{text-align:left;margin:14px 0 4px;padding:13px;border:1px solid #ece5f1;background:#f7f2fb;border-radius:16px}.focus-companion-head{display:flex;align-items:center;gap:9px;margin-bottom:10px}.focus-companion-avatar{height:34px;width:34px;border-radius:50%;background:#eadbf1;display:grid;place-items:center;font-size:21px}.focus-companion-head b{font-size:12px}.focus-companion-head small{display:block;font-size:10px;color:var(--muted);margin-top:4px}.focus-live-indicator{font-size:9px;color:var(--accent);margin-left:auto;white-space:nowrap}.focus-moments{display:flex;flex-direction:column;gap:7px;max-height:225px;overflow:auto}.focus-moment{display:flex;gap:9px;align-items:flex-start;padding:9px;border-radius:10px;background:#fff8;opacity:.8}.focus-moment.latest{opacity:1;background:#fff}.focus-moment-icon{font-size:18px}.focus-moment div{flex:1;min-width:0}.focus-moment b{font-size:11px;display:block}.focus-moment p{font-size:11px;line-height:1.5;color:var(--muted);margin:4px 0 0}.focus-moment time{font-size:10px;color:var(--muted);white-space:nowrap}.focus-companion-note{font-size:10px;color:var(--muted);line-height:1.6}
 /* Novel mode intentionally leaves the phone paradigm for reading. */
 .novel-view{background:#f6f0e5;color:#392f29}.novel-view .top{background:#f9f3e9;border-color:#e7ded0}.novel-view .home-indicator{color:#403a36}.novel{overflow:auto;flex:1;min-height:0;padding:30px 25px 24px}.chapter{font-size:10px;letter-spacing:2px;color:#a18b75;text-transform:uppercase;text-align:center}.scene-title{font-family:Georgia,"Songti SC",serif;text-align:center;font-weight:500;font-size:29px;margin:16px 0 30px}.passage{white-space:pre-wrap;line-height:1.9;font-size:14px;font-family:Georgia,"Songti SC",serif;margin:20px 0}.passage .speaker{display:block;color:#8e7762;font:600 11px -apple-system,"PingFang SC",sans-serif;margin:0 0 6px}.passage.mine{padding:13px 15px;background:#ebe2d3;border-radius:12px}.passage.note{font-style:italic;color:#827260;text-align:center}.novel-view .compose{background:#f7efe4}.novel-view .compose textarea{border-color:#e1d5c6;background:#fffbf5}
-@media(max-width:500px){#app{padding:0;background:transparent}.shell{height:100dvh;width:100%;max-width:none;min-height:0;padding:0;border-radius:0;box-shadow:none;background:transparent}.shell:before,.shell:after{display:none}.phone{border-radius:0}.island{top:7px}.status{height:54px;padding-top:max(17px,env(safe-area-inset-top))}.home-indicator{height:max(26px,env(safe-area-inset-bottom))}.home-view .home-indicator{height:max(20px,env(safe-area-inset-bottom))}.home-desktop{padding-left:22px;padding-right:22px}.dock{margin-bottom:5px}}
+@media(max-width:500px){#app{padding:0;background:transparent}.shell{height:100dvh;width:100%;max-width:none;min-height:0;padding:0;border-radius:0;box-shadow:none;background:transparent}.shell:before,.shell:after{display:none}.phone{border-radius:0}.home-indicator{height:max(26px,env(safe-area-inset-bottom))}.home-view .home-indicator{height:max(20px,env(safe-area-inset-bottom))}.home-desktop{padding-left:22px;padding-right:22px}.dock{margin-bottom:5px}}
 @media(max-height:700px){.homescreen-clock{margin:10px 0 15px}.homescreen-time{font-size:59px}.home-apps{gap:13px 4px;margin-top:18px}.tile{height:54px;width:54px}.dock .tile{height:49px;width:49px}.home-widget{padding:10px 12px}}
 @media(max-width:360px){.tile{width:53px;height:53px}.home-apps{gap:16px 2px}.dock .tile{width:49px;height:49px}.homescreen-time{font-size:65px}.chat-shortcuts button{gap:3px}.chat-shortcuts span{font-size:10px}}
 @media(prefers-reduced-motion:no-preference){.tile{transition:transform .15s ease}.home-widget,.role{transition:background .15s ease}.role:hover{background:#f6f1fa}.home-widget:active{background:#ffffff6a}}
@@ -57,18 +53,15 @@
 html,body,#app{width:100%;height:100%;min-height:100dvh}
 #app{padding:0;background:var(--bg);display:block}
 .shell{width:100%;height:100dvh;min-height:0;padding:0;border-radius:0;background:transparent;box-shadow:none;isolation:isolate}
-.shell:before,.shell:after,.island{display:none!important}
+.shell:before,.shell:after{display:none!important}
 .phone{width:100%;height:100%;border-radius:0;max-width:none}
-.status{padding-left:max(23px,env(safe-area-inset-left));padding-right:max(23px,env(safe-area-inset-right));height:48px}
 .home-view,.landing-view{color:var(--ink);background:var(--bg)}
-.home-view .status,.landing-view .status{color:var(--ink)}
 .home-view .home-indicator,.landing-view .home-indicator{color:var(--ink)}
 .home-view .wallpaper,.landing-view .wallpaper{background:radial-gradient(ellipse 65% 65% at 13% 6%,color-mix(in srgb,var(--accent) 25%,transparent),transparent 80%),radial-gradient(ellipse 70% 70% at 92% 80%,color-mix(in srgb,var(--accent) 18%,transparent),transparent 80%),linear-gradient(150deg,var(--bg),var(--surface2))}
 .home-view.theme-sand .wallpaper,.landing-view.theme-sand .wallpaper,
 .home-view.theme-blue .wallpaper,.landing-view.theme-blue .wallpaper{background:radial-gradient(ellipse 65% 65% at 13% 6%,color-mix(in srgb,var(--accent) 25%,transparent),transparent 80%),radial-gradient(ellipse 70% 70% at 92% 80%,color-mix(in srgb,var(--accent) 18%,transparent),transparent 80%),linear-gradient(150deg,var(--bg),var(--surface2))}
 .home-view .wallpaper:after,.landing-view .wallpaper:after{opacity:.26}
 .home-desktop{color:var(--ink);width:min(780px,100%);margin:0 auto;padding:0 26px;overflow:auto}
-.home-toolbar{color:var(--ink)}.home-toolbar button{background:var(--surface);color:var(--ink);border-color:color-mix(in srgb,var(--accent) 20%,transparent)}
 .homescreen-clock{text-shadow:none;margin:10px 0 15px}.homescreen-date{font-size:13px;color:var(--muted)}.homescreen-time{font-size:clamp(46px,9vw,78px);font-weight:300}
 .home-widget{background:color-mix(in srgb,var(--surface) 92%,transparent);color:var(--ink);border:1px solid color-mix(in srgb,var(--accent) 19%,transparent);box-shadow:0 14px 35px #0000000a}
 .home-widget .widget-person small{color:var(--muted)}.widget-arrow{color:var(--accent)}.widget-divider{background:var(--surface2)}.widget-caption{max-width:70%}
@@ -95,7 +88,7 @@ html,body,#app{width:100%;height:100%;min-height:100dvh}
 .theme-swatches{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.swatch{border-radius:14px;border:2px solid transparent;background:var(--surface2);color:var(--ink);padding:7px 9px;display:flex;align-items:center;gap:6px;font-size:12px}.swatch i{height:18px;width:18px;border-radius:50%;background:var(--swatch);border:1px solid #ffffff7a}.swatch.active{border-color:var(--accent)}.swatch-blue{--swatch:#86bbec}.swatch-green{--swatch:#a3d6b0}.swatch-pink{--swatch:#f3b5d1}.swatch-coffee{--swatch:#c7a78d}.swatch-night{--swatch:#343951}
 .log-list{max-height:260px;overflow:auto;border:1px solid var(--surface2);border-radius:12px;margin-top:12px}.log-row{padding:8px 11px;border-bottom:1px solid var(--surface2);font-size:11px;overflow-wrap:anywhere}.log-row summary{cursor:pointer}.log-row pre{white-space:pre-wrap;max-height:170px;overflow:auto;color:var(--muted);font-size:10px}
 [data-theme=night]{color-scheme:dark}[data-theme=night] .tile{box-shadow:none}[data-theme=night] .focus-card,[data-theme=night] .focus-ring-inner,[data-theme=night] .focus-moment{background:var(--surface);border-color:var(--surface2)}[data-theme=night] .focus-ring{background:conic-gradient(var(--accent) var(--progress,0%),var(--surface2) var(--progress,0%))}[data-theme=night] .focus-companion{background:var(--surface2)}[data-theme=night] .focus-ring-inner strong{color:var(--ink)}
-@media(max-width:620px){.home-desktop{padding:0 18px}.shared-widgets{gap:8px}.mini-widget{padding:11px 9px;border-radius:16px}.mini-add{flex-wrap:wrap}.mini-add input[type=date]{max-width:none;width:100%;flex:1 0 calc(100% - 35px)}.mini-add button{margin-left:auto}.mini-list{height:105px}.homescreen-clock{margin:8px 0 10px}.homescreen-time{font-size:61px}.home-apps{margin-top:20px}.status{height:51px}.home-widget{padding:12px}}
+@media(max-width:620px){.home-desktop{padding:0 18px}.shared-widgets{gap:8px}.mini-widget{padding:11px 9px;border-radius:16px}.mini-add{flex-wrap:wrap}.mini-add input[type=date]{max-width:none;width:100%;flex:1 0 calc(100% - 35px)}.mini-add button{margin-left:auto}.mini-list{height:105px}.homescreen-clock{margin:8px 0 10px}.homescreen-time{font-size:61px}.home-apps{margin-top:20px}.home-widget{padding:12px}}
 @media(max-height:740px){.shared-widgets .mini-list{height:68px}.homescreen-time{font-size:54px}.home-apps{margin:13px 0 8px;gap:13px 4px}}
 .bubble-editor{min-height:135px;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;tab-size:2}
 .avatar,.widget-avatar,.chat-contact-avatar,.focus-companion-avatar{position:relative;overflow:visible;isolation:isolate}
@@ -110,7 +103,6 @@ html,body,#app{width:100%;height:100%;min-height:100dvh}
 .role-edit{border:0;background:var(--surface2);color:var(--accent);border-radius:12px;height:38px;width:38px;display:grid;place-items:center;flex:none;margin:0 5px}
 .role-edit svg{width:21px;height:21px}
 .long-field{min-height:155px;line-height:1.6}
-.user-shortcut{margin-left:10px;border:1px solid var(--surface2);background:var(--surface);color:var(--accent);border-radius:12px;padding:5px 10px;letter-spacing:0;font-size:11px}
 .danger-zone{border:1px solid #d7a3a3;background:color-mix(in srgb,var(--surface) 89%,#f4d4d4);margin-top:18px}
 .danger-btn{background:#b64654;color:#fff;border:1px solid #b64654}
 .danger-btn:hover{background:#a53745}
@@ -130,7 +122,7 @@ html,body,#app{width:100%;height:100%;min-height:100dvh}
 .wallpaper{display:block;position:absolute;inset:-25px;z-index:-1;pointer-events:none;background:radial-gradient(ellipse 67% 55% at 11% 13%,color-mix(in srgb,var(--accent) 35%,#e0f1ff) 0%,transparent 75%),radial-gradient(ellipse 65% 65% at 90% 31%,#f8c9df 0%,transparent 78%),radial-gradient(ellipse 72% 72% at 38% 100%,#aedddc 0%,transparent 82%),linear-gradient(130deg,var(--bg),#f2eefb)!important}
 .phone.theme-night .wallpaper{background:radial-gradient(ellipse 70% 55% at 20% 10%,#455579 0,transparent 73%),radial-gradient(ellipse 60% 60% at 95% 58%,#774f7e 0,transparent 74%),linear-gradient(150deg,#22283a,#34314b)!important}
 .home-view,.landing-view,.app-view,.chat-view,.intermission-view{background:transparent!important;color:var(--ink)}
-.home-view .home-desktop{background:transparent}.home-toolbar button,.user-shortcut{background:rgba(255,255,255,.44)!important;border:1px solid var(--glass-stroke)!important;box-shadow:inset 0 1px 0 #fff9;backdrop-filter:blur(25px) saturate(180%);-webkit-backdrop-filter:blur(25px) saturate(180%)}
+.home-view .home-desktop{background:transparent}
 .home-view .wallpaper:after,.landing-view .wallpaper:after{opacity:.6!important;background:radial-gradient(ellipse at center,#ffffff54,transparent 68%)!important}
 .home-widget,.mini-widget,.home-ongoing,.login-list,.card,.entry,.focus-card{background:var(--glass-fill)!important;border:1px solid var(--glass-stroke)!important;box-shadow:var(--glass-darkshadow);backdrop-filter:blur(28px) saturate(185%);-webkit-backdrop-filter:blur(28px) saturate(185%)}
 .home-widget{color:var(--ink);border-radius:29px}.home-widget .widget-person small{color:var(--muted)}.widget-divider{background:#ffffffa1}.widget-caption{color:var(--ink)}
@@ -2033,8 +2025,6 @@ html,body,#app{width:100%;height:100%;min-height:100dvh}
 /* APP-UX: compact native launcher, with presets separated from API connections. */
 .home-apps{grid-template-columns:repeat(3,minmax(0,1fr));max-width:340px;gap:20px 15px}
 .tile-presets{background:linear-gradient(145deg,#bca5de,#8a73b0)}
-.home-toolbar>span{display:flex;align-items:center;flex-wrap:wrap;gap:5px;min-width:0}
-.home-toolbar>button{flex-shrink:0}.home-toolbar .user-shortcut{font-size:10px;padding:5px 7px}
 
 #fruit-preset-root>.terminal-library-status{position:sticky;top:0;z-index:6;padding:8px 12px;border:1px solid #ffffffae;border-radius:12px;background:color-mix(in srgb,var(--surface) 92%,transparent);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
 #fruit-preset-root>.terminal-library-status[data-save-state="failed"]{color:#964f4b;border-color:#c47f7a66}
@@ -2057,10 +2047,9 @@ html,body,#app{width:100%;height:100%;min-height:100dvh}
 .intermission-compose button.btn{width:auto;min-width:46px;height:42px;min-height:42px;border-radius:13px;white-space:nowrap}
 .intermission-compose button.intermission-paw{min-width:54px}.intermission-paw .cat-paw-svg{height:21px;width:21px}
 
-/* MOBILE-FIX: retain the desktop status display; touch devices use system chrome. */
+/* Touch/standalone surfaces use system safe areas. */
 @media (any-pointer:coarse), (display-mode:standalone) {
   .phone{padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) 0 env(safe-area-inset-left,0px)}
-  .phone>.status{display:none}
   .phone>.home-indicator{height:calc(27px + env(safe-area-inset-bottom,0px));padding-bottom:env(safe-area-inset-bottom,0px)}
   .home-view>.home-indicator{height:calc(23px + env(safe-area-inset-bottom,0px))}
   /* Keep keyboard text at 16px, including dialogs and older !important field styles. */
@@ -2129,7 +2118,7 @@ html,body,#app{width:100%;height:100%;min-height:100dvh}
 .chat-error-notice{font-size:12px;color:var(--muted);padding:9px 0;overflow-wrap:anywhere}
 .chat-error-notice summary{cursor:pointer;display:flex;gap:6px;align-items:center}
 .chat-error-notice p{margin:8px 0}
-.chat-typing{display:flex;align-items:center;gap:9px;align-self:flex-start;width:fit-content;max-width:100%;margin:10px 0 12px 36px;padding:9px 13px;border-radius:16px;background:var(--surface);color:var(--muted);font-size:12px;line-height:1.5}
+.chat-typing{display:flex;align-items:center;gap:9px;align-self:flex-start;width:fit-content;max-width:100%;margin:10px 0 12px;padding:0;background:transparent;color:var(--muted);font-size:12px;line-height:1.5}
 .chat-typing-dots{display:inline-flex;gap:3px}
 .chat-typing-dots i{width:4px;height:4px;background:currentColor;border-radius:50%;animation:chat-typing-pulse 1.2s ease-in-out infinite}
 .chat-typing-dots i:nth-child(2){animation-delay:.16s}.chat-typing-dots i:nth-child(3){animation-delay:.32s}
@@ -2143,6 +2132,60 @@ html,body,#app{width:100%;height:100%;min-height:100dvh}
 .fp-icon .ui-icon,.focus-moment-icon .ui-icon{width:20px;height:20px}
 .home-task-add .ui-icon{width:20px;height:20px}.home-task-check .ui-icon{width:16px;height:16px}
 .fp-artifact-preview>summary{font-size:11px;color:var(--muted);cursor:pointer;display:flex;align-items:center;gap:5px;padding:10px 0}
+
+/* Glass is a sibling background, never the layer carrying navigation text. */
+.phone{padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) 0 env(safe-area-inset-left,0px)}
+.home-topbar-shell{position:sticky;top:10px;z-index:20;flex:none;margin-top:10px;border-radius:19px}
+.home-topbar-glass{position:absolute;inset:0;z-index:0;border-radius:inherit;pointer-events:none;background:color-mix(in srgb,var(--surface) 86%,transparent);border:1px solid var(--glass-stroke);box-shadow:0 3px 14px #40334508;-webkit-backdrop-filter:blur(18px) saturate(150%);backdrop-filter:blur(18px) saturate(150%)}
+.home-topbar-content{position:relative;z-index:1;display:grid;grid-template-columns:auto auto minmax(0,1fr);align-items:center;gap:10px;padding:9px 10px;color:var(--ink)}
+.home-topbar-content,.home-topbar-content *{filter:none;-webkit-backdrop-filter:none;backdrop-filter:none;opacity:1;transform:none;mix-blend-mode:normal;will-change:auto;contain:none;text-shadow:none}
+.home-topbar-brand{font-size:14px;line-height:1.4;font-weight:750;letter-spacing:1.6px}
+.home-topbar-links{display:flex;gap:8px;min-width:0}
+.home-topbar-button{min-height:36px;min-width:0;padding:8px 10px;border:1px solid color-mix(in srgb,var(--ink) 16%,transparent);border-radius:12px;background:var(--surface);color:var(--ink);font-size:14px;line-height:1.35;font-weight:600;letter-spacing:0;white-space:nowrap}
+.home-role-switch{display:flex;align-items:center;justify-self:end;gap:7px;max-width:100%}
+.home-role-name{min-width:0;max-width:8em;overflow:hidden;text-overflow:ellipsis;font-size:14px;font-weight:650}
+.home-role-switch>span{font-size:14px}.home-role-switch .ui-icon{width:14px;height:14px}
+@media(max-width:560px){.home-topbar-content{grid-template-columns:auto minmax(0,1fr);gap:8px;padding:9px 10px}.home-topbar-brand{grid-column:1;grid-row:1;font-size:14px;letter-spacing:1px}.home-role-switch{grid-column:2;grid-row:1}.home-role-name{max-width:5em}.home-topbar-links{grid-column:1/-1;grid-row:2}.home-topbar-links .home-topbar-button{flex:1}}
+@media(prefers-reduced-transparency:reduce){.home-topbar-glass{background:var(--surface);-webkit-backdrop-filter:none;backdrop-filter:none}}
+
+/* Terminal configuration previews share the saved font/media and bubble CSS paths. */
+.terminal-settings>summary{display:flex;align-items:center;justify-content:space-between;gap:12px;list-style:none;cursor:pointer;font-size:16px;font-weight:650;padding:4px 0;color:var(--ink)}
+.terminal-settings>summary::-webkit-details-marker{display:none}
+.terminal-settings>summary>.ui-icon{width:17px;height:17px;transition:transform .16s}
+.terminal-settings[open]>summary{margin-bottom:16px}
+.terminal-settings[open]>summary>.ui-icon{transform:rotate(180deg)}
+.terminal-settings:not([open]){padding-top:18px;padding-bottom:18px}
+.terminal-settings p.sub{margin:10px 0;font-size:12px;line-height:1.65}
+.terminal-settings [hidden]{display:none!important}
+.terminal-settings .terminal-label:first-child{margin-top:0}
+.terminal-other-settings>summary{padding:14px 0}
+.terminal-wallpaper-line{display:flex;gap:18px;align-items:center;margin:20px 0}
+.terminal-wallpaper-line>div:last-child{display:flex;flex:1;min-width:0;gap:10px;flex-wrap:wrap}
+.terminal-wallpaper-line p{flex-basis:100%}
+.terminal-wallpaper-preview{height:155px;width:110px;flex:none;overflow:hidden;border:1px solid var(--line);border-radius:19px;background:linear-gradient(140deg,#d1e4ef,#f7dcec,#d4ece8)}
+.terminal-wallpaper-preview[data-theme=green]{background:linear-gradient(140deg,#c5dfd0,#e5f1e0,#a2c0b0)}
+.terminal-wallpaper-preview[data-theme=pink]{background:linear-gradient(140deg,#eed0e3,#f9dee6,#d7c5e6)}
+.terminal-wallpaper-preview[data-theme=coffee]{background:linear-gradient(140deg,#d8c7b7,#f7e9d9,#c5b9c0)}
+.terminal-wallpaper-preview[data-theme=night]{background:linear-gradient(140deg,#303d60,#544568,#252b41)}
+.terminal-wallpaper-preview img{height:100%;width:100%;display:block;object-fit:cover}
+.terminal-file-button{display:inline-flex;align-items:center;justify-content:center;gap:6px;cursor:pointer}
+.terminal-file-button:focus-within{outline:2px solid var(--accent);outline-offset:3px}
+.terminal-file-button input[type=file]{display:block!important;position:absolute;width:1px;height:1px;clip-path:inset(50%);overflow:hidden}
+.terminal-font-import{padding:14px;margin-top:12px;background:var(--surface2);border-radius:15px}
+.terminal-font-preview{margin:16px 0;padding:18px;border:1px solid var(--line);border-radius:16px;background:var(--surface);font-size:18px;line-height:1.8;overflow-wrap:anywhere}
+.terminal-bubble-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin:20px 0}
+.terminal-bubble-side{min-width:0;padding:14px;border:1px solid var(--line);border-radius:17px}
+.terminal-bubble-side h3{font-size:14px;margin:0 0 14px}
+.terminal-bubble-side .bubble-editor{min-height:150px;margin-top:12px;font-family:ui-monospace,monospace;font-size:13px}
+.terminal-wrap{flex-wrap:wrap}
+.bubble-preview{display:flex;flex-direction:column;gap:12px;padding:18px;margin-top:18px;overflow:hidden;border:1px solid var(--line);border-radius:20px;background:color-mix(in srgb,var(--surface2) 45%,transparent)}
+.bubble-preview .message{display:flex;width:100%;margin:0;gap:0}
+.bubble-preview .message.mine{justify-content:flex-end}
+.bubble-preview .bubble{max-width:90%;font-size:14px;line-height:1.6}
+.wallpaper.has-custom-wallpaper{inset:0!important;background:none!important}
+.wallpaper.has-custom-wallpaper:after{display:none}
+.wallpaper-image{display:block;width:100%;height:100%;object-fit:cover}
+@media(max-width:600px){.terminal-bubble-columns{grid-template-columns:1fr;gap:12px}.terminal-settings{padding:16px}.terminal-settings .field{min-width:0;max-width:100%}.terminal-wallpaper-line{gap:12px}.terminal-wallpaper-preview{width:90px;height:135px}.terminal-wallpaper-line .btn{width:100%}.terminal-font-preview{font-size:18px}}
 
 </style>
 </head>
@@ -4686,6 +4729,618 @@ ${groundedLines.length ? groundedLines.join("\n") : `\uFF08\u5F53\u5929\u6682\u6
     return output.join("\n");
   }
 
+  // src/core/modelDiscovery.ts
+  function normalizeApiBase(value) {
+    let url;
+    try {
+      url = new URL(value.trim());
+    } catch {
+      throw new Error("\u8BF7\u8F93\u5165\u6709\u6548\u7684 HTTP(S) API Base URL");
+    }
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("API \u5730\u5740\u4E0D\u80FD\u5305\u542B\u51ED\u636E\u3001\u67E5\u8BE2\u53C2\u6570\u6216\u7247\u6BB5\uFF1BKey \u8BF7\u586B\u5165\u4E13\u7528\u8F93\u5165\u6846");
+    const path = url.pathname.replace(/\/+$/, "").replace(/\/(?:chat\/completions|models)$/, "");
+    return url.origin + path;
+  }
+  async function fetchModelIds(base, key, options = {}) {
+    const url = normalizeApiBase(base) + "/models";
+    let response;
+    try {
+      response = await (options.fetcher || fetch)(url, { method: "GET", headers: key ? { Authorization: "Bearer " + key } : {}, credentials: "omit", redirect: "error", signal: options.signal });
+    } catch {
+      throw new Error(options.signal?.aborted ? "\u8BF7\u6C42\u5DF2\u53D6\u6D88\u6216\u8D85\u65F6\uFF0C\u8BF7\u91CD\u8BD5" : "\u65E0\u6CD5\u8BFB\u53D6\u6A21\u578B\u5217\u8868\uFF1A\u7F51\u7EDC\u3001CORS\u3001\u6D4F\u89C8\u5668\u6765\u6E90\u6216\u91CD\u5B9A\u5411\u9650\u5236\u3002\u53EF\u624B\u52A8\u8F93\u5165\u6A21\u578B ID\u3002");
+    }
+    if (!response.ok) throw new Error(response.status === 401 || response.status === 403 ? "\u6A21\u578B\u5217\u8868\u9274\u6743\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5 API Key \u4E0E\u6743\u9650\u3002" : response.status === 404 || response.status === 405 ? "\u670D\u52A1\u672A\u63D0\u4F9B\u517C\u5BB9\u7684\u6A21\u578B\u5217\u8868\u63A5\u53E3\uFF0C\u8BF7\u624B\u52A8\u8F93\u5165\u6A21\u578B ID\u3002" : `\u6A21\u578B\u5217\u8868\u8BF7\u6C42\u5931\u8D25\uFF08HTTP ${response.status}\uFF09\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u6216\u624B\u52A8\u8F93\u5165\u3002`);
+    if (Number(response.headers.get("content-length")) > 2e6) throw new Error("\u6A21\u578B\u5217\u8868\u54CD\u5E94\u8FC7\u5927\uFF0C\u5DF2\u505C\u6B62\u5904\u7406");
+    let data;
+    try {
+      const body = await response.text();
+      if (body.length > 2e6) throw new Error();
+      data = JSON.parse(body);
+    } catch {
+      throw new Error("\u6A21\u578B\u5217\u8868\u4E0D\u662F\u53D7\u652F\u6301\u7684 JSON \u683C\u5F0F\uFF0C\u8BF7\u624B\u52A8\u8F93\u5165\u6A21\u578B ID\u3002");
+    }
+    if (!data || typeof data !== "object" || !("data" in data) || !Array.isArray(data.data) || data.data.length > 5e3) throw new Error("\u6A21\u578B\u5217\u8868\u9700\u8981 data \u6570\u7EC4\uFF0C\u8BF7\u624B\u52A8\u8F93\u5165\u6A21\u578B ID\u3002");
+    const ids = [...new Set(data.data.flatMap((item) => item && typeof item === "object" && "id" in item && typeof item.id === "string" && item.id.trim() && item.id.length <= 512 ? [item.id] : []))].sort();
+    if (!ids.length) throw new Error("\u670D\u52A1\u8FD4\u56DE\u4E86\u7A7A\u6A21\u578B\u5217\u8868\uFF0C\u8BF7\u624B\u52A8\u8F93\u5165\u6A21\u578B ID\u3002");
+    return ids;
+  }
+
+  // src/core/deviceApiKey.ts
+  var DEVICE_API_KEY = "elsewhere-device-api-key-v1";
+  function readDeviceApiKey(storage, endpoint) {
+    try {
+      const value = JSON.parse(storage.getItem(DEVICE_API_KEY) || "null");
+      return value && typeof value === "object" && "endpoint" in value && "key" in value && value.endpoint === normalizeApiBase(endpoint) && typeof value.key === "string" ? value.key : "";
+    } catch {
+      return "";
+    }
+  }
+  function saveDeviceApiKey(storage, endpoint, key) {
+    if (key.trim()) storage.setItem(DEVICE_API_KEY, JSON.stringify({ endpoint: normalizeApiBase(endpoint), key: key.trim() }));
+    else storage.removeItem(DEVICE_API_KEY);
+  }
+
+  // src/core/media.ts
+  var MEDIA_DB = "elsewhere-media-v1";
+  var MEDIA_STORE = "blobs";
+  function mediaDB() {
+    return new Promise((resolve, reject) => {
+      if (typeof window === "undefined" || !("indexedDB" in window)) {
+        return reject(new Error("\u6B64\u6D4F\u89C8\u5668\u4E0D\u652F\u6301\u5A92\u4F53\u5B58\u50A8"));
+      }
+      const req = indexedDB.open(MEDIA_DB, 1);
+      req.onupgradeneeded = () => {
+        if (!req.result.objectStoreNames.contains(MEDIA_STORE)) {
+          req.result.createObjectStore(MEDIA_STORE);
+        }
+      };
+      req.onerror = () => reject(req.error || new Error("\u5A92\u4F53\u6570\u636E\u5E93\u65E0\u6CD5\u6253\u5F00"));
+      req.onsuccess = () => resolve(req.result);
+    });
+  }
+  async function mediaPut(id, blob) {
+    const db = await mediaDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(MEDIA_STORE, "readwrite");
+      tx.objectStore(MEDIA_STORE).put(blob, id);
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error || new Error("\u5A92\u4F53\u4FDD\u5B58\u5931\u8D25"));
+      };
+    });
+  }
+  async function mediaGet(id) {
+    const db = await mediaDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(MEDIA_STORE, "readonly");
+      const q = tx.objectStore(MEDIA_STORE).get(id);
+      q.onsuccess = () => resolve(q.result);
+      q.onerror = () => reject(q.error);
+      tx.oncomplete = () => db.close();
+      tx.onerror = () => db.close();
+    });
+  }
+  async function mediaDelete(id) {
+    const db = await mediaDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(MEDIA_STORE, "readwrite");
+      tx.objectStore(MEDIA_STORE).delete(id);
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error);
+      };
+    });
+  }
+  function collectReferencedMediaIds(data) {
+    const rawIds = [];
+    for (const font of data.customFonts || []) {
+      if (typeof font.mediaId === "string") rawIds.push(font.mediaId);
+    }
+    if (data.user?.avatarMediaId && typeof data.user.avatarMediaId === "string") {
+      rawIds.push(data.user.avatarMediaId);
+    }
+    if (data.user?.frameMediaId && typeof data.user.frameMediaId === "string") {
+      rawIds.push(data.user.frameMediaId);
+    }
+    for (const cf of data.customFrames || []) {
+      if (cf?.mediaId && typeof cf.mediaId === "string") {
+        rawIds.push(cf.mediaId);
+      }
+    }
+    for (const r of data.roles || []) {
+      if (typeof r.wallpaperMediaId === "string") rawIds.push(r.wallpaperMediaId);
+      if (r.avatarMediaId && typeof r.avatarMediaId === "string") {
+        rawIds.push(r.avatarMediaId);
+      }
+      if (r.frameMediaId && typeof r.frameMediaId === "string") {
+        rawIds.push(r.frameMediaId);
+      }
+      for (const m of r.chats || []) {
+        if (m.mediaId && typeof m.mediaId === "string") {
+          rawIds.push(m.mediaId);
+        }
+      }
+    }
+    return [...new Set(rawIds.filter(Boolean))];
+  }
+  async function buildBackupPayload(data) {
+    const pack = JSON.parse(JSON.stringify(data));
+    const mediaArr = [];
+    const ids = collectReferencedMediaIds(data);
+    for (const id of ids) {
+      const media = await mediaGet(id);
+      if (!media) continue;
+      const uri = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(media);
+      });
+      mediaArr.push({ id, data: uri });
+    }
+    pack._media = mediaArr;
+    return pack;
+  }
+  async function restoreMediaFromBackup(attachments) {
+    if (!Array.isArray(attachments)) return;
+    for (const item of attachments) {
+      if (!item || !/^[a-zA-Z0-9_-]+$/.test(String(item.id || "")) || !/^data:(audio|image|font)\/[a-z0-9+.-]+;base64,/i.test(String(item.data || ""))) {
+        continue;
+      }
+      const blob = await (await fetch(item.data)).blob();
+      await mediaPut(item.id, blob);
+    }
+  }
+
+  // src/core/appearance.ts
+  var FONT_MAX_BYTES = 20 * 1024 * 1024;
+  var WALLPAPER_MAX_BYTES = 10 * 1024 * 1024;
+  function bubbleSideCSS(raw, side) {
+    return safeBubbleCSS(raw).split("\n").filter((line) => line.startsWith(`.chat-view .message.${side} `)).map((line) => line.replace(/^\.chat-view /, "")).join("\n");
+  }
+  function retargetBubbleCSS(raw, side) {
+    const safe = safeBubbleCSS(raw);
+    if (raw.trim() && !safe) throw new Error("CSS \u4E0D\u53D7\u652F\u6301\uFF1A\u8BF7\u4F7F\u7528\u6C14\u6CE1\u9009\u62E9\u5668\uFF0C\u4E0D\u542B\u5916\u90E8\u8D44\u6E90\u6216\u9875\u9762\u5B9A\u4F4D\u3002");
+    return safe.replace(/^\.chat-view /gm, "").replace(/\.message\.(?:mine|theirs)/g, `.message.${side}`);
+  }
+  function fontFileType(bytes) {
+    const tag = String.fromCharCode(...bytes.slice(0, 4));
+    if (tag === "wOF2") return "font/woff2";
+    if (tag === "wOFF") return "font/woff";
+    if (tag === "OTTO") return "font/otf";
+    if (bytes[0] === 0 && bytes[1] === 1 && bytes[2] === 0 && bytes[3] === 0) return "font/ttf";
+    throw new Error("\u8BF7\u9009\u62E9 WOFF2\u3001WOFF\u3001TTF \u6216 OTF \u5B57\u4F53\u6587\u4EF6\u3002");
+  }
+  function wallpaperFileType(bytes) {
+    if ([137, 80, 78, 71, 13, 10, 26, 10].every((v, i) => bytes[i] === v)) return "image/png";
+    if (bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) return "image/jpeg";
+    if (/^GIF8[79]a/.test(String.fromCharCode(...bytes.slice(0, 6)))) return "image/gif";
+    if (String.fromCharCode(...bytes.slice(0, 4)) === "RIFF" && String.fromCharCode(...bytes.slice(8, 12)) === "WEBP") return "image/webp";
+    throw new Error("\u8BF7\u9009\u62E9 PNG\u3001JPG\u3001GIF \u6216 WebP \u58C1\u7EB8\u3002");
+  }
+  function safeFontUrl(raw) {
+    let url;
+    try {
+      url = new URL(raw.trim());
+    } catch {
+      throw new Error("\u8BF7\u8F93\u5165\u6709\u6548\u7684\u5B57\u4F53\u6587\u4EF6 HTTPS URL\u3002");
+    }
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) || url.username || url.password) throw new Error("\u5B57\u4F53 URL \u9700\u4F7F\u7528 HTTPS\uFF0C\u4E14\u4E0D\u80FD\u5305\u542B\u8D26\u53F7\u5BC6\u7801\u3002");
+    return url.href;
+  }
+  function customFontFamily(id) {
+    return `ElsewhereFont_${id.replace(/[^a-zA-Z0-9]/g, "")}`;
+  }
+
+  // src/terminalAppearance.ts
+  var systemFont = '-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif';
+  var faces = /* @__PURE__ */ new Map();
+  function appearanceFontFamily(data, role) {
+    const font = data.customFonts?.find((f) => f.id === role?.customFontId);
+    return font ? `${customFontFamily(font.id)},${systemFont}` : (role?.font || data.font) === "serif" ? 'Georgia,"Songti SC",serif' : systemFont;
+  }
+  async function loadFont(font, blob) {
+    let pending = faces.get(font.id);
+    if (!pending) {
+      pending = (async () => {
+        const file = blob || await mediaGet(font.mediaId);
+        if (!file) throw new Error("\u627E\u4E0D\u5230\u5DF2\u4FDD\u5B58\u7684\u5B57\u4F53\u6587\u4EF6\uFF0C\u8BF7\u91CD\u65B0\u5BFC\u5165\u3002");
+        const bytes = await file.arrayBuffer();
+        fontFileType(new Uint8Array(bytes));
+        const face = await new FontFace(customFontFamily(font.id), bytes).load();
+        document.fonts.add(face);
+      })();
+      faces.set(font.id, pending);
+      pending.catch(() => faces.delete(font.id));
+    }
+    return pending;
+  }
+  async function hydrateAppearanceFont(data, role) {
+    const font = data.customFonts?.find((f) => f.id === role?.customFontId);
+    if (font) await loadFont(font);
+  }
+  var themes = [["blue", "\u84DD\u8272"], ["green", "\u7EFF\u8272"], ["pink", "\u7C89\u8272"], ["coffee", "\u5361\u5E03\u5947\u8BFA"], ["night", "\u591C\u665A"]];
+  function createTerminalAppearance(hooks) {
+    let host = null, owner = "", draft = null, version = 0, urls = [], fontRequest = null;
+    const drafts = /* @__PURE__ */ new Map();
+    const field = (name) => host?.querySelector(`[name="${name}"]`);
+    const objectUrl = (blob) => {
+      const url = URL.createObjectURL(blob);
+      urls.push(url);
+      return url;
+    };
+    function read() {
+      if (!draft) return;
+      draft.font = field("appearance-font")?.value || draft.font;
+      draft.mine = field("bubble-mine")?.value ?? draft.mine;
+      draft.theirs = field("bubble-theirs")?.value ?? draft.theirs;
+    }
+    const alive = (id) => id === version && host?.isConnected && hooks.role()?.id === owner;
+    function feedback(message) {
+      const status = host?.querySelector("[data-style-status]");
+      if (status) status.textContent = message;
+      hooks.notify(message);
+    }
+    function preview() {
+      if (!host || !draft) return;
+      const style = host.querySelector("style[data-bubble-preview-css]");
+      if (style) style.textContent = safeBubbleCSS(draft.mine + "\n" + draft.theirs).replace(/\.chat-view /g, ".bubble-preview ");
+      const sample = host.querySelector("[data-font-preview]");
+      if (sample) {
+        const font = draft.fonts.find((f) => f.id === draft?.font);
+        sample.style.fontFamily = font ? `${customFontFamily(font.id)},${systemFont}` : draft.font === "serif" ? 'Georgia,"Songti SC",serif' : systemFont;
+      }
+      host.querySelectorAll("[data-style-theme]").forEach((b) => {
+        b.classList.toggle("active", b.dataset.styleTheme === draft?.theme);
+        b.setAttribute("aria-pressed", String(b.dataset.styleTheme === draft?.theme));
+      });
+      const wall = host.querySelector("[data-wallpaper-preview]");
+      if (wall) wall.dataset.theme = draft.theme;
+    }
+    function fontOptions() {
+      const select = field("appearance-font");
+      if (!(select instanceof HTMLSelectElement) || !draft) return;
+      select.innerHTML = '<option value="system">\u7CFB\u7EDF\u5B57\u4F53</option><option value="serif">\u886C\u7EBF\u5B57\u4F53</option>' + draft.fonts.map((f) => `<option value="${escHtml(f.id)}">${escHtml(f.name)}</option>`).join("");
+      select.value = draft.font;
+    }
+    function presetOptions() {
+      if (!host) return;
+      for (const side of ["mine", "theirs"]) {
+        const select = host.querySelector(`[data-bubble-preset="${side}"]`);
+        if (select) {
+          const previous = select.value;
+          select.innerHTML = '<option value="">\u5F53\u524D\u81EA\u5B9A\u4E49\u6837\u5F0F</option>' + (hooks.data().bubblePresets || []).map((p) => `<option value="${escHtml(p.id)}">${escHtml(p.name)}</option>`).join("");
+          select.value = previous;
+        }
+      }
+    }
+    async function wallpaperPreview() {
+      const d = draft, id = version, box = host?.querySelector("[data-wallpaper-preview]");
+      if (!d || !box) return;
+      for (const url of urls) URL.revokeObjectURL(url);
+      urls = [];
+      box.replaceChildren();
+      if (!d.wallpaper) return;
+      try {
+        const blob = d.wallpaperBlob || await mediaGet(d.wallpaper);
+        if (!alive(id) || draft !== d || !blob) return;
+        const img = document.createElement("img");
+        img.alt = "\u58C1\u7EB8\u9884\u89C8";
+        img.src = objectUrl(blob);
+        box.replaceChildren(img);
+      } catch {
+        if (alive(id)) feedback("\u58C1\u7EB8\u9884\u89C8\u8BFB\u53D6\u5931\u8D25\uFF0C\u5DF2\u4FDD\u5B58\u7684\u58C1\u7EB8\u672A\u6539\u53D8\u3002");
+      }
+    }
+    function render() {
+      if (!host || !draft) return;
+      const appearance = host.querySelector('[data-style-body="appearance"]'), bubbles = host.querySelector('[data-style-body="bubbles"]');
+      if (appearance) appearance.innerHTML = `<form data-style-form="appearance"><p class="sub">\u5F53\u524D\u89D2\u8272\u7684\u989C\u8272\u3001\u58C1\u7EB8\u548C\u5B57\u4F53\uFF0C\u9884\u89C8\u540E\u4E00\u8D77\u4FDD\u5B58\u3002</p><label class="terminal-label">\u4E3B\u9898\u989C\u8272</label><div class="theme-swatches">${themes.map(([id, name]) => `<button type="button" class="swatch swatch-${id}" data-style-theme="${id}"><i></i>${name}</button>`).join("")}</div><div class="terminal-wallpaper-line"><div class="terminal-wallpaper-preview" data-wallpaper-preview aria-label="\u58C1\u7EB8\u9884\u89C8"></div><div><label class="btn small ghost terminal-file-button">${uiIcon("upload")} \u5BFC\u5165\u58C1\u7EB8<input type="file" accept="image/png,image/jpeg,image/gif,image/webp" data-style-file="wallpaper" hidden></label><button class="btn small secondary" type="button" data-style-action="clear-wallpaper">\u6062\u590D\u9ED8\u8BA4\u58C1\u7EB8</button><p class="sub">PNG / JPG / GIF / WebP \xB7 \u6700\u591A 10MB</p></div></div><div class="row between"><label for="appearance-font">\u5B57\u4F53</label><button class="btn small ghost" type="button" data-style-action="font-open" aria-label="\u6DFB\u52A0\u5B57\u4F53">${uiIcon("plus")} \u6DFB\u52A0\u5B57\u4F53</button></div><select id="appearance-font" class="field" name="appearance-font"></select><div class="terminal-font-import" data-font-import hidden><label class="terminal-label">\u5B57\u4F53\u5907\u6CE8\u540D<input name="font-name" class="field" maxlength="80" placeholder="\u4F8B\u5982\uFF1A\u67D4\u548C\u624B\u5199"></label><label class="terminal-label">\u5B57\u4F53\u6587\u4EF6 URL<input name="font-url" type="url" class="field" placeholder="https://\u2026/font.woff2"></label><label class="terminal-label">\u6216\u9009\u62E9\u5B57\u4F53\u6587\u4EF6<input name="font-file" type="file" class="field" accept=".woff2,.woff,.ttf,.otf"></label><div class="row"><button type="button" class="btn small" data-style-action="import-font">\u5BFC\u5165\u5E76\u9884\u89C8</button><button type="button" class="btn small secondary" data-style-action="font-cancel">\u53D6\u6D88</button></div><p class="sub">\u76F4\u63A5\u5BFC\u5165\u5B57\u4F53\u6587\u4EF6\uFF0C\u6700\u591A 20MB\uFF1BURL \u9700\u5141\u8BB8\u8DE8\u57DF\u8BFB\u53D6\u3002</p></div><div class="terminal-font-preview" data-font-preview>\u5728\u8FD9\u91CC\uFF0C\u6545\u4E8B\u6162\u6162\u53D1\u751F\u3002<br>Elsewhere \xB7 0123456789</div><button class="btn small" type="submit">\u4FDD\u5B58\u4E3B\u9898\u4E0E\u5916\u89C2</button><p class="sub" role="status" data-style-status></p></form>`;
+      if (bubbles) bubbles.innerHTML = `<form data-style-form="bubbles"><p class="sub">\u4E3A\u5F53\u524D\u89D2\u8272\u7684\u8FD9\u90E8\u624B\u673A\u5206\u522B\u914D\u7F6E\u4E24\u4FA7\u6C14\u6CE1\uFF1B\u4FDD\u5B58\u7684\u6837\u5F0F\u9884\u8BBE\u53EF\u4F9B\u6240\u6709\u89D2\u8272\u9009\u7528\u3002</p><div class="bubble-preview" aria-label="\u7528\u6237\u4E0E\u89D2\u8272\u6C14\u6CE1\u9884\u89C8"><style data-bubble-preview-css></style><div class="message theirs"><div class="bubble">\u4ECA\u5929\u600E\u4E48\u6837\uFF1F\u4E00\u8D77\u804A\u804A\u5427\u3002</div></div><div class="message mine"><div class="bubble">\u597D\u5440\uFF0C\u6211\u6709\u4EF6\u4E8B\u60F3\u544A\u8BC9\u4F60\u3002</div></div></div><div class="terminal-bubble-columns">${["mine", "theirs"].map((side) => `<section class="terminal-bubble-side"><h3>${side === "mine" ? "\u6211\u7684\u6C14\u6CE1" : "\u89D2\u8272\u6C14\u6CE1"}</h3><label class="terminal-label">\u9009\u62E9\u5DF2\u4FDD\u5B58\u7684\u6837\u5F0F<select class="field" data-bubble-preset="${side}" aria-label="${side === "mine" ? "\u6211\u7684" : "\u89D2\u8272"}\u6C14\u6CE1\u9884\u8BBE"></select></label><label class="btn small ghost terminal-file-button">${uiIcon("upload")} \u5BFC\u5165 CSS<input type="file" accept=".css,text/css" data-style-file="${side}" hidden></label><textarea class="field bubble-editor" name="bubble-${side}" spellcheck="false" aria-label="${side === "mine" ? "\u6211\u7684" : "\u89D2\u8272"}\u6C14\u6CE1 CSS" placeholder=".message.${side} .bubble { background: #f2e4fa; }">${escHtml(draft[side])}</textarea><label class="terminal-label">\u9884\u8BBE\u5907\u6CE8<input class="field" name="preset-name-${side}" maxlength="80" placeholder="\u7ED9\u8FD9\u4E2A\u6837\u5F0F\u8D77\u4E2A\u540D\u5B57"></label><div class="row terminal-wrap"><button class="btn small secondary" type="button" data-style-action="save-preset" data-side="${side}">\u4FDD\u5B58\u6837\u5F0F\u9884\u8BBE</button><button class="btn small ghost" type="button" data-style-action="clear-bubble" data-side="${side}">\u6062\u590D\u9ED8\u8BA4</button></div></section>`).join("")}</div><p class="sub">\u4EC5\u652F\u6301\u6C14\u6CE1 CSS\uFF08\u4E24\u4FA7\u5408\u8BA1\u6700\u591A 12KB\uFF09\uFF0C\u4E0D\u52A0\u8F7D\u5916\u90E8\u8D44\u6E90\uFF0C\u4E0D\u4FEE\u6539\u9875\u9762\u5176\u4ED6\u533A\u57DF\u3002</p><button class="btn small" type="submit">\u4FDD\u5B58\u4E24\u4FA7\u6C14\u6CE1</button><p class="sub" role="status" data-bubble-status></p></form>`;
+      fontOptions();
+      presetOptions();
+      preview();
+      void wallpaperPreview();
+    }
+    async function importFont() {
+      if (!draft || !host) return;
+      read();
+      const name = field("font-name")?.value.trim(), file = host.querySelector('[name="font-file"]')?.files?.[0], url = field("font-url")?.value.trim();
+      if (!name) {
+        feedback("\u8BF7\u5148\u586B\u5199\u5B57\u4F53\u5907\u6CE8\u540D\u3002");
+        return;
+      }
+      if (!file && !url) {
+        feedback("\u8BF7\u9009\u62E9\u5B57\u4F53\u6587\u4EF6\u6216\u586B\u5199\u5B57\u4F53 URL\u3002");
+        return;
+      }
+      fontRequest?.abort();
+      const controller = new AbortController();
+      fontRequest = controller;
+      const id = ++version, d = draft;
+      const button = host.querySelector('[data-style-action="import-font"]');
+      if (button) button.disabled = true;
+      const timer = setTimeout(() => controller.abort(), 15e3);
+      try {
+        let blob;
+        if (file) blob = file;
+        else {
+          const response = await fetch(safeFontUrl(url), { credentials: "omit", redirect: "error", signal: controller.signal });
+          if (!response.ok) throw new Error("\u5B57\u4F53\u4E0B\u8F7D\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u5730\u5740\u548C\u8DE8\u57DF\u6743\u9650\u3002");
+          if (Number(response.headers.get("content-length")) > FONT_MAX_BYTES) throw new Error("\u5B57\u4F53\u6700\u591A 20MB\u3002");
+          blob = await response.blob();
+        }
+        if (!blob.size || blob.size > FONT_MAX_BYTES) throw new Error("\u5B57\u4F53\u6587\u4EF6\u4E3A\u7A7A\u6216\u8D85\u8FC7 20MB\u3002");
+        const bytes = await blob.arrayBuffer();
+        blob = new Blob([bytes], { type: fontFileType(new Uint8Array(bytes)) });
+        const font = { id: makeUid("font"), name, mediaId: makeUid("fontmedia"), blob };
+        await loadFont(font, blob);
+        if (!alive(id) || draft !== d) return;
+        d.fonts.push(font);
+        d.font = font.id;
+        fontOptions();
+        preview();
+        const panel = host?.querySelector("[data-font-import]");
+        if (panel) panel.hidden = true;
+        feedback("\u5B57\u4F53\u5DF2\u8F7D\u5165\u9884\u89C8\uFF0C\u4FDD\u5B58\u5916\u89C2\u540E\u4FDD\u7559\u3002");
+      } catch (error) {
+        if (alive(id)) feedback(error instanceof Error && error.name !== "TypeError" && error.name !== "AbortError" ? error.message : "\u5B57\u4F53\u5BFC\u5165\u5931\u8D25\u6216\u8D85\u65F6\uFF0C\u8BF7\u68C0\u67E5\u6587\u4EF6\u4E0E\u8DE8\u57DF\u6743\u9650\u3002");
+      } finally {
+        clearTimeout(timer);
+        if (fontRequest === controller) fontRequest = null;
+        if (button?.isConnected) button.disabled = false;
+      }
+    }
+    async function importFile(input2) {
+      const file = input2.files?.[0], kind = input2.dataset.styleFile;
+      if (!file || !draft) return;
+      input2.value = "";
+      read();
+      const id = ++version, d = draft;
+      try {
+        if (kind === "wallpaper") {
+          if (!file.size || file.size > WALLPAPER_MAX_BYTES) throw new Error("\u58C1\u7EB8\u6587\u4EF6\u4E3A\u7A7A\u6216\u8D85\u8FC7 10MB\u3002");
+          const bytes = await file.arrayBuffer(), blob = new Blob([bytes], { type: wallpaperFileType(new Uint8Array(bytes)) }), img = new Image(), url = URL.createObjectURL(blob);
+          try {
+            img.src = url;
+            await img.decode();
+          } finally {
+            URL.revokeObjectURL(url);
+          }
+          if (!alive(id) || draft !== d) return;
+          d.wallpaper = makeUid("wallpaper");
+          d.wallpaperBlob = blob;
+          await wallpaperPreview();
+          feedback("\u58C1\u7EB8\u5DF2\u8F7D\u5165\u9884\u89C8\uFF0C\u4FDD\u5B58\u5916\u89C2\u540E\u5E94\u7528\u3002");
+        } else if (kind === "mine" || kind === "theirs") {
+          if (file.size > BUBBLE_CSS_LIMIT) throw new Error("CSS \u6587\u4EF6\u6700\u591A 12KB\u3002");
+          const raw = await file.text();
+          if (!raw.trim()) throw new Error("CSS \u6587\u4EF6\u4E3A\u7A7A\u3002");
+          const css = retargetBubbleCSS(raw, kind);
+          if (!alive(id) || draft !== d) return;
+          d[kind] = css;
+          const editor = field("bubble-" + kind);
+          if (editor) editor.value = css;
+          const name = field("preset-name-" + kind);
+          if (name) name.value = file.name.replace(/\.css$/i, "");
+          const selected = host?.querySelector(`[data-bubble-preset="${kind}"]`);
+          if (selected) selected.value = "";
+          preview();
+          feedback("CSS \u5DF2\u8F7D\u5165\u9884\u89C8\uFF0C\u5C1A\u672A\u5E94\u7528\u5230\u804A\u5929\u3002");
+        }
+      } catch (error) {
+        if (alive(id)) feedback(error instanceof Error ? error.message : "\u6587\u4EF6\u8BFB\u53D6\u5931\u8D25\uFF0C\u539F\u8BBE\u7F6E\u672A\u6539\u53D8\u3002");
+      }
+    }
+    async function saveAppearance() {
+      if (!draft) return;
+      read();
+      const d = draft, r = hooks.role(), data = hooks.data(), id = version;
+      if (!r || r.id !== owner) return;
+      const uploaded = [];
+      const previous = { theme: r.theme, font: r.font, customFontId: r.customFontId, wallpaperMediaId: r.wallpaperMediaId, fonts: data.customFonts };
+      const button = host?.querySelector('[data-style-form="appearance"] button[type="submit"]');
+      if (button) button.disabled = true;
+      try {
+        if (d.wallpaperBlob) {
+          await mediaPut(d.wallpaper, d.wallpaperBlob);
+          uploaded.push(d.wallpaper);
+        }
+        for (const font of d.fonts) {
+          if (font.blob) {
+            await mediaPut(font.mediaId, font.blob);
+            uploaded.push(font.mediaId);
+          }
+        }
+        if (!alive(id)) throw new Error("\u9875\u9762\u6216\u89D2\u8272\u5DF2\u6539\u53D8\uFF0C\u5C1A\u672A\u5E94\u7528\u5916\u89C2\u3002");
+        r.theme = d.theme;
+        r.font = d.font === "serif" ? "serif" : "system";
+        r.customFontId = d.fonts.some((f) => f.id === d.font) ? d.font : "";
+        r.wallpaperMediaId = d.wallpaper;
+        data.customFonts = [...data.customFonts || []];
+        for (const { id: id2, name, mediaId } of d.fonts) {
+          if (!data.customFonts.some((f) => f.id === id2)) data.customFonts.push({ id: id2, name, mediaId });
+        }
+        if (!hooks.save()) throw new Error("\u5916\u89C2\u672A\u4FDD\u5B58\uFF0C\u8BF7\u68C0\u67E5\u672C\u5730\u5B58\u50A8\u540E\u91CD\u8BD5\u3002");
+        d.wallpaperBlob = void 0;
+        d.fonts = d.fonts.map(({ id: id2, name, mediaId }) => ({ id: id2, name, mediaId }));
+        hooks.apply();
+        hooks.notify("\u4E3B\u9898\u3001\u58C1\u7EB8\u548C\u5B57\u4F53\u5DF2\u4FDD\u5B58\u3002");
+      } catch (error) {
+        r.theme = previous.theme;
+        r.font = previous.font;
+        r.customFontId = previous.customFontId;
+        r.wallpaperMediaId = previous.wallpaperMediaId;
+        data.customFonts = previous.fonts;
+        await Promise.allSettled(uploaded.map(mediaDelete));
+        if (alive(id)) feedback(error instanceof Error ? error.message : "\u5916\u89C2\u4FDD\u5B58\u5931\u8D25\uFF0C\u539F\u8BBE\u7F6E\u5DF2\u4FDD\u7559\u3002");
+      } finally {
+        if (button?.isConnected) button.disabled = false;
+      }
+    }
+    function saveBubbles() {
+      if (!draft) return;
+      read();
+      const r = hooks.role();
+      if (!r || r.id !== owner) return;
+      try {
+        if (draft.mine.length > BUBBLE_CSS_LIMIT || draft.theirs.length > BUBBLE_CSS_LIMIT) throw new Error("\u6BCF\u4FA7 CSS \u6700\u591A 12KB\u3002");
+        const css = retargetBubbleCSS(draft.mine, "mine") + "\n" + retargetBubbleCSS(draft.theirs, "theirs");
+        if (css.length > BUBBLE_CSS_LIMIT) throw new Error("\u4E24\u4FA7 CSS \u5408\u8BA1\u6700\u591A 12KB\u3002");
+        const previous = r.bubbleCSS;
+        r.bubbleCSS = css.trim();
+        if (!hooks.save()) {
+          r.bubbleCSS = previous;
+          throw new Error("\u6C14\u6CE1\u4FDD\u5B58\u5931\u8D25\uFF0C\u539F\u8BBE\u7F6E\u548C\u5F53\u524D\u8349\u7A3F\u5DF2\u4FDD\u7559\u3002");
+        }
+        hooks.apply();
+        hooks.notify("\u4E24\u4FA7\u6C14\u6CE1\u5DF2\u4FDD\u5B58\u3002");
+      } catch (error) {
+        feedback(error instanceof Error ? error.message : "\u6C14\u6CE1\u4FDD\u5B58\u5931\u8D25\u3002");
+      }
+    }
+    function savePreset(side) {
+      read();
+      if (!draft) return;
+      const name = field("preset-name-" + side)?.value.trim();
+      if (!name) {
+        feedback("\u8BF7\u586B\u5199\u9884\u8BBE\u5907\u6CE8\u540D\u3002");
+        return;
+      }
+      try {
+        if (draft[side].length > BUBBLE_CSS_LIMIT) throw new Error("CSS \u6700\u591A 12KB\u3002");
+        const css = retargetBubbleCSS(draft[side], side);
+        if (!css.trim()) throw new Error("\u8BF7\u5148\u5BFC\u5165\u6216\u586B\u5199 CSS\u3002");
+        const data = hooks.data(), previous = data.bubblePresets, selected = host?.querySelector(`[data-bubble-preset="${side}"]`)?.value, existing = previous?.find((p) => p.id === selected);
+        data.bubblePresets = existing ? previous.map((p) => p.id === existing.id ? { ...p, name, css } : p) : [...previous || [], { id: makeUid("bubble"), name, css }];
+        if (!hooks.save()) {
+          data.bubblePresets = previous;
+          throw new Error("\u9884\u8BBE\u4FDD\u5B58\u5931\u8D25\uFF0C\u8349\u7A3F\u4ECD\u4FDD\u7559\u3002");
+        }
+        presetOptions();
+        const choice = host?.querySelector(`[data-bubble-preset="${side}"]`);
+        if (choice) choice.value = (existing || data.bubblePresets.at(-1)).id;
+        feedback("\u5DF2\u5B58\u4E3A\u901A\u7528\u9884\u8BBE\uFF0C\u53EF\u5728\u4E24\u4FA7\u548C\u5176\u4ED6\u89D2\u8272\u4E2D\u9009\u62E9\u3002");
+      } catch (error) {
+        feedback(error instanceof Error ? error.message : "\u9884\u8BBE\u4FDD\u5B58\u5931\u8D25\u3002");
+      }
+    }
+    const click = (event) => {
+      const target = event.target instanceof Element ? event.target.closest("[data-style-action],[data-style-theme]") : null;
+      if (!target || !draft) return;
+      event.preventDefault();
+      event.stopPropagation();
+      read();
+      const action = target.dataset.styleAction, side = target.dataset.side === "mine" ? "mine" : "theirs";
+      if (target.dataset.styleTheme) {
+        version++;
+        draft.theme = target.dataset.styleTheme;
+        preview();
+        return;
+      }
+      if (action === "font-open" || action === "font-cancel") {
+        const panel = host?.querySelector("[data-font-import]");
+        if (panel) panel.hidden = action === "font-cancel";
+        if (action === "font-cancel") {
+          version++;
+          fontRequest?.abort();
+          fontRequest = null;
+        }
+      }
+      if (action === "import-font") void importFont();
+      if (action === "clear-wallpaper") {
+        version++;
+        draft.wallpaper = "";
+        draft.wallpaperBlob = void 0;
+        void wallpaperPreview();
+      }
+      if (action === "clear-bubble") {
+        draft[side] = "";
+        const editor = field("bubble-" + side);
+        if (editor) editor.value = "";
+        preview();
+      }
+      if (action === "save-preset") savePreset(side);
+    };
+    const input = (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) || !target.closest("[data-style-panel]") || !draft) return;
+      event.stopPropagation();
+      read();
+      if (target.matches("[data-bubble-preset]") && event.type === "change") {
+        const side = target.dataset.bubblePreset === "mine" ? "mine" : "theirs", preset = hooks.data().bubblePresets?.find((p) => p.id === target.value);
+        if (preset) {
+          draft[side] = retargetBubbleCSS(preset.css, side);
+          const editor = field("bubble-" + side);
+          if (editor) editor.value = draft[side];
+          const name = field("preset-name-" + side);
+          if (name) name.value = preset.name;
+        }
+      }
+      if (event.type === "input" && target.matches('[name^="bubble-"],[name="font-name"],[name="font-url"]')) version++;
+      if (event.type === "change" && target.name === "appearance-font") {
+        version++;
+        const font = draft.fonts.find((f) => f.id === draft?.font), id = version;
+        if (font) void loadFont(font, font.blob).catch(() => {
+          if (alive(id)) feedback("\u5B57\u4F53\u8BFB\u53D6\u5931\u8D25\uFF0C\u8BF7\u91CD\u65B0\u5BFC\u5165\u3002");
+        });
+      }
+      if (event.type === "change" && target instanceof HTMLInputElement && target.dataset.styleFile) void importFile(target);
+      preview();
+    };
+    const submit = (event) => {
+      const form = event.target;
+      if (!(form instanceof HTMLFormElement) || !form.dataset.styleForm) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (form.dataset.styleForm === "appearance") void saveAppearance();
+      else saveBubbles();
+    };
+    function detach() {
+      read();
+      version++;
+      fontRequest?.abort();
+      fontRequest = null;
+      if (host) {
+        host.removeEventListener("click", click);
+        host.removeEventListener("input", input);
+        host.removeEventListener("change", input);
+        host.removeEventListener("submit", submit);
+      }
+      host = null;
+      for (const url of urls) URL.revokeObjectURL(url);
+      urls = [];
+    }
+    return { detach, mount(element) {
+      detach();
+      host = element;
+      const r = hooks.role();
+      if (!host || !r) return;
+      owner = r.id;
+      draft = drafts.get(owner) || { theme: r.theme || "blue", font: r.customFontId || r.font || hooks.data().font, wallpaper: r.wallpaperMediaId || "", fonts: [...hooks.data().customFonts || []], mine: bubbleSideCSS(r.bubbleCSS || "", "mine"), theirs: bubbleSideCSS(r.bubbleCSS || "", "theirs") };
+      drafts.set(owner, draft);
+      for (const font of hooks.data().customFonts || []) if (!draft.fonts.some((f) => f.id === font.id)) draft.fonts.push(font);
+      host.addEventListener("click", click);
+      host.addEventListener("input", input);
+      host.addEventListener("change", input);
+      host.addEventListener("submit", submit);
+      render();
+      const id = version;
+      const selectedFont = draft.fonts.find((f) => f.id === draft?.font);
+      if (selectedFont) void loadFont(selectedFont, selectedFont.blob).catch(() => {
+        if (alive(id) && draft?.font === selectedFont.id) feedback("\u5B57\u4F53\u8BFB\u53D6\u5931\u8D25\uFF0C\u8BF7\u91CD\u65B0\u5BFC\u5165\u3002");
+      });
+    } };
+  }
+
   // src/core/outputBudget.ts
   function completionLimit(settings, task) {
     const model = settings.model.toLowerCase().split("/").at(-1) || "";
@@ -4826,6 +5481,12 @@ ${groundedLines.length ? groundedLines.join("\n") : `\uFF08\u5F53\u5929\u6682\u6
     if (!Array.isArray(data.customFrames)) {
       data.customFrames = [];
     }
+    data.customFonts = Array.isArray(data.customFonts) ? data.customFonts.filter(
+      (font) => Boolean(font && typeof font === "object" && "id" in font && typeof font.id === "string" && /^[a-zA-Z0-9_-]+$/.test(font.id) && "mediaId" in font && typeof font.mediaId === "string" && /^[a-zA-Z0-9_-]+$/.test(font.mediaId) && "name" in font && typeof font.name === "string" && font.name.length > 0 && font.name.length <= 80)
+    ) : [];
+    data.bubblePresets = Array.isArray(data.bubblePresets) ? data.bubblePresets.filter(
+      (preset) => Boolean(preset && typeof preset === "object" && "id" in preset && typeof preset.id === "string" && "name" in preset && typeof preset.name === "string" && preset.name.length > 0 && preset.name.length <= 80 && "css" in preset && typeof preset.css === "string" && preset.css.length <= BUBBLE_CSS_LIMIT && safeBubbleCSS(preset.css))
+    ) : [];
     if (data.roles.length === 2 && data.roles.every(isUntouchedSample) && !data.sampleMigrated) {
       data.roles = [makeNain()];
       data.selected = null;
@@ -4931,52 +5592,15 @@ ${groundedLines.length ? groundedLines.join("\n") : `\uFF08\u5F53\u5929\u6682\u6
     }
   }
 
-  // src/core/modelDiscovery.ts
-  function normalizeApiBase(value) {
-    let url;
-    try {
-      url = new URL(value.trim());
-    } catch {
-      throw new Error("\u8BF7\u8F93\u5165\u6709\u6548\u7684 HTTP(S) API Base URL");
-    }
-    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("API \u5730\u5740\u4E0D\u80FD\u5305\u542B\u51ED\u636E\u3001\u67E5\u8BE2\u53C2\u6570\u6216\u7247\u6BB5\uFF1BKey \u8BF7\u586B\u5165\u4E13\u7528\u8F93\u5165\u6846");
-    const path = url.pathname.replace(/\/+$/, "").replace(/\/(?:chat\/completions|models)$/, "");
-    return url.origin + path;
-  }
-  async function fetchModelIds(base, key, options = {}) {
-    const url = normalizeApiBase(base) + "/models";
-    let response;
-    try {
-      response = await (options.fetcher || fetch)(url, { method: "GET", headers: key ? { Authorization: "Bearer " + key } : {}, credentials: "omit", redirect: "error", signal: options.signal });
-    } catch {
-      throw new Error(options.signal?.aborted ? "\u8BF7\u6C42\u5DF2\u53D6\u6D88\u6216\u8D85\u65F6\uFF0C\u8BF7\u91CD\u8BD5" : "\u65E0\u6CD5\u8BFB\u53D6\u6A21\u578B\u5217\u8868\uFF1A\u7F51\u7EDC\u3001CORS\u3001\u6D4F\u89C8\u5668\u6765\u6E90\u6216\u91CD\u5B9A\u5411\u9650\u5236\u3002\u53EF\u624B\u52A8\u8F93\u5165\u6A21\u578B ID\u3002");
-    }
-    if (!response.ok) throw new Error(response.status === 401 || response.status === 403 ? "\u6A21\u578B\u5217\u8868\u9274\u6743\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5 API Key \u4E0E\u6743\u9650\u3002" : response.status === 404 || response.status === 405 ? "\u670D\u52A1\u672A\u63D0\u4F9B\u517C\u5BB9\u7684\u6A21\u578B\u5217\u8868\u63A5\u53E3\uFF0C\u8BF7\u624B\u52A8\u8F93\u5165\u6A21\u578B ID\u3002" : `\u6A21\u578B\u5217\u8868\u8BF7\u6C42\u5931\u8D25\uFF08HTTP ${response.status}\uFF09\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u6216\u624B\u52A8\u8F93\u5165\u3002`);
-    if (Number(response.headers.get("content-length")) > 2e6) throw new Error("\u6A21\u578B\u5217\u8868\u54CD\u5E94\u8FC7\u5927\uFF0C\u5DF2\u505C\u6B62\u5904\u7406");
-    let data;
-    try {
-      const body = await response.text();
-      if (body.length > 2e6) throw new Error();
-      data = JSON.parse(body);
-    } catch {
-      throw new Error("\u6A21\u578B\u5217\u8868\u4E0D\u662F\u53D7\u652F\u6301\u7684 JSON \u683C\u5F0F\uFF0C\u8BF7\u624B\u52A8\u8F93\u5165\u6A21\u578B ID\u3002");
-    }
-    if (!data || typeof data !== "object" || !("data" in data) || !Array.isArray(data.data) || data.data.length > 5e3) throw new Error("\u6A21\u578B\u5217\u8868\u9700\u8981 data \u6570\u7EC4\uFF0C\u8BF7\u624B\u52A8\u8F93\u5165\u6A21\u578B ID\u3002");
-    const ids = [...new Set(data.data.flatMap((item) => item && typeof item === "object" && "id" in item && typeof item.id === "string" && item.id.trim() && item.id.length <= 512 ? [item.id] : []))].sort();
-    if (!ids.length) throw new Error("\u670D\u52A1\u8FD4\u56DE\u4E86\u7A7A\u6A21\u578B\u5217\u8868\uFF0C\u8BF7\u624B\u52A8\u8F93\u5165\u6A21\u578B ID\u3002");
-    return ids;
-  }
-
   // src/terminalApi.ts
   function createTerminalApi(hooks) {
-    let host = null, draft = null, key = "", type = "compatible", models = [], status = "", search = "", request = null, requestId = 0;
-    const read = () => {
+    let host = null, draft = null, key = "", keyEndpoint = "", models = [], status = "", request = null, requestId = 0;
+    const value = (name) => host?.querySelector(`[name="${name}"]`)?.value || "";
+    function read() {
       if (!host || !draft) return;
-      const value = (name) => host?.querySelector(`[name="${name}"]`)?.value || "";
       draft = { ...draft, mode: value("mode") === "api" ? "api" : "demo", endpoint: value("endpoint"), model: value("model"), temperature: Number(value("temperature")) };
       key = value("token");
-      type = value("apiType");
-    };
+    }
     function cancel() {
       requestId++;
       request?.abort();
@@ -4987,21 +5611,21 @@ ${groundedLines.length ? groundedLines.join("\n") : `\uFF08\u5F53\u5929\u6682\u6
       if (node) node.textContent = status;
       const button = host?.querySelector("[data-api-models]");
       if (button) {
-        button.disabled = Boolean(request) || type === "manual";
+        button.disabled = Boolean(request);
         button.textContent = request ? "\u6B63\u5728\u8BFB\u53D6\u2026" : "\u62C9\u53D6\u6A21\u578B";
       }
     }
     function options() {
-      const select = host?.querySelector("[data-api-model-choice]");
+      const select = host?.querySelector('[name="model"]');
       if (!select) return;
-      const visible = models.filter((id) => id.toLowerCase().includes(search.toLowerCase()));
-      select.innerHTML = '<option value="">\u9009\u62E9\u6A21\u578B\uFF08\u4E5F\u53EF\u624B\u52A8\u8F93\u5165\uFF09</option>' + visible.map((id) => `<option ${draft?.model === id ? "selected" : ""}>${escHtml(id)}</option>`).join("");
+      const ids = [...new Set([draft?.model || "", ...models].filter(Boolean))];
+      select.innerHTML = '<option value="">\u8BF7\u5148\u62C9\u53D6\u5E76\u9009\u62E9\u6A21\u578B</option>' + ids.map((id) => `<option value="${escHtml(id)}" ${draft?.model === id ? "selected" : ""}>${escHtml(id)}</option>`).join("");
     }
     function render() {
       if (!host || !draft) return;
-      host.innerHTML = `<div class="terminal-heading"><span>01</span><div><h3>API \u4E0E\u6A21\u578B</h3><p>\u5148\u8FDE\u63A5\uFF0C\u518D\u9009\u62E9\u6A21\u578B\u3002Key \u4EC5\u5728\u672C\u9875\u5185\u5B58\u4E2D\u3002</p></div></div><form data-terminal-api novalidate><div class="terminal-field-grid"><label>\u8FD0\u884C\u65B9\u5F0F<select class="field" name="mode"><option value="demo" ${draft.mode === "demo" ? "selected" : ""}>\u672C\u5730\u6F14\u793A\uFF08\u65E0\u9700 API\uFF09</option><option value="api" ${draft.mode === "api" ? "selected" : ""}>\u8FDE\u63A5\u771F\u5B9E API</option></select></label><label>API \u7C7B\u578B / \u517C\u5BB9\u63A5\u53E3<select class="field" name="apiType"><option value="openai" ${type === "openai" ? "selected" : ""}>OpenAI \xB7 Chat Completions</option><option value="compatible" ${type === "compatible" ? "selected" : ""}>\u81EA\u5B9A\u4E49 OpenAI \u517C\u5BB9\u63A5\u53E3</option><option value="manual" ${type === "manual" ? "selected" : ""}>\u517C\u5BB9\u63A5\u53E3 \xB7 \u4EC5\u624B\u52A8\u6A21\u578B ID</option></select></label></div><label class="terminal-label">API Base URL<input class="field" name="endpoint" value="${escHtml(draft.endpoint)}" placeholder="https://example.com/v1" autocomplete="url"></label><label class="terminal-label">API Key \xB7 \u5237\u65B0\u540E\u6E05\u7A7A<input class="field" name="token" type="password" autocomplete="off" placeholder="\u4EC5\u672C\u9875\u5185\u5B58\uFF0C\u4E0D\u5199\u5165\u5B58\u6863\u6216\u9884\u8BBE"></label><div class="terminal-model-toolbar"><button class="fruit-button" type="button" data-api-models>\u62C9\u53D6\u6A21\u578B</button><span>\u53EA\u8BFB\u53D6 /models\uFF0C\u4E0D\u751F\u6210\u56DE\u590D</span></div><div class="terminal-field-grid"><label>\u641C\u7D22\u5DF2\u62C9\u53D6\u6A21\u578B<input class="field" type="search" data-api-model-search placeholder="\u6309\u6A21\u578B ID \u641C\u7D22" value="${escHtml(search)}"></label><label>\u6A21\u578B\u5217\u8868<select class="field" data-api-model-choice aria-label="\u6A21\u578B\u5217\u8868"></select></label></div><label class="terminal-label">\u6A21\u578B ID \xB7 \u53EF\u76F4\u63A5\u624B\u52A8\u8F93\u5165<input class="field" name="model" maxlength="512" value="${escHtml(draft.model)}" placeholder="\u670D\u52A1\u4E0D\u652F\u6301\u5217\u8868\u65F6\uFF0C\u5728\u8FD9\u91CC\u586B\u5199"></label><div class="terminal-field-grid"><label>Temperature<input class="field" name="temperature" type="number" min="0" max="2" step="0.1" value="${draft.temperature}"></label></div><div class="terminal-api-footer"><button class="fruit-button fruit-primary">\u4FDD\u5B58\u8BBE\u7F6E</button><p role="status" aria-live="polite" data-api-status>${escHtml(status)}</p></div><p class="terminal-caption">\u9700\u8981\u670D\u52A1\u5141\u8BB8\u5F53\u524D\u6D4F\u89C8\u5668\u6765\u6E90\u7684 CORS\u3002\u79BB\u7EBF\u6587\u4EF6\u7684\u6765\u6E90\u53EF\u80FD\u4E3A null\uFF1B\u53D7\u9650\u65F6\u53EF\u624B\u52A8\u586B\u5199\u6A21\u578B ID\u3002\u8FD9\u91CC\u4E0D\u63D0\u4F9B\u4EE3\u7406\uFF0C\u4E5F\u4E0D\u6267\u884C\u751F\u6210\u6D4B\u8BD5\u3002</p></form>`;
-      const input2 = host.querySelector('[name="token"]');
-      if (input2) input2.value = key;
+      host.innerHTML = `<form data-terminal-api novalidate><label class="terminal-label">\u8FD0\u884C\u65B9\u5F0F<select class="field" name="mode"><option value="demo" ${draft.mode === "demo" ? "selected" : ""}>\u672C\u5730\u6F14\u793A\uFF08\u65E0\u9700 API\uFF09</option><option value="api" ${draft.mode === "api" ? "selected" : ""}>\u8FDE\u63A5\u771F\u5B9E API</option></select></label><div data-api-connection ${draft.mode === "demo" ? "hidden" : ""}><label class="terminal-label">API \u5730\u5740<input class="field" name="endpoint" value="${escHtml(draft.endpoint)}" placeholder="https://example.com/v1" autocomplete="url"></label><label class="terminal-label">API Key<input class="field" name="token" type="password" autocomplete="off" placeholder="\u4EC5\u4FDD\u5B58\u5728\u5F53\u524D\u8BBE\u5907"></label><p class="terminal-caption">\u4FDD\u5B58\u5728\u6B64\u6D4F\u89C8\u5668\uFF0C\u4E4B\u540E\u6253\u5F00\u81EA\u52A8\u6062\u590D\uFF1B\u4E0D\u4F1A\u968F\u5907\u4EFD\u3001\u65E5\u5FD7\u6216\u9884\u8BBE\u5BFC\u51FA\u3002</p><div class="terminal-model-toolbar"><button class="fruit-button" type="button" data-api-models>\u62C9\u53D6\u6A21\u578B</button><span>\u53EA\u8BFB\u53D6\u6A21\u578B\u5217\u8868\uFF0C\u4E0D\u751F\u6210\u56DE\u590D</span></div><label class="terminal-label">\u6A21\u578B<select class="field" name="model" aria-label="\u6A21\u578B\u5217\u8868"></select></label><label class="terminal-label">Temperature<input class="field" name="temperature" type="number" min="0" max="2" step="0.1" value="${draft.temperature}"></label><div class="terminal-api-footer"><button class="fruit-button fruit-primary">\u4FDD\u5B58\u8BBE\u7F6E</button><p role="status" aria-live="polite" data-api-status>${escHtml(status)}</p></div><p class="terminal-caption">\u652F\u6301 OpenAI \u517C\u5BB9\u63A5\u53E3\uFF08/models \u4E0E /chat/completions\uFF09\u3002\u5176\u4ED6\u539F\u751F\u534F\u8BAE\u4E0D\u80FD\u81EA\u52A8\u8F6C\u6362\uFF1B\u670D\u52A1\u9700\u5141\u8BB8\u6D4F\u89C8\u5668\u8DE8\u57DF\u8BBF\u95EE\uFF0C\u4E0D\u63D0\u4F9B\u4EE3\u7406\u3002</p></div></form>`;
+      const field = host.querySelector('[name="token"]');
+      if (field) field.value = key;
       options();
       feedback();
     }
@@ -5011,7 +5635,7 @@ ${groundedLines.length ? groundedLines.join("\n") : `\uFF08\u5F53\u5929\u6682\u6
       event.preventDefault();
       read();
       cancel();
-      if (type === "manual" || !draft) return;
+      if (!draft) return;
       const id = requestId, connection = { base: draft.endpoint, key };
       request = new AbortController();
       const controller = request;
@@ -5021,13 +5645,14 @@ ${groundedLines.length ? groundedLines.join("\n") : `\uFF08\u5F53\u5929\u6682\u6
       void fetchModelIds(connection.base, connection.key, { signal: controller.signal }).then((ids) => {
         if (id !== requestId) return;
         models = ids;
-        search = "";
-        const searchField = host?.querySelector("[data-api-model-search]");
-        if (searchField) searchField.value = "";
-        status = `\u5DF2\u8BFB\u53D6 ${ids.length} \u4E2A\u6A21\u578B\uFF1B\u8BF7\u9009\u62E9\u6216\u624B\u52A8\u8F93\u5165\u3002`;
+        status = `\u5DF2\u62C9\u53D6 ${ids.length} \u4E2A\u6A21\u578B\uFF0C\u8BF7\u9009\u62E9\u3002`;
         options();
+        hooks.notify(status);
       }).catch((error) => {
-        if (id === requestId) status = error instanceof Error ? error.message : "\u6A21\u578B\u5217\u8868\u8BFB\u53D6\u5931\u8D25";
+        if (id !== requestId) return;
+        status = error instanceof Error ? error.message : "\u6A21\u578B\u5217\u8868\u8BFB\u53D6\u5931\u8D25";
+        status = status.replace(/，?请?手动输入模型 ID。?|或手动输入。?/g, "");
+        hooks.notify(status);
       }).finally(() => {
         clearTimeout(timer);
         if (id === requestId) {
@@ -5038,28 +5663,47 @@ ${groundedLines.length ? groundedLines.join("\n") : `\uFF08\u5F53\u5929\u6682\u6
     };
     const input = (event) => {
       event.stopPropagation();
-      if (!(event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement)) return;
+      if (!(event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) || !draft) return;
       const target = event.target;
-      if (target.matches("[data-api-model-search]")) {
-        search = target.value;
-        options();
-        return;
-      }
-      if (target.matches("[data-api-model-choice]")) {
-        if (target.value) {
-          const model = host?.querySelector('[name="model"]');
-          if (model) model.value = target.value;
-        }
-        read();
-        return;
-      }
-      if (["endpoint", "token", "apiType"].includes(target.name)) {
+      if (target.name === "endpoint") {
         cancel();
         models = [];
-        status = "\u8FDE\u63A5\u4FE1\u606F\u5DF2\u6539\u53D8\uFF0C\u70B9\u51FB\u300C\u62C9\u53D6\u6A21\u578B\u300D\u91CD\u65B0\u8BFB\u53D6\u3002";
-        options();
+        let normalized = "";
+        try {
+          normalized = normalizeApiBase(target.value);
+        } catch {
+        }
+        if (normalized !== keyEndpoint) {
+          key = "";
+          const token = host?.querySelector('[name="token"]');
+          if (token) token.value = "";
+        }
+        status = "\u5730\u5740\u5DF2\u6539\u53D8\uFF0C\u8BF7\u586B\u5199\u6B64\u670D\u52A1\u7684 Key \u5E76\u91CD\u65B0\u62C9\u53D6\u6A21\u578B\u3002";
+      }
+      if (target.name === "token") {
+        cancel();
+        models = [];
+        try {
+          keyEndpoint = normalizeApiBase(value("endpoint"));
+        } catch {
+          keyEndpoint = "";
+        }
       }
       read();
+      if (target.name === "mode" && event.type === "change") {
+        cancel();
+        try {
+          hooks.save({ ...hooks.settings(), mode: draft.mode }, hooks.key());
+          status = "";
+        } catch (error) {
+          draft.mode = hooks.settings().mode;
+          target.value = draft.mode;
+          status = error instanceof Error ? error.message : "\u8FD0\u884C\u65B9\u5F0F\u672A\u4FDD\u5B58";
+          hooks.notify(status);
+        }
+        const panel = host?.querySelector("[data-api-connection]");
+        if (panel) panel.hidden = draft.mode === "demo";
+      }
       feedback();
     };
     const submit = (event) => {
@@ -5069,16 +5713,18 @@ ${groundedLines.length ? groundedLines.join("\n") : `\uFF08\u5F53\u5929\u6682\u6
       if (!draft) return;
       try {
         const endpoint = normalizeApiBase(draft.endpoint);
-        if (!Number.isFinite(draft.temperature) || draft.temperature < 0 || draft.temperature > 2 || draft.model.length > 512) throw new Error("\u8BF7\u68C0\u67E5 Temperature \u4E0E\u6A21\u578B ID");
+        if (!Number.isFinite(draft.temperature) || draft.temperature < 0 || draft.temperature > 2 || !draft.model.trim() || draft.model.length > 512) throw new Error("\u8BF7\u9009\u62E9\u6A21\u578B\uFF0C\u5E76\u68C0\u67E5 Temperature\uFF080\u20132\uFF09\u3002");
         hooks.save({ ...draft, endpoint }, key);
         draft = { ...draft, endpoint };
+        keyEndpoint = endpoint;
         const field = host?.querySelector('[name="endpoint"]');
         if (field) field.value = endpoint;
-        status = "\u8BBE\u7F6E\u5DF2\u4FDD\u5B58\uFF1BAPI Key \u4EC5\u5728\u672C\u9875\u5185\u5B58\u3002";
+        status = "\u5DF2\u4FDD\u5B58\uFF0C\u4E0B\u6B21\u6253\u5F00\u81EA\u52A8\u6062\u590D\u3002";
       } catch (error) {
         status = error instanceof Error ? error.message : "\u8BBE\u7F6E\u672A\u4FDD\u5B58";
       }
       feedback();
+      hooks.notify(status);
     };
     function detach() {
       read();
@@ -5097,7 +5743,11 @@ ${groundedLines.length ? groundedLines.join("\n") : `\uFF08\u5F53\u5929\u6682\u6
       if (!draft) {
         draft = { ...hooks.settings() };
         key = hooks.key();
-        type = draft.endpoint.includes("api.openai.com") ? "openai" : "compatible";
+        try {
+          keyEndpoint = normalizeApiBase(draft.endpoint);
+        } catch {
+          keyEndpoint = "";
+        }
       }
       host.addEventListener("click", click);
       host.addEventListener("input", input);
@@ -6678,122 +7328,6 @@ ${f.text}`).join("\n");
       if (!library) void load();
       else render();
     } };
-  }
-
-  // src/core/media.ts
-  var MEDIA_DB = "elsewhere-media-v1";
-  var MEDIA_STORE = "blobs";
-  function mediaDB() {
-    return new Promise((resolve, reject) => {
-      if (typeof window === "undefined" || !("indexedDB" in window)) {
-        return reject(new Error("\u6B64\u6D4F\u89C8\u5668\u4E0D\u652F\u6301\u5A92\u4F53\u5B58\u50A8"));
-      }
-      const req = indexedDB.open(MEDIA_DB, 1);
-      req.onupgradeneeded = () => {
-        if (!req.result.objectStoreNames.contains(MEDIA_STORE)) {
-          req.result.createObjectStore(MEDIA_STORE);
-        }
-      };
-      req.onerror = () => reject(req.error || new Error("\u5A92\u4F53\u6570\u636E\u5E93\u65E0\u6CD5\u6253\u5F00"));
-      req.onsuccess = () => resolve(req.result);
-    });
-  }
-  async function mediaPut(id, blob) {
-    const db = await mediaDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(MEDIA_STORE, "readwrite");
-      tx.objectStore(MEDIA_STORE).put(blob, id);
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      tx.onerror = () => {
-        db.close();
-        reject(tx.error || new Error("\u5A92\u4F53\u4FDD\u5B58\u5931\u8D25"));
-      };
-    });
-  }
-  async function mediaGet(id) {
-    const db = await mediaDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(MEDIA_STORE, "readonly");
-      const q = tx.objectStore(MEDIA_STORE).get(id);
-      q.onsuccess = () => resolve(q.result);
-      q.onerror = () => reject(q.error);
-      tx.oncomplete = () => db.close();
-      tx.onerror = () => db.close();
-    });
-  }
-  async function mediaDelete(id) {
-    const db = await mediaDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(MEDIA_STORE, "readwrite");
-      tx.objectStore(MEDIA_STORE).delete(id);
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      tx.onerror = () => {
-        db.close();
-        reject(tx.error);
-      };
-    });
-  }
-  function collectReferencedMediaIds(data) {
-    const rawIds = [];
-    if (data.user?.avatarMediaId && typeof data.user.avatarMediaId === "string") {
-      rawIds.push(data.user.avatarMediaId);
-    }
-    if (data.user?.frameMediaId && typeof data.user.frameMediaId === "string") {
-      rawIds.push(data.user.frameMediaId);
-    }
-    for (const cf of data.customFrames || []) {
-      if (cf?.mediaId && typeof cf.mediaId === "string") {
-        rawIds.push(cf.mediaId);
-      }
-    }
-    for (const r of data.roles || []) {
-      if (r.avatarMediaId && typeof r.avatarMediaId === "string") {
-        rawIds.push(r.avatarMediaId);
-      }
-      if (r.frameMediaId && typeof r.frameMediaId === "string") {
-        rawIds.push(r.frameMediaId);
-      }
-      for (const m of r.chats || []) {
-        if (m.mediaId && typeof m.mediaId === "string") {
-          rawIds.push(m.mediaId);
-        }
-      }
-    }
-    return [...new Set(rawIds.filter(Boolean))];
-  }
-  async function buildBackupPayload(data) {
-    const pack = JSON.parse(JSON.stringify(data));
-    const mediaArr = [];
-    const ids = collectReferencedMediaIds(data);
-    for (const id of ids) {
-      const media = await mediaGet(id);
-      if (!media) continue;
-      const uri = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result));
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(media);
-      });
-      mediaArr.push({ id, data: uri });
-    }
-    pack._media = mediaArr;
-    return pack;
-  }
-  async function restoreMediaFromBackup(attachments) {
-    if (!Array.isArray(attachments)) return;
-    for (const item of attachments) {
-      if (!item || !/^[a-zA-Z0-9_-]+$/.test(String(item.id || "")) || !/^data:(audio|image)\/[a-z0-9+.-]+;base64,/i.test(String(item.data || ""))) {
-        continue;
-      }
-      const blob = await (await fetch(item.data)).blob();
-      await mediaPut(item.id, blob);
-    }
   }
 
   // src/core/avatarFrames.ts
@@ -11220,13 +11754,27 @@ ${prevLogs}` : "",
       const p = role()?.preset || data.preset;
       return p ? `\u65E7\u7248\u539F\u751F\u9644\u52A0\u9884\u8BBE\u4ECD\u6309\u65E2\u6709\u5B58\u6863\u751F\u6548\uFF1A${p.name}\uFF08${p.prompts.length} \u6761\uFF09\u3002\u65B0\u9009\u62E9\u5668\u4E0D\u6539\u5199\u5B83\uFF0C\u4E5F\u4E0D\u5C06\u679C\u5B9E\u6CE8\u5165\u65E5\u5E38\u804A\u5929\u3002` : "";
     });
-    const terminalApi = createTerminalApi({ settings: () => data.settings, key: () => token, save: (settings, key) => {
-      data.settings = settings;
-      token = key;
+    const terminalApi = createTerminalApi({ settings: () => data.settings, key: () => token, notify: (message) => notify(message), save: (settings, key) => {
+      const previous = data.settings, previousKey = localStorage.getItem(DEVICE_API_KEY);
+      try {
+        saveDeviceApiKey(localStorage, settings.endpoint, key);
+        data.settings = settings;
+        if (!save()) throw new Error("\u8BBE\u7F6E\u4FDD\u5B58\u5931\u8D25\uFF0C\u539F\u914D\u7F6E\u5DF2\u4FDD\u7559\u3002");
+      } catch {
+        data.settings = previous;
+        try {
+          if (previousKey === null) localStorage.removeItem(DEVICE_API_KEY);
+          else localStorage.setItem(DEVICE_API_KEY, previousKey);
+        } catch {
+          throw new Error("\u672C\u5730\u5B58\u50A8\u4E0D\u53EF\u7528\uFF0C\u65E0\u6CD5\u4FDD\u5B58\u8BBE\u7F6E\u3002\u8BF7\u68C0\u67E5\u6D4F\u89C8\u5668\u5B58\u50A8\u6743\u9650\u3002");
+        }
+        throw new Error("\u8BBE\u7F6E\u4FDD\u5B58\u5931\u8D25\uFF0C\u539F\u914D\u7F6E\u548C Key \u5DF2\u4FDD\u7559\u3002");
+      }
+      token = key.trim();
       for (const item of data.roles) syncRoleDiaryTasks(item, data.settings, now());
-      save();
       if (canUseRealModel(data.settings)) void processDiaryQueue();
     } });
+    const terminalAppearance = createTerminalAppearance({ data: () => data, role: () => role(), save: () => save(), apply: () => applyTerminalAppearance(), notify: (message) => notify(message) });
     const $ = (s) => document.querySelector(s);
     const esc = (s) => String(s ?? "").replace(
       /[&<>"']/g,
@@ -11260,12 +11808,11 @@ ${prevLogs}` : "",
     let editingRoleId = null;
     let deleteRoleId = null;
     let busy = false;
-    let token = "";
+    let token = readDeviceApiKey(localStorage, data.settings.endpoint);
     let toastTimer = null;
     const activeChatRequests = /* @__PURE__ */ new Map();
     const chatTyping = /* @__PURE__ */ new Set();
     let chatPanel = "";
-    let bubbleCssRead = 0;
     let chatDraft = "";
     let novelDraft = "";
     let intermissionDraft = "";
@@ -11273,6 +11820,7 @@ ${prevLogs}` : "",
     let voiceStart = 0;
     let voiceCancelled = false;
     let mediaURLs = [];
+    let wallpaperURL = "";
     let detailId = "";
     let isComposing = false;
     let editingMessageId = null;
@@ -12774,9 +13322,6 @@ ${prevLogs}` : "",
     )}" aria-label="\u8FD4\u56DE">\u2039 <span>\u8FD4\u56DE</span></button><div class="grow"><h1>${esc(
       title
     )}</h1></div>${right}</div>`;
-    const status = () => `<div class="status"><span class="status-time">${hm(
-      Date.now()
-    )}</span><span class="status-right"><svg viewBox="0 0 44 16" width="44" height="16" aria-hidden="true"><path d="M1 11h3v4H1zm5-3h3v7H6zm5-3h3v10h-3zm5-3h3v13h-3z" fill="currentColor"/><path d="M25 6a10 10 0 0 1 13 0M28 9a6 6 0 0 1 7 0M31.6 12h.4" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg><span class="battery"><i></i></span></span></div>`;
     const appTile = (id, name) => `<button class="app-icon" data-action="view" data-view="${id}" aria-label="\u6253\u5F00${name}"><span class="tile tile-${id}">${glyph(
       id
     )}</span><span class="app-name">${name}</span></button>`;
@@ -12788,7 +13333,7 @@ ${prevLogs}` : "",
     ].map(([id, name]) => appTile(id, name)).join("")}</nav>`;
     const shell = (content, hasDock = true) => `<div class="shell"><div class="phone ${view === "home" ? "home-view" : view === "landing" ? "landing-view" : view === "novel" ? "novel-view" : view === "intermission" ? "novel-view intermission-view" : view === "chat" ? "chat-view" : "app-view"} theme-${esc(
       role()?.theme || "blue"
-    )}"><div class="wallpaper" aria-hidden="true"></div>${status()}${content}${hasDock && view === "home" ? dock() : ""}<button class="home-indicator" data-action="home" aria-label="\u8FD4\u56DE\u624B\u673A\u684C\u9762"><span></span></button></div></div>`;
+    )}"><div class="wallpaper${role()?.wallpaperMediaId ? " has-custom-wallpaper" : ""}" aria-hidden="true">${role()?.wallpaperMediaId ? `<img class="wallpaper-image" data-media-id="${esc(role()?.wallpaperMediaId)}" alt="">` : ""}</div>${content}${hasDock && view === "home" ? dock() : ""}<button class="home-indicator" data-action="home" aria-label="\u8FD4\u56DE\u624B\u673A\u684C\u9762"><span></span></button></div></div>`;
     function screenLanding() {
       const u = data.user || {
         name: "",
@@ -13079,9 +13624,7 @@ ${prevLogs}` : "",
       const awaitingFirst = !activeChats.length && r.firstMessageState?.status === "awaiting_api";
       const captionText = pending ? `${pending} \u6761\u6D88\u606F\u7B49\u5F85\u56DE\u590D` : awaitingFirst ? "\u7B49\u5F85\u8FDE\u63A5\u6A21\u578B\u751F\u6210\u9996\u6761\u6D88\u606F" : esc(a.doing);
       return shell(
-        `<div class="home-desktop"><div class="home-toolbar"><span>ELSEWHERE <button class="user-shortcut" data-action="view" data-view="userprofile" aria-label="\u7F16\u8F91\u6211\u7684\u8D44\u6599">\u6211\u7684\u8D44\u6599</button> <button class="user-shortcut" data-action="view" data-view="roleinfo">\u89D2\u8272\u8D44\u6599</button></span><button data-action="view" data-view="landing" aria-label="\u5207\u6362\u89D2\u8272">${esc(
-          avatar(r)
-        )} <span>\u5207\u6362\u89D2\u8272</span>\u2304</button></div>
+        `<div class="home-desktop"><div class="home-topbar-shell"><div class="home-topbar-glass" aria-hidden="true"></div><nav class="home-topbar-content" aria-label="\u9996\u9875\u5BFC\u822A"><span class="home-topbar-brand">ELSEWHERE</span><div class="home-topbar-links"><button type="button" class="home-topbar-button" data-action="view" data-view="userprofile" aria-label="\u7F16\u8F91\u6211\u7684\u8D44\u6599">\u6211\u7684\u8D44\u6599</button><button type="button" class="home-topbar-button" data-action="view" data-view="roleinfo">\u89D2\u8272\u8D44\u6599</button></div><button type="button" class="home-topbar-button home-role-switch" data-action="view" data-view="landing" aria-label="\u5207\u6362\u89D2\u8272" title="\u5F53\u524D\u89D2\u8272\uFF1A${esc(r.name)}"><b class="home-role-name">${esc(r.name)}</b><span>\u5207\u6362\u89D2\u8272</span>${uiIcon("down")}</button></nav></div>
  <div class="homescreen-clock"><div class="homescreen-date">${when.getMonth() + 1}\u6708${when.getDate()}\u65E5 \xB7 ${weekdays[when.getDay()]}</div><div class="homescreen-time">${hm(Date.now())}</div></div>
  <button class="home-widget" data-action="view" data-view="chat"><div class="home-widget-top"><div class="widget-person">${avatarTag(
           r,
@@ -14307,7 +14850,7 @@ ${prevLogs}` : "",
     }
     function screenTerminal() {
       const cards = phoneSettingsCards();
-      return shell(`${header("\u7EC8\u7AEF", "home")}<div class="viewport terminal-page"><div class="card terminal-api-card" id="terminal-api-root"></div><h2 class="terminal-section-title">02\uFF5C\u5916\u89C2\u4E0E\u4E3B\u9898</h2>${cards.appearance}<h2 class="terminal-section-title">03\uFF5C\u804A\u5929\u6C14\u6CE1\u81EA\u5B9A\u4E49</h2>${cards.bubble}<details class="terminal-other-settings"><summary>04\uFF5C\u5176\u4ED6\u624B\u673A\u8BBE\u7F6E</summary>${cards.frames}${cards.logs}${cards.backup}</details></div>`);
+      return shell(`${header("\u7EC8\u7AEF", "home")}<div class="viewport terminal-page"><details class="card terminal-settings" open><summary><span>01\uFF5CAPI \u4E0E\u6A21\u578B</span>${uiIcon("down")}</summary><div id="terminal-api-root"></div></details><details class="card terminal-settings" data-style-panel><summary><span>02\uFF5C\u5916\u89C2\u4E0E\u4E3B\u9898</span>${uiIcon("down")}</summary><div data-style-body="appearance"></div></details><details class="card terminal-settings" data-style-panel><summary><span>03\uFF5C\u804A\u5929\u6C14\u6CE1\u81EA\u5B9A\u4E49</span>${uiIcon("down")}</summary><div data-style-body="bubbles"></div></details><details class="terminal-other-settings terminal-settings"><summary><span>04\uFF5C\u5176\u4ED6\u624B\u673A\u8BBE\u7F6E</span>${uiIcon("down")}</summary>${cards.frames}${cards.logs}${cards.backup}</details></div>`);
     }
     function screenPresets() {
       return shell(`${header("\u9884\u8BBE", "home")}<div class="viewport"><div class="h2">\u9884\u8BBE</div><p class="sub">\u72EC\u7ACB\u7BA1\u7406\u5C0F\u8BF4\u6A21\u5F0F\u3002\u5373\u65F6\u8BBE\u7F6E\u81EA\u52A8\u4FDD\u5B58\uFF1B\u6B63\u6587\u786E\u8BA4\u540E\u624D\u63D0\u4EA4\u3002\u5F53\u524D\u4ECD\u53EA\u505A\u9694\u79BB\u9884\u89C8\u3002</p><div class="card" id="fruit-preset-root"></div></div>`);
@@ -14315,17 +14858,6 @@ ${prevLogs}` : "",
     function phoneSettingsCards() {
       const r = role();
       return {
-        appearance: `<div class="card"><h3>\u5916\u89C2</h3><div class="theme-swatches">${[
-          ["blue", "\u84DD\u8272"],
-          ["green", "\u7EFF\u8272"],
-          ["pink", "\u7C89\u8272"],
-          ["coffee", "\u5361\u5E03\u5947\u8BFA"],
-          ["night", "\u591C\u665A"]
-        ].map(
-          ([id, label2]) => `<button class="swatch swatch-${id} ${(r.theme || "blue") === id ? "active" : ""}" data-action="theme" data-theme="${id}"><i></i>${label2}</button>`
-        ).join(
-          ""
-        )}</div><label class="sub">\u5B57\u4F53</label><select class="field" id="font-select"><option value="system" ${(r.font || data.font) === "system" ? "selected" : ""}>\u7CFB\u7EDF\u5B57\u4F53</option><option value="serif" ${(r.font || data.font) === "serif" ? "selected" : ""}>\u886C\u7EBF\u5B57\u4F53</option></select></div>`,
         logs: `<div class="card"><h3>\u7CFB\u7EDF Log</h3><p>\u67E5\u770B\u672C\u5730\u4E8B\u4EF6\u3001API \u8BF7\u6C42\u72B6\u6001\u3001\u6A21\u5F0F\u5207\u6362\u548C\u9519\u8BEF\uFF1B\u4E0D\u4F1A\u8BB0\u5F55 API Key\u3002\u8BE6\u7EC6 Prompt \u4EC5\u5728\u672C\u6B21\u8BF7\u6C42\u8BB0\u5F55\u4E00\u4EFD\u8131\u654F\u6458\u8981\u3002</p><div class="row"><button class="btn small secondary" data-action="exportlogs">\u5BFC\u51FA\u65E5\u5FD7 JSON</button><button class="btn small ghost" data-action="clearlogs">\u6E05\u7A7A\u65E5\u5FD7</button></div><div class="log-list">${(data.logs || []).slice(-35).reverse().map(
           (l) => `<details class="log-row"><summary>${esc(hm(l.at))} \xB7 ${esc(
             l.type
@@ -14334,9 +14866,6 @@ ${prevLogs}` : "",
           )}</pre></details>`
         ).join("") || '<p class="sub">\u6682\u65E0\u65E5\u5FD7\uFF0C\u5F00\u59CB\u804A\u5929\u6216\u5207\u6362\u4E3B\u9898\u540E\u4F1A\u51FA\u73B0\u8BB0\u5F55\u3002</p>'}</div></div>`,
         frames: renderTerminalFrameAssetManagerCard(),
-        bubble: `<div class="card"><h3>\u804A\u5929\u6C14\u6CE1 CSS\uFF08\u5F53\u524D\u89D2\u8272\u72EC\u7ACB\uFF09</h3><p>\u652F\u6301\u4EC5\u9488\u5BF9 .message.mine .bubble \u548C .message.theirs .bubble \u7684 CSS\uFF1B\u4E0D\u5141\u8BB8\u5916\u90E8\u8D44\u6E90\u6216\u5168\u5C40\u9875\u9762\u9009\u62E9\u5668\u3002\u4FDD\u5B58\u540E\u8FDB\u5165\u804A\u5929\u67E5\u770B\u6548\u679C\u3002</p><form id="bubble-form"><label class="btn small ghost bubble-css-import">\u5BFC\u5165 CSS \u6587\u4EF6<input id="bubble-css-file" type="file" accept=".css,text/css" hidden></label><p class="sub">\u5BFC\u5165\u53EA\u586B\u5165\u7F16\u8F91\u5668\uFF0C\u70B9\u51FB\u5E94\u7528\u540E\u624D\u4FDD\u5B58\u3002\u6700\u591A 12KB\u3002</p><textarea class="field bubble-editor" name="css" spellcheck="false" placeholder=".message.mine .bubble { background: #ffd9eb; border-radius: 22px; }">${esc(
-          r.bubbleCSS || ""
-        )}</textarea><div class="row"><button class="btn small">\u5E94\u7528\u6C14\u6CE1 CSS</button><button class="btn small secondary" type="button" data-action="resetbubble">\u6062\u590D\u9ED8\u8BA4\u6C14\u6CE1</button></div></form></div>`,
         backup: `<div class="card"><h3>\u6570\u636E\u4E0E\u8DE8\u73AF\u5883\u8FC1\u79FB</h3><p>\u5404\u89D2\u8272\u4E92\u76F8\u9694\u79BB\u3002\u652F\u6301\u5BFC\u51FA / \u5BFC\u5165\u672C\u5730 JSON \u5907\u4EFD\uFF08\u5305\u542B\u5168\u90E8\u89D2\u8272\u3001\u4FEE\u8BA2\u6863\u6848\u3001\u65E5\u8BB0\u5206\u4EAB\u72B6\u6001\u4E0E IndexedDB \u5A92\u4F53\u9644\u4EF6\uFF0C\u4E0D\u5305\u542B API Key\uFF09\u3002</p><div class="row" style="margin-top:11px;flex-wrap:wrap"><button class="btn small secondary" data-action="export">\u5BFC\u51FA\u5907\u4EFD</button><label class="btn small ghost" style="cursor:pointer">\u5BFC\u5165\u5907\u4EFD<input id="backup-file" type="file" accept=".json" hidden></label></div></div><p class="tiny muted">\u5F53\u524D\u89D2\u8272\uFF1A${esc(
           r.name
         )} \xB7 v1 Phase 1</p>`
@@ -14362,7 +14891,33 @@ ${prevLogs}` : "",
         (n, i) => root.style.setProperty(n, a[i])
       );
       if (root.dataset) root.dataset.theme = key;
-      root.style.fontFamily = (role()?.font || data.font) === "serif" ? 'Georgia,"Songti SC",serif' : '-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif';
+      root.style.fontFamily = appearanceFontFamily(data, role());
+      void hydrateAppearanceFont(data, role()).catch(() => {
+      });
+    }
+    function applyTerminalAppearance() {
+      applyTheme();
+      installBubbleCSS();
+      const phone = $(".phone"), wallpaper = $(".wallpaper");
+      if (phone) {
+        for (const name of [...phone.classList]) if (name.startsWith("theme-")) phone.classList.remove(name);
+        phone.classList.add(`theme-${role()?.theme || "blue"}`);
+      }
+      if (!wallpaper) return;
+      const mediaId = role()?.wallpaperMediaId || "";
+      if ((wallpaper.querySelector(".wallpaper-image")?.dataset.mediaId || "") === mediaId) return;
+      if (wallpaperURL) URL.revokeObjectURL(wallpaperURL);
+      wallpaperURL = "";
+      wallpaper.replaceChildren();
+      wallpaper.classList.toggle("has-custom-wallpaper", Boolean(mediaId));
+      if (mediaId) {
+        const image = document.createElement("img");
+        image.className = "wallpaper-image";
+        image.dataset.mediaId = mediaId;
+        image.alt = "";
+        wallpaper.append(image);
+        void hydrateMedia(wallpaper);
+      }
     }
     function clearMediaURLs() {
       for (const url of mediaURLs) URL.revokeObjectURL(url);
@@ -14407,7 +14962,10 @@ ${prevLogs}` : "",
           }
           if (!item.isConnected) continue;
           const url = URL.createObjectURL(blob);
-          mediaURLs.push(url);
+          if (item.classList.contains("wallpaper-image")) {
+            if (wallpaperURL) URL.revokeObjectURL(wallpaperURL);
+            wallpaperURL = url;
+          } else mediaURLs.push(url);
           item.dataset.hydratedKey = key;
           item.src = url;
           if (isAvatarImg) {
@@ -14429,7 +14987,7 @@ ${prevLogs}` : "",
       }
     }
     function patchDynamicRegionsOnTick() {
-      document.querySelectorAll(".status-time, .homescreen-time").forEach((el) => {
+      document.querySelectorAll(".homescreen-time").forEach((el) => {
         el.textContent = hm(Date.now());
       });
       const r = role();
@@ -14497,10 +15055,16 @@ ${prevLogs}` : "",
       const sameView = view === lastRenderedView;
       lastRenderedView = view;
       clearMediaURLs();
+      if (wallpaperURL) URL.revokeObjectURL(wallpaperURL);
+      wallpaperURL = "";
       fruitManager.detach();
       terminalApi.detach();
+      terminalAppearance.detach();
       app.innerHTML = markup;
-      if (view === "terminal") terminalApi.mount(document.getElementById("terminal-api-root"));
+      if (view === "terminal") {
+        terminalApi.mount(document.getElementById("terminal-api-root"));
+        terminalAppearance.mount(document.querySelector(".terminal-page"));
+      }
       if (view === "presets") fruitManager.mount(document.getElementById("fruit-preset-root"));
       restoreUIState(uiSnap, !scroll, document, sameView);
       hydrateMedia();
@@ -15431,6 +15995,7 @@ ${prevLogs}` : "",
           await restoreMediaFromBackup(d._media);
           delete d._media;
           data = normalizeAndMigrateData(d);
+          token = readDeviceApiKey(localStorage, data.settings.endpoint);
           data.selected = null;
           save();
           go("landing");
@@ -15903,14 +16468,6 @@ ${prevLogs}` : "",
         endNovel();
         return;
       }
-      if (act === "theme") {
-        if (!r) return;
-        r.theme = b.dataset.theme || "blue";
-        syslog("ui", `\u5207\u6362 ${r.name} \u7684\u4E3B\u9898\uFF1A${r.theme}`);
-        save();
-        render();
-        return;
-      }
       if (act === "viewplay") {
         detailId = b.dataset.id || "";
         go("playdetail");
@@ -16285,20 +16842,6 @@ ${prevLogs}` : "",
         })();
         return;
       }
-      if (act === "resetbubble") {
-        if (!r) return;
-        const previous = r.bubbleCSS;
-        r.bubbleCSS = "";
-        syslog("ui", "\u6E05\u9664\u89D2\u8272 CSS");
-        if (!save()) {
-          r.bubbleCSS = previous;
-          return;
-        }
-        const editor = document.querySelector('#bubble-form [name="css"]');
-        if (editor) editor.value = "";
-        render(false);
-        return;
-      }
       if (act?.startsWith("hometask")) {
         homeTasks.handle(act, b);
         return;
@@ -16656,25 +17199,6 @@ ${prevLogs}` : "",
         notify("\u5934\u50CF\u6846\u5C3A\u5BF8\u4E0E\u504F\u79FB\u4F4D\u7F6E\u5DF2\u4FDD\u5B58");
         return;
       }
-      if (f.id === "bubble-form") {
-        const r = role();
-        if (!r) return;
-        const css = String(fd.get("css") || "");
-        if (css.length > BUBBLE_CSS_LIMIT || css.trim() && !safeBubbleCSS(css)) {
-          notify("CSS \u672A\u4FDD\u5B58\uFF1A\u6700\u591A 12000 \u5B57\u7B26\uFF0C\u8BF7\u4F7F\u7528\u652F\u6301\u7684\u6C14\u6CE1\u9009\u62E9\u5668\uFF0C\u4E0D\u542B\u5916\u90E8\u8D44\u6E90\u6216\u5B9A\u4F4D\u8986\u76D6\u3002");
-          return;
-        }
-        const previous = r.bubbleCSS;
-        r.bubbleCSS = css;
-        syslog("ui", "\u66F4\u65B0\u89D2\u8272\u804A\u5929\u6C14\u6CE1 CSS");
-        if (!save()) {
-          r.bubbleCSS = previous;
-          return;
-        }
-        render(false);
-        notify("\u6C14\u6CE1\u6837\u5F0F\u5DF2\u4FDD\u5B58");
-        return;
-      }
       if (f.id === "profile-form") {
         const r = role();
         if (!r) return;
@@ -16691,29 +17215,6 @@ ${prevLogs}` : "",
     });
     appRoot.addEventListener("change", (e) => {
       const el = e.target;
-      if (el.id === "bubble-css-file" && el.files?.[0]) {
-        const file = el.files[0];
-        el.value = "";
-        const editor = document.querySelector('#bubble-form [name="css"]');
-        if (!editor) return;
-        if (!/\.css$/i.test(file.name) || file.size > BUBBLE_CSS_LIMIT) {
-          notify("\u8BF7\u9009\u62E9 12KB \u4EE5\u5185\u7684 .css \u6587\u4EF6\uFF1B\u5F53\u524D\u6837\u5F0F\u672A\u6539\u53D8\u3002");
-          return;
-        }
-        const readId = ++bubbleCssRead;
-        const owner = role()?.id, before = editor.value;
-        void file.text().then((css) => {
-          if (readId !== bubbleCssRead || !editor.isConnected || role()?.id !== owner || editor.value !== before) return;
-          if (!css.trim() || !safeBubbleCSS(css)) {
-            notify("\u672A\u5BFC\u5165\uFF1A\u672A\u627E\u5230\u652F\u6301\u7684\u6C14\u6CE1\u89C4\u5219\uFF0C\u6216\u5305\u542B\u5916\u90E8\u8D44\u6E90\uFF0F\u4E0D\u5B89\u5168 CSS\u3002\u5F53\u524D\u6837\u5F0F\u672A\u6539\u53D8\u3002");
-            return;
-          }
-          editor.value = css;
-          editor.focus({ preventScroll: true });
-          notify("CSS \u5DF2\u8F7D\u5165\u7F16\u8F91\u5668\uFF0C\u70B9\u51FB\u300C\u5E94\u7528\u6C14\u6CE1 CSS\u300D\u624D\u4F1A\u4FDD\u5B58\u3002");
-        }).catch(() => notify("CSS \u6587\u4EF6\u8BFB\u53D6\u5931\u8D25\uFF1B\u5F53\u524D\u6837\u5F0F\u672A\u6539\u53D8\u3002"));
-        return;
-      }
       if (el.id === "focus-minutes-slider") {
         ensureFocusData();
         const taskInputEl = document.getElementById("focus-task-input");
@@ -16860,14 +17361,6 @@ ${prevLogs}` : "",
       if (el.id === "backup-file" || el.id === "landing-backup-file") {
         importBackup(el.files?.[0]);
       }
-      if (el.id === "font-select") {
-        const r = role();
-        if (r) {
-          r.font = el.value || "system";
-          save();
-          render(false);
-        }
-      }
     });
     appRoot.addEventListener("input", (e) => {
       const el = e.target;
@@ -16979,7 +17472,7 @@ ${prevLogs}` : "",
           }
           update = true;
         }
-        document.querySelectorAll(".status-time, .homescreen-time").forEach((el) => {
+        document.querySelectorAll(".homescreen-time").forEach((el) => {
           const next = hm(Date.now());
           if (el.textContent !== next) el.textContent = next;
         });

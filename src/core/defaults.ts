@@ -1,6 +1,7 @@
 import type { AppData, RoleData } from './types';
 import { makeUid } from './revisions';
 import { initNewRoleFirstMessageState } from './firstMessage';
+import {safeBubbleCSS,BUBBLE_CSS_LIMIT} from './bubbleCss';
 
 export const STORAGE_KEY = 'elsewhere-v01';
 
@@ -152,6 +153,18 @@ export function normalizeAndMigrateData(raw: unknown): AppData {
   if (!Array.isArray(data.customFrames)) {
     data.customFrames = [];
   }
+  data.customFonts = Array.isArray(data.customFonts) ? data.customFonts.filter(
+    (font:unknown):font is NonNullable<AppData['customFonts']>[number] =>
+      Boolean(font && typeof font==='object' && 'id' in font && typeof font.id==='string' && /^[a-zA-Z0-9_-]+$/.test(font.id) &&
+      'mediaId' in font && typeof font.mediaId==='string' && /^[a-zA-Z0-9_-]+$/.test(font.mediaId) &&
+      'name' in font && typeof font.name==='string' && font.name.length>0 && font.name.length<=80)
+  ) : [];
+  data.bubblePresets = Array.isArray(data.bubblePresets) ? data.bubblePresets.filter(
+    (preset:unknown):preset is NonNullable<AppData['bubblePresets']>[number] =>
+      Boolean(preset && typeof preset==='object' && 'id' in preset && typeof preset.id==='string' &&
+      'name' in preset && typeof preset.name==='string' && preset.name.length>0 && preset.name.length<=80 &&
+      'css' in preset && typeof preset.css==='string' && preset.css.length<=BUBBLE_CSS_LIMIT && safeBubbleCSS(preset.css))
+  ) : [];
   if (
     data.roles.length === 2 &&
     data.roles.every(isUntouchedSample) &&

@@ -3,7 +3,9 @@ import {uiIcon,plainUiLabel} from './uiIcons';
 import {chatTiming,setChatFocused,enqueueChat,prepareChatDue,claimChatBatch,chatBatchValid,chatRevisionKey,completeChatBatch,failChatBatch,recoverChatTiming,retryChatTiming,reviseChatTiming,sourceStillValid} from './core/chatScheduler';
 import {buildChatBatchMessages,buildPhoneRegeneration,readChatResponse} from './core/chatBatchPrompt';
 import {createHomeTasks} from './homeTasksView';
-import {safeBubbleCSS, BUBBLE_CSS_LIMIT} from './core/bubbleCss';
+import {safeBubbleCSS} from './core/bubbleCss';
+import {DEVICE_API_KEY,readDeviceApiKey,saveDeviceApiKey} from './core/deviceApiKey';
+import {createTerminalAppearance,appearanceFontFamily,hydrateAppearanceFont} from './terminalAppearance';
 import {completionLimit} from './core/outputBudget';
 import {uploadedStickers} from './core/stickers';
 import {migrateUntouchedNainDemo,resetNainStart,NAIN_BACKUP_PREFIX} from './core/nainStart';
@@ -121,12 +123,22 @@ import {
 
 export function initElsewhereApp(): void {
   const fruitManager = createFruitManager(()=>{const p=role()?.preset||data.preset;return p?`旧版原生附加预设仍按既有存档生效：${p.name}（${p.prompts.length} 条）。新选择器不改写它，也不将果实注入日常聊天。`:'';});
-  const terminalApi = createTerminalApi({settings:()=>data.settings,key:()=>token,save:(settings,key)=>{
-    data.settings=settings;token=key;
+  const terminalApi = createTerminalApi({settings:()=>data.settings,key:()=>token,notify:message=>notify(message),save:(settings,key)=>{
+    const previous=data.settings,previousKey=localStorage.getItem(DEVICE_API_KEY);
+    try {
+      saveDeviceApiKey(localStorage,settings.endpoint,key);
+      data.settings=settings;
+      if(!save())throw new Error('设置保存失败，原配置已保留。');
+    } catch {
+      data.settings=previous;
+      try { if(previousKey===null)localStorage.removeItem(DEVICE_API_KEY);else localStorage.setItem(DEVICE_API_KEY,previousKey); } catch { throw new Error('本地存储不可用，无法保存设置。请检查浏览器存储权限。'); }
+      throw new Error('设置保存失败，原配置和 Key 已保留。');
+    }
+    token=key.trim();
     for(const item of data.roles)syncRoleDiaryTasks(item,data.settings,now());
-    save();
     if(canUseRealModel(data.settings))void processDiaryQueue();
   }});
+  const terminalAppearance=createTerminalAppearance({data:()=>data,role:()=>role(),save:()=>save(),apply:()=>applyTerminalAppearance(),notify:message=>notify(message)});
   const $ = <T extends HTMLElement = HTMLElement>(s: string): T | null =>
     document.querySelector<T>(s);
   const esc = (s: unknown): string =>
@@ -165,12 +177,11 @@ export function initElsewhereApp(): void {
   let editingRoleId: string | null = null;
   let deleteRoleId: string | null = null;
   let busy = false;
-  let token = '';
+  let token = readDeviceApiKey(localStorage,data.settings.endpoint);
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
   const activeChatRequests = new Map<string,AbortController>();
   const chatTyping = new Set<string>();
   let chatPanel = '';
-  let bubbleCssRead = 0;
   let chatDraft = '';
   let novelDraft = '';
   let intermissionDraft = '';
@@ -178,6 +189,7 @@ export function initElsewhereApp(): void {
   let voiceStart = 0;
   let voiceCancelled = false;
   let mediaURLs: string[] = [];
+  let wallpaperURL = '';
   let detailId = '';
 
   // Phase 1 state: IME composition guard, inline message editing, quote replying, revision history drawer
@@ -2080,11 +2092,6 @@ export function initElsewhereApp(): void {
       title
     )}</h1></div>${right}</div>`;
 
-  const status = (): string =>
-    `<div class="status"><span class="status-time">${hm(
-      Date.now()
-    )}</span><span class="status-right"><svg viewBox="0 0 44 16" width="44" height="16" aria-hidden="true"><path d="M1 11h3v4H1zm5-3h3v7H6zm5-3h3v10h-3zm5-3h3v13h-3z" fill="currentColor"/><path d="M25 6a10 10 0 0 1 13 0M28 9a6 6 0 0 1 7 0M31.6 12h.4" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg><span class="battery"><i></i></span></span></div>`;
-
   const appTile = (id: string, name: string): string =>
     `<button class="app-icon" data-action="view" data-view="${id}" aria-label="打开${name}"><span class="tile tile-${id}">${glyph(
       id
@@ -2115,7 +2122,7 @@ export function initElsewhereApp(): void {
         : 'app-view'
     } theme-${esc(
       role()?.theme || 'blue'
-    )}"><div class="wallpaper" aria-hidden="true"></div>${status()}${content}${
+    )}"><div class="wallpaper${role()?.wallpaperMediaId?' has-custom-wallpaper':''}" aria-hidden="true">${role()?.wallpaperMediaId?`<img class="wallpaper-image" data-media-id="${esc(role()?.wallpaperMediaId)}" alt="">`:''}</div>${content}${
       hasDock && view === 'home' ? dock() : ''
     }<button class="home-indicator" data-action="home" aria-label="返回手机桌面"><span></span></button></div></div>`;
 
@@ -2489,9 +2496,7 @@ export function initElsewhereApp(): void {
       : esc(a.doing);
 
     return shell(
-      `<div class="home-desktop"><div class="home-toolbar"><span>ELSEWHERE <button class="user-shortcut" data-action="view" data-view="userprofile" aria-label="编辑我的资料">我的资料</button> <button class="user-shortcut" data-action="view" data-view="roleinfo">角色资料</button></span><button data-action="view" data-view="landing" aria-label="切换角色">${esc(
-        avatar(r)
-      )} <span>切换角色</span>⌄</button></div>
+      `<div class="home-desktop"><div class="home-topbar-shell"><div class="home-topbar-glass" aria-hidden="true"></div><nav class="home-topbar-content" aria-label="首页导航"><span class="home-topbar-brand">ELSEWHERE</span><div class="home-topbar-links"><button type="button" class="home-topbar-button" data-action="view" data-view="userprofile" aria-label="编辑我的资料">我的资料</button><button type="button" class="home-topbar-button" data-action="view" data-view="roleinfo">角色资料</button></div><button type="button" class="home-topbar-button home-role-switch" data-action="view" data-view="landing" aria-label="切换角色" title="当前角色：${esc(r.name)}"><b class="home-role-name">${esc(r.name)}</b><span>切换角色</span>${uiIcon('down')}</button></nav></div>
  <div class="homescreen-clock"><div class="homescreen-date">${
    when.getMonth() + 1
  }月${when.getDate()}日 · ${
@@ -4254,33 +4259,14 @@ export function initElsewhereApp(): void {
 
   function screenTerminal(): string {
     const cards = phoneSettingsCards();
-    return shell(`${header('终端','home')}<div class="viewport terminal-page"><div class="card terminal-api-card" id="terminal-api-root"></div><h2 class="terminal-section-title">02｜外观与主题</h2>${cards.appearance}<h2 class="terminal-section-title">03｜聊天气泡自定义</h2>${cards.bubble}<details class="terminal-other-settings"><summary>04｜其他手机设置</summary>${cards.frames}${cards.logs}${cards.backup}</details></div>`);
+    return shell(`${header('终端','home')}<div class="viewport terminal-page"><details class="card terminal-settings" open><summary><span>01｜API 与模型</span>${uiIcon('down')}</summary><div id="terminal-api-root"></div></details><details class="card terminal-settings" data-style-panel><summary><span>02｜外观与主题</span>${uiIcon('down')}</summary><div data-style-body="appearance"></div></details><details class="card terminal-settings" data-style-panel><summary><span>03｜聊天气泡自定义</span>${uiIcon('down')}</summary><div data-style-body="bubbles"></div></details><details class="terminal-other-settings terminal-settings"><summary><span>04｜其他手机设置</span>${uiIcon('down')}</summary>${cards.frames}${cards.logs}${cards.backup}</details></div>`);
   }
   function screenPresets(): string {
     return shell(`${header('预设','home')}<div class="viewport"><div class="h2">预设</div><p class="sub">独立管理小说模式。即时设置自动保存；正文确认后才提交。当前仍只做隔离预览。</p><div class="card" id="fruit-preset-root"></div></div>`);
   }
   function phoneSettingsCards() {
     const r=role()!;
-    return { appearance: `<div class="card"><h3>外观</h3><div class="theme-swatches">${[
-        ['blue', '蓝色'],
-        ['green', '绿色'],
-        ['pink', '粉色'],
-        ['coffee', '卡布奇诺'],
-        ['night', '夜晚'],
-      ]
-        .map(
-          ([id, label]) =>
-            `<button class="swatch swatch-${id} ${
-              (r.theme || 'blue') === id ? 'active' : ''
-            }" data-action="theme" data-theme="${id}"><i></i>${label}</button>`
-        )
-        .join(
-          ''
-        )}</div><label class="sub">字体</label><select class="field" id="font-select"><option value="system" ${
-        (r.font || data.font) === 'system' ? 'selected' : ''
-      }>系统字体</option><option value="serif" ${
-        (r.font || data.font) === 'serif' ? 'selected' : ''
-      }>衬线字体</option></select></div>`, logs: `<div class="card"><h3>系统 Log</h3><p>查看本地事件、API 请求状态、模式切换和错误；不会记录 API Key。详细 Prompt 仅在本次请求记录一份脱敏摘要。</p><div class="row"><button class="btn small secondary" data-action="exportlogs">导出日志 JSON</button><button class="btn small ghost" data-action="clearlogs">清空日志</button></div><div class="log-list">${
+    return { logs: `<div class="card"><h3>系统 Log</h3><p>查看本地事件、API 请求状态、模式切换和错误；不会记录 API Key。详细 Prompt 仅在本次请求记录一份脱敏摘要。</p><div class="row"><button class="btn small secondary" data-action="exportlogs">导出日志 JSON</button><button class="btn small ghost" data-action="clearlogs">清空日志</button></div><div class="log-list">${
         (data.logs || [])
           .slice(-35)
           .reverse()
@@ -4295,9 +4281,7 @@ export function initElsewhereApp(): void {
           .join('') || '<p class="sub">暂无日志，开始聊天或切换主题后会出现记录。</p>'
       }</div></div>`,
       frames: renderTerminalFrameAssetManagerCard(),
-      bubble: `<div class="card"><h3>聊天气泡 CSS（当前角色独立）</h3><p>支持仅针对 .message.mine .bubble 和 .message.theirs .bubble 的 CSS；不允许外部资源或全局页面选择器。保存后进入聊天查看效果。</p><form id="bubble-form"><label class="btn small ghost bubble-css-import">导入 CSS 文件<input id="bubble-css-file" type="file" accept=".css,text/css" hidden></label><p class="sub">导入只填入编辑器，点击应用后才保存。最多 12KB。</p><textarea class="field bubble-editor" name="css" spellcheck="false" placeholder=".message.mine .bubble { background: #ffd9eb; border-radius: 22px; }">${esc(
-        r.bubbleCSS || ''
-      )}</textarea><div class="row"><button class="btn small">应用气泡 CSS</button><button class="btn small secondary" type="button" data-action="resetbubble">恢复默认气泡</button></div></form></div>`, backup: `<div class="card"><h3>数据与跨环境迁移</h3><p>各角色互相隔离。支持导出 / 导入本地 JSON 备份（包含全部角色、修订档案、日记分享状态与 IndexedDB 媒体附件，不包含 API Key）。</p><div class="row" style="margin-top:11px;flex-wrap:wrap"><button class="btn small secondary" data-action="export">导出备份</button><label class="btn small ghost" style="cursor:pointer">导入备份<input id="backup-file" type="file" accept=".json" hidden></label></div></div><p class="tiny muted">当前角色：${esc(
+      backup: `<div class="card"><h3>数据与跨环境迁移</h3><p>各角色互相隔离。支持导出 / 导入本地 JSON 备份（包含全部角色、修订档案、日记分享状态与 IndexedDB 媒体附件，不包含 API Key）。</p><div class="row" style="margin-top:11px;flex-wrap:wrap"><button class="btn small secondary" data-action="export">导出备份</button><label class="btn small ghost" style="cursor:pointer">导入备份<input id="backup-file" type="file" accept=".json" hidden></label></div></div><p class="tiny muted">当前角色：${esc(
         r.name
       )} · v1 Phase 1</p>` };
   }
@@ -4325,10 +4309,33 @@ export function initElsewhereApp(): void {
       (n, i) => root.style.setProperty(n, a[i])
     );
     if (root.dataset) root.dataset.theme = key;
-    root.style.fontFamily =
-      (role()?.font || data.font) === 'serif'
-        ? 'Georgia,"Songti SC",serif'
-        : '-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif';
+    root.style.fontFamily=appearanceFontFamily(data,role());
+    void hydrateAppearanceFont(data,role()).catch(()=>{});
+  }
+
+  function applyTerminalAppearance(): void {
+    applyTheme();
+    installBubbleCSS();
+    const phone=$('.phone'),wallpaper=$('.wallpaper');
+    if (phone) {
+      for (const name of [...phone.classList]) if (name.startsWith('theme-')) phone.classList.remove(name);
+      phone.classList.add(`theme-${role()?.theme||'blue'}`);
+    }
+    if (!wallpaper) return;
+    const mediaId=role()?.wallpaperMediaId||'';
+    if ((wallpaper.querySelector<HTMLElement>('.wallpaper-image')?.dataset.mediaId||'')===mediaId) return;
+    if (wallpaperURL) URL.revokeObjectURL(wallpaperURL);
+    wallpaperURL='';
+    wallpaper.replaceChildren();
+    wallpaper.classList.toggle('has-custom-wallpaper',Boolean(mediaId));
+    if (mediaId) {
+      const image=document.createElement('img');
+      image.className='wallpaper-image';
+      image.dataset.mediaId=mediaId;
+      image.alt='';
+      wallpaper.append(image);
+      void hydrateMedia(wallpaper);
+    }
   }
 
   function clearMediaURLs(): void {
@@ -4381,7 +4388,10 @@ export function initElsewhereApp(): void {
         }
         if (!item.isConnected) continue;
         const url = URL.createObjectURL(blob);
-        mediaURLs.push(url);
+        if (item.classList.contains('wallpaper-image')) {
+          if (wallpaperURL) URL.revokeObjectURL(wallpaperURL);
+          wallpaperURL = url;
+        } else mediaURLs.push(url);
         item.dataset.hydratedKey = key;
         item.src = url;
         if (isAvatarImg) {
@@ -4409,7 +4419,7 @@ export function initElsewhereApp(): void {
    */
   function patchDynamicRegionsOnTick(): void {
     document
-      .querySelectorAll<HTMLElement>('.status-time, .homescreen-time')
+      .querySelectorAll<HTMLElement>('.homescreen-time')
       .forEach((el) => {
         el.textContent = hm(Date.now());
       });
@@ -4516,10 +4526,13 @@ export function initElsewhereApp(): void {
     lastRenderedView = view;
 
     clearMediaURLs();
+    if (wallpaperURL) URL.revokeObjectURL(wallpaperURL);
+    wallpaperURL = '';
     fruitManager.detach();
     terminalApi.detach();
+    terminalAppearance.detach();
     app.innerHTML = markup;
-    if(view==='terminal')terminalApi.mount(document.getElementById('terminal-api-root'));
+    if(view==='terminal'){terminalApi.mount(document.getElementById('terminal-api-root'));terminalAppearance.mount(document.querySelector('.terminal-page'));}
     if(view==='presets')fruitManager.mount(document.getElementById('fruit-preset-root'));
     restoreUIState(uiSnap, !scroll, document, sameView);
     hydrateMedia();
@@ -5511,6 +5524,7 @@ export function initElsewhereApp(): void {
         await restoreMediaFromBackup(d._media);
         delete d._media;
         data = normalizeAndMigrateData(d);
+        token = readDeviceApiKey(localStorage,data.settings.endpoint);
         data.selected = null;
         save();
         go('landing');
@@ -5967,14 +5981,6 @@ export function initElsewhereApp(): void {
       endNovel();
       return;
     }
-    if (act === 'theme') {
-      if (!r) return;
-      r.theme = (b.dataset.theme as ThemeName) || 'blue';
-      syslog('ui', `切换 ${r.name} 的主题：${r.theme}`);
-      save();
-      render();
-      return;
-    }
     if (act === 'viewplay') {
       detailId = b.dataset.id || '';
       go('playdetail');
@@ -6349,17 +6355,6 @@ export function initElsewhereApp(): void {
           );
         }
       })();
-      return;
-    }
-    if (act === 'resetbubble') {
-      if (!r) return;
-      const previous = r.bubbleCSS;
-      r.bubbleCSS = '';
-      syslog('ui', '清除角色 CSS');
-      if (!save()) { r.bubbleCSS = previous; return; }
-      const editor = document.querySelector<HTMLTextAreaElement>('#bubble-form [name="css"]');
-      if (editor) editor.value = '';
-      render(false);
       return;
     }
     if (act?.startsWith('hometask')) { homeTasks.handle(act,b); return; }
@@ -6741,23 +6736,6 @@ export function initElsewhereApp(): void {
       return;
     }
 
-    if (f.id === 'bubble-form') {
-      const r = role();
-      if (!r) return;
-      const css = String(fd.get('css') || '');
-      if (css.length > BUBBLE_CSS_LIMIT || (css.trim() && !safeBubbleCSS(css))) {
-        notify('CSS 未保存：最多 12000 字符，请使用支持的气泡选择器，不含外部资源或定位覆盖。');
-        return;
-      }
-      const previous = r.bubbleCSS;
-      r.bubbleCSS = css;
-      syslog('ui', '更新角色聊天气泡 CSS');
-      if (!save()) { r.bubbleCSS = previous; return; }
-      render(false);
-      notify('气泡样式已保存');
-      return;
-    }
-
     if (f.id === 'profile-form') {
       const r = role();
       if (!r) return;
@@ -6775,30 +6753,6 @@ export function initElsewhereApp(): void {
 
   appRoot.addEventListener('change', (e) => {
     const el = e.target as HTMLInputElement;
-    if (el.id === 'bubble-css-file' && el.files?.[0]) {
-      const file = el.files[0];
-      el.value = '';
-      const editor = document.querySelector<HTMLTextAreaElement>('#bubble-form [name="css"]');
-      if (!editor) return;
-      if (!/\.css$/i.test(file.name) || file.size > BUBBLE_CSS_LIMIT) {
-        notify('请选择 12KB 以内的 .css 文件；当前样式未改变。');
-        return;
-      }
-      const readId = ++bubbleCssRead;
-      const owner = role()?.id, before = editor.value;
-      void file.text().then(css => {
-        if (readId !== bubbleCssRead || !editor.isConnected || role()?.id !== owner || editor.value !== before) return;
-        if (!css.trim() || !safeBubbleCSS(css)) {
-          notify('未导入：未找到支持的气泡规则，或包含外部资源／不安全 CSS。当前样式未改变。');
-          return;
-        }
-        editor.value = css;
-        editor.focus({preventScroll:true});
-        notify('CSS 已载入编辑器，点击「应用气泡 CSS」才会保存。');
-      }).catch(() => notify('CSS 文件读取失败；当前样式未改变。'));
-      return;
-    }
-
     if (el.id === 'focus-minutes-slider') {
       ensureFocusData();
       const taskInputEl = document.getElementById('focus-task-input') as HTMLInputElement | null;
@@ -6951,14 +6905,7 @@ export function initElsewhereApp(): void {
     if (el.id === 'backup-file' || el.id === 'landing-backup-file') {
       importBackup(el.files?.[0]);
     }
-    if (el.id === 'font-select') {
-      const r = role();
-      if (r) {
-        r.font = (el.value as 'system' | 'serif') || 'system';
-        save();
-        render(false);
-      }
-    }
+
 
   });
 
@@ -7087,7 +7034,7 @@ export function initElsewhereApp(): void {
 
       // Always keep visible clocks fresh without re-rendering
       document
-        .querySelectorAll<HTMLElement>('.status-time, .homescreen-time')
+        .querySelectorAll<HTMLElement>('.homescreen-time')
         .forEach((el) => {
           const next = hm(Date.now());
           if (el.textContent !== next) el.textContent = next;

@@ -65,6 +65,9 @@ export async function mediaDelete(id: string): Promise<void> {
 
 export function collectReferencedMediaIds(data: AppData): string[] {
   const rawIds: string[] = [];
+  for (const font of data.customFonts || []) {
+    if (typeof font.mediaId === 'string') rawIds.push(font.mediaId);
+  }
   if (data.user?.avatarMediaId && typeof data.user.avatarMediaId === 'string') {
     rawIds.push(data.user.avatarMediaId);
   }
@@ -77,6 +80,7 @@ export function collectReferencedMediaIds(data: AppData): string[] {
     }
   }
   for (const r of data.roles || []) {
+    if (typeof r.wallpaperMediaId === 'string') rawIds.push(r.wallpaperMediaId);
     if (r.avatarMediaId && typeof r.avatarMediaId === 'string') {
       rawIds.push(r.avatarMediaId);
     }
@@ -120,7 +124,7 @@ export async function restoreMediaFromBackup(
     if (
       !item ||
       !/^[a-zA-Z0-9_-]+$/.test(String(item.id || '')) ||
-      !/^data:(audio|image)\/[a-z0-9+.-]+;base64,/i.test(String(item.data || ''))
+      !/^data:(audio|image|font)\/[a-z0-9+.-]+;base64,/i.test(String(item.data || ''))
     ) {
       continue;
     }

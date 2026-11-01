@@ -1,3 +1,4 @@
+import type {NovelDocument} from './novelDocument';
 export type ThemeName = 'blue' | 'green' | 'pink' | 'coffee' | 'night';
 
 export type MessageKind = 'chat' | 'sticker' | 'photo' | 'voice' | 'packet' | 'scene' | 'play';
@@ -12,6 +13,7 @@ export interface MessageQuote {
 }
 
 export interface ChatMessage {
+  sceneReply?:SceneReplyTicket;
   id: string;
   speaker: 'me' | 'char' | 'note';
   text: string;
@@ -21,10 +23,12 @@ export interface ChatMessage {
   editedAt?: number;
   revisionCount?: number;
   quote?: MessageQuote | null;
+  sourceMessageId?: string;
   replyTo?: string;
   replyTurnId?: string;
   replySourceIds?: string[];
   proactive?: boolean;
+  novelOutput?: {document?:NovelDocument;presetId:string;mode:'meeting'|'theatre';scene?:string;summary?:string;characters?:string;choices?:string;generatedAuxiliary?:string;memoryEligible:false};
   // Media & rich message fields
   sticker?: string;
   mediaId?: string;
@@ -52,6 +56,7 @@ export interface MessageRevisionRecord {
 }
 
 export interface EventRecord {
+  sceneChange?: {requestId:string;sceneId:string;sources:MeetingPlan['sources'];before:Pick<SceneData,'where'|'agreement'|'locationEvidence'>;after:Pick<SceneData,'where'|'agreement'|'locationEvidence'>};
   id: string;
   kind: 'life' | 'chat' | 'scene' | 'drama' | 'focus' | 'diary' | 'diary_share' | string;
   title: string;
@@ -118,11 +123,38 @@ export interface DiaryEntry {
   sharedAt?: Record<string, number>;
 }
 
+export interface MeetingPlan {
+  interpretation?: 'scene-state-v1';
+  status: 'proposed' | 'confirmed' | 'declined' | 'cancelled';
+  where?: string;
+  timeText?: string;
+  scheduledAt?: number;
+  expiresAt?: number;
+  proposedBy: 'me' | 'char';
+  acceptedBy: ('me' | 'char')[];
+  sources: {id:string;at:number;text:string;revisionCount:number}[];
+}
+
+export interface SceneReplyTicket {
+  requestId:string;
+  roleId:string;
+  sceneId:string|null;
+  at:number;
+  stateHash:string;
+  previousPlan:MeetingPlan|null;
+  sourceIds:string[];
+  contextIds:string[];
+  payload?:string;
+}
+
 export interface SceneData {
   id: string;
   startedAt: number;
   endedAt?: number;
   where: string;
+  agreement?: MeetingPlan;
+  locationEvidence?: {origin:'agreement'|'generated'|'movement'|'unknown'|'manual';at:number;sources:MeetingPlan['sources'];contextIds?:string[]};
+  draft?: string;
   messages: ChatMessage[];
 }
 
@@ -172,6 +204,7 @@ export interface ChatTimingState {
 }
 
 export interface PendingReplyJob {
+  sceneReply?:SceneReplyTicket;
   id: string;
   replyTo: string;
   replyTurnId?: string;
@@ -349,6 +382,7 @@ export interface RoleData {
   pendingReplies?: PendingReplyJob[];
   chatTiming?: ChatTimingState;
   chatInvite?: ChatInviteState | null;
+  meetingPlan?: MeetingPlan | null;
   messageRevisions?: MessageRevisionRecord[];
   firstMessageState?: FirstMessageState;
   diaryTasks?: DiaryGenerationTask[];

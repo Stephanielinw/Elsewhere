@@ -47,7 +47,8 @@ export class FruitMacroResolver {
       }
       parts.push(body.slice(partStart));
       let head=parts.shift()?.trim()||'';
-      if(!parts.length&&/^(?:getvar|getglobalvar)\s+/i.test(head)){const split=head.indexOf(' ');parts.push(head.slice(split+1));head=head.slice(0,split);}
+      if(!parts.length&&/^(?:getvar|getglobalvar|roll)\s+/i.test(head)){const split=head.indexOf(' ');parts.push(head.slice(split+1));head=head.slice(0,split);}
+      if(!parts.length&&/^roll:/i.test(head)){parts.push(head.slice(5));head='roll';}
       const name=head.toLowerCase();
       if(name==='trim'&&!parts.length){output=output.replace(/[\r\n]+$/,'');while(/[\r\n]/.test(input[cursor]||' '))cursor++;continue;}
       const expanded=parts.map(p=>this.expand(p,level+1)),args=expanded.map(p=>p.text);
@@ -66,6 +67,12 @@ export class FruitMacroResolver {
         if(args.length!==1||!map.has(key))throw new FruitMacroError('macro-variable',`变量 ${key||'（空）'} 未初始化；该条目不能编译`);
         value=map.get(key)||'';
         references=union([references,(name==='getvar'?this.localRefs:this.globalRefs).get(key)||new Set()]);
+      }else if(name==='roll'){
+        const dice=args.length===1&&/^(\d{1,3})d(\d{1,6})(?:([+-])(\d{1,6}))?$/i.exec(args[0].trim());
+        if(!dice||Number(dice[1])<1||Number(dice[1])>100||Number(dice[2])<1||Number(dice[2])>100000)throw new FruitMacroError('macro-dice','roll 仅支持 1–100 个、每个 1–100000 面的 NdM，可附有限整数修正');
+        let total=0;
+        for(let i=0;i<Number(dice[1]);i++){const pick=this.rng();if(!Number.isFinite(pick)||pick<0||pick>=1)throw new FruitMacroError('macro-budget','掷骰随机源无效');total+=1+Math.floor(pick*Number(dice[2]));}
+        value=String(total+(dice[3]==='-'?-1:1)*Number(dice[4]||0));references=new Set();
       }else if(name==='random'){
         const choices=args.length===1?args[0].split(','):args;
         if(!choices.length)throw new FruitMacroError('macro-syntax','random 需要候选值');

@@ -87,11 +87,10 @@ test('Fruit actual private V6.4X fixture (opt in; never bundled)',{skip:!process
   assert.equal(preset.regex.length,21);assert.equal(preset.regex.filter(x=>x.enabled).length,18);assert.deepEqual(preset.raw,raw);
   for(const mode of ['meeting','theatre']as const)for(const auxiliary of [false,true])for(const style of ['', '测试自定义文风']){
     const base=createFruitState().profiles[mode];const r=compileFruitPrompt(preset,{...base,style,output:{...base.output,auxiliary,characters:true}},makeFruitFixtureContext(mode));
-    assert.ok(r.messages.length>15);assert.equal(r.valid,false);assert.equal(r.sendAllowed,false);assert.ok(!r.messages.some(m=>/<snow>|2200\s*[-–]\s*2500/.test(m.content)));
+    assert.ok(r.messages.length>15);assert.equal(r.valid,true);assert.equal(r.sendAllowed,false);assert.ok(!r.messages.some(m=>/<snow>|2200\s*[-–]\s*2500/.test(m.content)));
     const errors=r.diagnostics.filter(d=>d.severity==='error');
-    assert.deepEqual(errors.map(d=>d.code).sort(),auxiliary?['macro-unsupported','macro-unsupported']:['auxiliary-unsupported','auxiliary-unsupported','macro-unsupported']);
-    assert.ok(errors.some(d=>d.code==='macro-unsupported'&&d.message.includes('roll:1d10')));
-    if(auxiliary)assert.ok(errors.some(d=>d.code==='macro-unsupported'&&d.message.includes('roll:1d9999')));
+    assert.deepEqual(errors,[]);assert.ok(!JSON.stringify(r.messages).includes('{{roll'));
+    if(!auxiliary)assert.ok(r.diagnostics.some(d=>d.code==='auxiliary-retained'));
   }
 });
 

@@ -1,3 +1,4 @@
+import {reconcileSceneSources} from './sceneRevisions';
 import type {
   ChatMessage,
   EventRecord,
@@ -85,14 +86,15 @@ export function editMessage(
   if (msg.text === newText) return { ok: false, reason: '内容未发生变化' };
 
   const prevText = msg.text;
-  const linked = findLinkedEvents(role, msg);
+  const bridgeSource=scope==='scene'?msg.sourceMessageId:undefined;
+  const linked = findLinkedEvents(role, msg).filter(e=>!bridgeSource||e.messageId===msg.id);
   const supersededEventIds: string[] = [];
 
   for (const ev of linked) {
     ev.status = 'superseded';
     supersededEventIds.push(ev.id);
     // Insert updated formal event preserving original occurrence timestamp
-    role.events.push({
+    if(!ev.sceneChange)role.events.push({
       ...ev,
       id: makeUid('ev'),
       detail: newText,
@@ -101,6 +103,8 @@ export function editMessage(
     });
   }
 
+  // A deliberate scene edit becomes its own source; the phone original and its events remain intact.
+  if(bridgeSource)delete msg.sourceMessageId;
   msg.text = newText;
   msg.editedAt = nowTs;
   msg.revisionCount = (msg.revisionCount || 0) + 1;
@@ -130,11 +134,12 @@ export function editMessage(
     speaker: msg.speaker,
     previousText: prevText,
     newText,
+    ...(bridgeSource?{reason:`场景独立修订；原手机来源 ID=${bridgeSource}`} : {}),
     at: nowTs,
     supersededEventIds,
   };
   ensureRevisionsList(role).push(revision);
-
+  delete msg.sceneReply;reconcileSceneSources(role);
   return { ok: true, revision, hadPendingReply };
 }
 
@@ -175,7 +180,7 @@ export function retractMessage(
     supersededEventIds,
   };
   ensureRevisionsList(role).push(revision);
-
+  delete msg.sceneReply;reconcileSceneSources(role);
   return { ok: true, revision };
 }
 
@@ -297,7 +302,7 @@ export function prepareRegenerateReply(
     supersededEventIds,
   };
   ensureRevisionsList(role).push(revision);
-
+  for(const m of toSupersede)delete m.sceneReply;reconcileSceneSources(role);
   return {
     ok: true,
     promptMessage: promptMsg,

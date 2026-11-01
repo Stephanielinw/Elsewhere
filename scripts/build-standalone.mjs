@@ -13,6 +13,16 @@ const result = await esbuild.build({
   target: ['es2020'],
   loader: { '.css': 'empty' },
   minify: false,
+  plugins: [{
+    name: 'local-worker-source',
+    setup(build) {
+      build.onResolve({filter: /\?raw$/}, args => ({path: path.resolve(args.resolveDir, args.path), namespace: 'raw-source'}));
+      build.onLoad({filter: /\?raw$/, namespace: 'raw-source'}, args => {
+        const source = fs.readFileSync(args.path.slice(0, -4), 'utf8');
+        return {contents: `export default ${JSON.stringify(source)};`, loader: 'js'};
+      });
+    },
+  }],
 });
 
 const jsCode = result.outputFiles[0].text;

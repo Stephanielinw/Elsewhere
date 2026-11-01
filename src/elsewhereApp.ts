@@ -1,12 +1,23 @@
-import {compileNativeConversation,compileOpeningPrompt,type NativePromptOptions} from './core/prompt';
+import {meetingTimeline,archiveMeeting} from './core/meetingHistory';
+import {meetingCardHtml,meetingRecordHtml} from './meetingHistoryView';
+import {logsForDay,logDays,logTimestamp} from './core/systemLogs';
+import {meetingPlan,isArrival as canArrive,createEncounter,isFarewell,encounterHistory,updateEncounterLocation,commitSceneDecision} from './core/encounter';
+import {createSceneObservation} from './core/sceneState';
+import {prepareSceneReply,splitSceneReply,sceneReplyMatches,resolveSceneReply} from './core/sceneReply';
+import {identityName,identityContext,buildNativeContext,compileNativeConversation,compileNovelConversation,compileOpeningPrompt,type NativePromptOptions} from './core/prompt';
 import {ConversationCompileError,requestMessages,promptStructure,type ConversationCompilation} from './core/conversationPrompt';
-import {loadNativeRequestProfile} from './core/fruit/library';
+import {loadRequestPreset} from './core/fruit/library';
+import type {FruitPreset} from './core/fruit/types';
+import {createNovelTasks,commitNovelReply,prepareNovelRegeneration,readNovelResponse,novelSamplingParameters,type NovelKind} from './core/novelGeneration';
 import {monitorItemsForDisplay,newestMonitorFirst} from './core/monitorPresentation';
 import {uiIcon,plainUiLabel} from './uiIcons';
 import {chatTiming,setChatFocused,enqueueChat,prepareChatDue,claimChatBatch,chatBatchValid,chatRevisionKey,completeChatBatch,failChatBatch,recoverChatTiming,retryChatTiming,reviseChatTiming,sourceStillValid} from './core/chatScheduler';
 import {compileChatBatchPrompt,buildPhoneRegeneration,readChatResponse} from './core/chatBatchPrompt';
 import {createHomeTasks} from './homeTasksView';
 import {createHomePager} from './homePager';
+import {novelMessageHtml} from './novelOutputView';
+import {bindNovelDocument} from './core/novelDocument';
+import {createNovelDisplay} from './novelDisplay';
 import {safeBubbleCSS} from './core/bubbleCss';
 import {DEVICE_API_KEY,readDeviceApiKey,saveDeviceApiKey} from './core/deviceApiKey';
 import {createTerminalAppearance,appearanceFontFamily,hydrateAppearanceFont} from './terminalAppearance';
@@ -124,7 +135,14 @@ import {
 } from './core/focus';
 
 export function initElsewhereApp(): void {
-  const fruitManager = createFruitManager(()=>{const p=role()?.preset||data.preset;return p?`旧版原生附加预设仍按既有存档生效：${p.name}（${p.prompts.length} 条）。新选择器不改写它，也不将果实注入日常聊天。`:'';});
+  const novelDisplay=createNovelDisplay((roleId,stageId,mode,messageId)=>{
+    const r=data.roles.find(r=>r.id===roleId);if(!r||data.selected!==roleId)return null;
+    const stages=mode==='meeting'?[r.scene,...(r.meetings||[])]:[r.play,...(r.plays||[])];
+    const stage=stages.find(s=>s?.id===stageId);if(!stage)return null;
+    const messages=mode==='meeting'?encounterHistory(r,stage.messages):getActiveMessages(stage.messages),index=messages.findIndex(m=>m.id===messageId);if(index<0)return null;
+    return {roleId,stageId,mode,message:messages[index],depth:messages.slice(index+1).filter(m=>m.speaker!=='note').length,names:mode==='theatre'&&'char'in stage?{char:stage.char,user:stage.user}:{char:r.name,user:identityName(data,r)}};
+  });
+  const fruitManager = createFruitManager({currentRole:()=>{const r=role();return r?{id:r.id,name:r.name}:null;},roles:()=>data.roles.map(r=>({id:r.id,name:r.name})),leave:()=>go('home'),legacyInfo:()=>{const p=role()?.preset||data.preset;return p?`旧版原生附加预设仍按既有存档生效：${p.name}（${p.prompts.length} 条）。小说选择不改写它，不将果实注入手机聊天。`:'';}});
   const terminalApi = createTerminalApi({settings:()=>data.settings,key:()=>token,notify:message=>notify(message),save:(settings,key)=>{
     const previous=data.settings,previousKey=localStorage.getItem(DEVICE_API_KEY);
     try {
@@ -186,6 +204,10 @@ export function initElsewhereApp(): void {
   let chatPanel = '';
   let chatDraft = '';
   let novelDraft = '';
+  let novelViewKind:NovelKind='scene';
+  let meetingDraftTimer:ReturnType<typeof setTimeout>|undefined;
+  let meetingDraftDirty=false;
+  let systemLogDate:string|null=null;
   let intermissionDraft = '';
   let voiceRecorder: MediaRecorder | null = null;
   let voiceStart = 0;
@@ -1432,35 +1454,11 @@ export function initElsewhereApp(): void {
         reason: '我们不是说好先专心做自己的事吗？等这一轮结束再聊。',
       };
     }
-    const h = new Date(t).getHours();
-    if (r.scene || r.play) {
-      return {
-        type: 'later' as const,
-        dueAt: t + 3600000,
-        reason: '我这边还有事没结束，等会儿找你。',
-      };
-    }
-    if (h >= 22 || h < 7) {
-      return {
-        type: 'declined' as const,
-        dueAt: t + (((7 - h + 24) % 24) || 24) * 3600000,
-        reason: '有点晚了，我想先休息。明天我们再好好聊？',
-      };
-    }
-    if (h >= 9 && h < 12) {
-      return {
-        type: 'later' as const,
-        dueAt: t + (12 - h) * 3600000 - new Date(t).getMinutes() * 60000,
-        reason: '我还在忙工作，午休有空的话再找你，好吗？',
-      };
-    }
-    if (h >= 14 && h < 20) {
-      return {
-        type: 'later' as const,
-        dueAt: t + (20 - h) * 3600000 - new Date(t).getMinutes() * 60000,
-        reason: '我现在还走不开。等晚点有空了，我来问你。',
-      };
-    }
+    if (r.scene || r.play) return {
+      type: 'later' as const,
+      dueAt: t + 3600000,
+      reason: '当前场景还没有结束。',
+    };
     return {
       type: 'accepted' as const,
       dueAt: null,
@@ -1544,12 +1542,49 @@ export function initElsewhereApp(): void {
     return 30000+characterOffset;
   }
 
-  const promptTraces=new Map<string,ReturnType<typeof promptStructure>&{profileRevision:number;requestedPresetId:string;actualPresetId:string}>();
+  const novelTasks=createNovelTasks();
+  const applyingSceneReplies=new Set<string>();
+  async function applySavedSceneReply(r:RoleData,item:ChatMessage):Promise<void> {
+    const ticket=item.sceneReply;if(!ticket?.payload||applyingSceneReplies.has(ticket.requestId))return;
+    applyingSceneReplies.add(ticket.requestId);
+    let retryable=false;
+    const messages=ticket.sceneId===null?r.chats:r.scene?.id===ticket.sceneId?r.scene.messages:[];
+    const replies=item.replyTurnId?messages.filter(m=>m.replyTurnId===item.replyTurnId):messages.filter(m=>m===item);
+    try{
+      if(!data.roles.includes(r)||ticket.sceneId===null&&(r.chatTiming?.pending.length||r.chatTiming?.inFlight)||!await sceneReplyMatches(r,data.user,ticket,replies))throw new Error('场景事件来源已变化');
+      if(item.sceneReply!==ticket) return;
+      delete item.sceneReply;
+      const decision=resolveSceneReply(r,data.user,ticket,replies,now());
+      retryable=true;
+      const result=commitSceneDecision(r,decision,now(),uid(),save,{requestId:ticket.requestId,replyIds:replies.map(m=>m.id),contextIds:ticket.contextIds});
+      if(result==='left'){
+        if(!archiveMeeting(r,now(),save))throw new Error('见面归档未完成');
+        if(role()===r&&view==='novel'&&novelViewKind==='scene')go('chat');
+      }else if(result==='entered'){
+        revisePhoneSchedule(r);save();
+        if(role()===r&&view==='chat')go('novel','scene');
+      }else if(result==='none'&&!save())throw new Error('状态确认保存失败');
+      if(result!=='none')syslog('scene-state','同次生成的场景事件已保存',{roleId:r.id,action:decision.action,source:ticket.sceneId||r.scene?.id});
+      if(role()===r&&(view==='home'||view==='novel'&&novelViewKind==='scene'))render(false);
+    }catch{
+      if(retryable)item.sceneReply=ticket;else delete item.sceneReply;
+      syslog('scene-state','场景事件未采用；正文及已有状态保留，不追加模型请求',{roleId:r.id,code:'scene-event-ignored'});save();
+    }finally{applyingSceneReplies.delete(ticket.requestId);}
+  }
+  function resumeLocalSceneReplies(r:RoleData):void {
+    for(const item of [...r.chats,...(r.scene?.messages||[])])if(item.sceneReply)void applySavedSceneReply(r,item);
+  }
+  type RequestPromptOptions=NativePromptOptions&{preset:FruitPreset;presetId:string};
+  const promptTraces=new Map<string,ReturnType<typeof promptStructure>&{profileRevision:number;requestedPresetId:string;actualPresetId:string;profileOwnerRoleId:string;profileSource:string;actualPresetHash:string;profileBaseHash:string}>();
+  function includeScenePromptTrace(r:RoleData):void {
+    const trace=promptTraces.get(r.id);
+    if(trace)trace.messages=[{order:1,role:'system',source:'同次场景事件控制'},...trace.messages.map(m=>({...m,order:m.order+1}))];
+  }
   async function promptRecovery(r:RoleData,error:ConversationCompileError):Promise<'retry'|'native'|'cancel'>{
     return new Promise(resolve=>{
       const dialog=document.createElement('dialog');dialog.className='fruit-dialog';
       const problems=error.compilation.diagnostics.filter(d=>d.severity==='error'),legacyOnly=problems.length>0&&problems.every(d=>d.sourceId?.startsWith('legacy:'));
-      dialog.innerHTML=`<div class="fruit-dialog-body"><h2>这次请求尚未发送</h2><p>配置和已发送消息均已保留。请检查不兼容条目，或仅本次不加载旧附加预设。</p><ul>${problems.map(d=>`<li>${esc(d.sourceId||'配置')} · ${esc(d.code)}</li>`).join('')}</ul><div class="row"><button class="btn" data-prompt-recover="retry">重试</button>${legacyOnly?'<button class="btn secondary" data-prompt-recover="native">本次仅使用原生</button>':''}<button class="btn secondary" data-prompt-recover="export">导出旧配置</button><button class="btn ghost" data-prompt-recover="cancel">取消</button></div></div>`;
+      dialog.innerHTML=`<div class="fruit-dialog-body"><h2>这次请求尚未发送</h2><p>配置和已发送消息均已保留。请检查下列条目；不会自动换用其他预设。</p><ul>${problems.map(d=>`<li>${esc(d.sourceId||'配置')} · ${esc(d.code)}：${esc(d.message)}</li>`).join('')}</ul><div class="row"><button class="btn" data-prompt-recover="retry">重试</button>${legacyOnly?'<button class="btn secondary" data-prompt-recover="native">本次仅使用原生</button><button class="btn secondary" data-prompt-recover="export">导出旧配置</button>':''}<button class="btn ghost" data-prompt-recover="cancel">取消</button></div></div>`;
       const finish=(choice:'retry'|'native'|'cancel')=>{dialog.close();dialog.remove();resolve(choice);};
       dialog.addEventListener('cancel',e=>{e.preventDefault();finish('cancel');});
       dialog.addEventListener('click',event=>{const action=event.target instanceof Element?event.target.closest<HTMLElement>('[data-prompt-recover]')?.dataset.promptRecover:'';
@@ -1558,16 +1593,16 @@ export function initElsewhereApp(): void {
       });document.body.append(dialog);dialog.showModal();
     });
   }
-  async function compileRequest(r:RoleData,kind:'chat'|'scene'|'play'|'intermission',build:(options:NativePromptOptions)=>ConversationCompilation,valid:()=>boolean){
+  async function compileRequest(r:RoleData,kind:'chat'|'scene'|'play'|'intermission',build:(options:RequestPromptOptions)=>ConversationCompilation,valid:()=>boolean){
     let skipLegacyOnce=false;
     while(true){
-      const mode=kind==='scene'?'meeting':kind==='play'?'theatre':kind,snapshot=await loadNativeRequestProfile(mode);
+      const mode=kind==='scene'?'meeting':kind==='play'?'theatre':kind,snapshot=await loadRequestPreset(mode,r.id);
       if(!valid())throw new Error('请求来源已变化，未发送');
       try{
-        const compilation=build({profile:snapshot.profile,skipLegacyOnce});
-        promptTraces.set(r.id,{...promptStructure(compilation),profileRevision:snapshot.revision,requestedPresetId:snapshot.requestedPresetId,actualPresetId:snapshot.actualPresetId});
+        const compilation=build({profile:snapshot.profile,skipLegacyOnce,preset:snapshot.preset,presetId:snapshot.actualPresetId});
+        promptTraces.set(r.id,{...promptStructure(compilation),profileRevision:snapshot.revision,requestedPresetId:snapshot.requestedPresetId,actualPresetId:snapshot.actualPresetId,profileOwnerRoleId:snapshot.roleId,profileSource:snapshot.configSource,actualPresetHash:snapshot.presetHash,profileBaseHash:snapshot.profileBaseHash});
         const messages=requestMessages(compilation);
-        if(snapshot.requestedPresetId!=='native')notify('统一引擎第一阶段：本次实际使用 Elsewhere 原生预设；所选第三方预设仍仅用于隔离预览。');
+        if(!valid())throw new Error('请求来源已变化，未发送');
         return messages;
       }catch(error){
         if(!(error instanceof ConversationCompileError))throw error;
@@ -1592,8 +1627,13 @@ export function initElsewhereApp(): void {
   async function runChatBatch(r:RoleData,batch:ChatBatch):Promise<void> {
     const controller=new AbortController();activeChatRequests.set(r.id,controller);
     try{
-      const messages=await compileRequest(r,'chat',options=>compileChatBatchPrompt(data,r,batch,now(),options),()=>data.roles.includes(r)&&chatBatchValid(r,batch));
-      const text=await requestPhoneReply(r,messages,controller.signal);
+      const compiled:{value?:ConversationCompilation}={};
+      const messages=await compileRequest(r,'chat',options=>{const result=compileChatBatchPrompt(data,r,batch,now(),options);compiled.value=result;return result;},()=>data.roles.includes(r)&&chatBatchValid(r,batch));
+      let prepared:Awaited<ReturnType<typeof prepareSceneReply>>|undefined;
+      if(!r.scene&&!r.play&&compiled.value){const at=now(),context=buildNativeContext(data,r,'chat','',{nowTs:at,currentInputs:batch.sources});prepared=await prepareSceneReply(r,data.user,createSceneObservation(r,context),compiled.value,{requestId:batch.id,now:at});}
+      if(!data.roles.includes(r)||!chatBatchValid(r,batch))return;
+      if(prepared)includeScenePromptTrace(r);
+      const extracted=splitSceneReply(await requestPhoneReply(r,prepared?.messages||messages,controller.signal)),text=extracted.text;
       if(!data.roles.includes(r)||!chatBatchValid(r,batch)){
         if(r.chatTiming?.inFlight?.id===batch.id){reviseChatTiming(r,now());save();}
         return;
@@ -1603,7 +1643,7 @@ export function initElsewhereApp(): void {
       const timingBefore=structuredClone(r.chatTiming),outboxBefore=r.pendingReplies;
       if(!completeChatBatch(r,batch))return;
       const turnId=makeUid('turn'),base=now();
-      r.pendingReplies=[...(r.pendingReplies||[]),...bubbles.map((bubble,i)=>({id:uid(),replyTo:batch.sources.at(-1)!.id,replyTurnId:turnId,bubbles:[bubble],dueAt:base+i*240,sources:batch.sources,chatBatchId:batch.id}))];
+      r.pendingReplies=[...(r.pendingReplies||[]),...bubbles.map((bubble,i)=>({id:uid(),replyTo:batch.sources.at(-1)!.id,replyTurnId:turnId,bubbles:[bubble],dueAt:base+i*240,sources:batch.sources,chatBatchId:batch.id,...(prepared&&extracted.payload&&i===bubbles.length-1?{sceneReply:{...prepared.ticket,payload:extracted.payload}}:{})}))];
       if(!save()){r.chatTiming=timingBefore;r.pendingReplies=outboxBefore;throw new Error('回复未能保存，请重试');}
       deliverPending(r);
     }catch(error){
@@ -1637,14 +1677,15 @@ export function initElsewhereApp(): void {
 
   function acceptPhoneMessage(r:RoleData,item:ChatMessage):boolean {
     const timingBefore=r.chatTiming?structuredClone(r.chatTiming):undefined;
-    const chatsBefore=r.chats.length,eventsBefore=r.events.length;
-    r.chats.push(item);eMemory(r,item.text,'me','chat',item.at,item.id);enqueueChat(r,item.id,item.at);
-    if(!save()){r.chats.length=chatsBefore;r.events.length=eventsBefore;r.chatTiming=timingBefore;return false;}
+    const chatsBefore=r.chats.length,eventsBefore=r.events.length,planBefore=r.meetingPlan;
+    r.chats.push(item);eMemory(r,item.text,'me','chat',item.at,item.id);enqueueChat(r,item.id,item.at);r.meetingPlan=meetingPlan(r,item.at);
+    if(!save()){r.chats.length=chatsBefore;r.events.length=eventsBefore;r.chatTiming=timingBefore;r.meetingPlan=planBefore;return false;}
     if(role()?.id===r.id)quotingMessage=null;return true;
   }
 
   function revisePhoneSchedule(r:RoleData):void {
     activeChatRequests.get(r.id)?.abort();chatTyping.delete(r.id);
+    r.meetingPlan=meetingPlan(r,now());
     if(!r.chatTiming)return;
     reviseChatTiming(r,now());
   }
@@ -2019,13 +2060,14 @@ export function initElsewhereApp(): void {
   }
 
   function splitChatBubbles(text: string, r?: RoleData | null): string[] {
+    text=splitSceneReply(text).text;
     const bubbles = splitNaturalChatBubbles(text, r || role());
     return bubbles.length ? bubbles : [String(text || '').trim()].filter(Boolean);
   }
 
   function deliverPending(r?:RoleData):boolean {
     if(!r?.pendingReplies?.length||!data.roles.includes(r))return false;
-    const before=r.pendingReplies,chats=r.chats.length,events=r.events.length,firstMessage=r.firstMessageState;
+    const before=r.pendingReplies,chats=r.chats.length,events=r.events.length,firstMessage=r.firstMessageState,planBefore=r.meetingPlan;
     const remaining=[];let changed=false;
     for(const job of before){
       if(job.sources&&((r.scene||r.play)||!job.sources.every(source=>sourceStillValid(r,source)))){changed=true;continue;}
@@ -2033,13 +2075,16 @@ export function initElsewhereApp(): void {
       const turnId=job.replyTurnId||job.id;
       for(const [index,bubble] of job.bubbles.entries()){
         const at=now()+index,item:ChatMessage={id:uid(),speaker:'char',text:bubble,at,kind:'chat',replyTo:job.replyTo,replyTurnId:turnId,status:'active',...(job.sources?{replySourceIds:job.sources.map(m=>m.id)}:{})};
+        if(job.sceneReply&&index===job.bubbles.length-1)item.sceneReply=job.sceneReply;
         r.chats.push(item);eMemory(r,bubble,'char','chat',at,item.id);
         if(r.firstMessageState?.status!=='ready')r.firstMessageState={status:'ready',updatedAt:at};
       }
       changed=true;
     }
     r.pendingReplies=remaining;
-    if(changed&&!save()){r.pendingReplies=before;r.chats.length=chats;r.events.length=events;r.firstMessageState=firstMessage;return false;}
+    if(changed)r.meetingPlan=meetingPlan(r,now());
+    if(changed&&!save()){r.pendingReplies=before;r.chats.length=chats;r.events.length=events;r.firstMessageState=firstMessage;r.meetingPlan=planBefore;return false;}
+    if(changed&&!remaining.length)resumeLocalSceneReplies(r);
     return changed;
   }
 
@@ -2048,71 +2093,8 @@ export function initElsewhereApp(): void {
     if(awaitingNainOpening(r)){r.lifeAt=end;return;}
     if (!Number.isFinite(r.lifeAt)) r.lifeAt = end;
     if (end <= r.lifeAt) return;
-    if (r.scene) {
-      r.lifeAt = end;
-      return;
-    }
-    const gap = end - r.lifeAt;
-    const step = 60 * 60000;
-    let from = Math.floor(r.lifeAt / step) * step + step;
-    const n = Math.floor((end - from) / step) + 1;
-    if (n > 50) from = end - 49 * step;
-    for (let t = from; t <= end; t += step) {
-      const f = activeFocus();
-      if (
-        f &&
-        isRoleInActiveFocus(r, f) &&
-        (f.status === 'running' || f.status === 'paused') &&
-        t >= f.startedAt
-      ) {
-        continue;
-      }
-      const a = routine(r, t);
-      entry(r, 'life', a.label, `${a.where} · ${a.doing}`, t, {
-        where: a.where,
-      });
-    }
+    // Elapsed time advances without fabricating hourly life events or proactive messages.
     r.lifeAt = end;
-    const activeChats = getActiveMessages(r.chats);
-    if (
-      !r.chatTiming?.pending.length && !r.chatTiming?.inFlight && gap > 90 * 60000 &&
-      activeChats.length &&
-      end - (r.lastInvitation || 0) > 6 * 3600000
-    ) {
-      const h = new Date(end).getHours();
-      if (
-        h > 8 &&
-        h < 22 &&
-        activeChats
-          .slice(-2)
-          .every((x) => x.speaker !== 'char' || end - x.at > 45 * 60000)
-      ) {
-        const a = routine(r, end);
-        const invitation = h >= 18 && h <= 21 && new Date(end).getDate() % 3 === 0;
-        const msg = invitation
-          ? `刚离开${a.where}，想起一件想当面和你说的事。你今天有空出来坐坐吗？如果你不方便也没关系。`
-          : `刚刚在${a.where}忙了一阵。${
-              r.name === '奈恩'
-                ? '今天想起了以前在伦敦的一件趣事。'
-                : '今天有件事让我想到你。'
-            } 你那边怎么样？`;
-        const msgId = uid();
-        r.chats.push({
-          id: msgId,
-          speaker: 'char',
-          text: msg,
-          at: end,
-          kind: 'chat',
-          proactive: true,
-          status: 'active',
-        });
-        entry(r, 'chat', '主动发来消息', msg, end, {
-          speaker: 'char',
-          messageId: msgId,
-        });
-        r.lastInvitation = end;
-      }
-    }
     syncRoleDiaryTasks(r, data.settings, end);
     if (canUseRealModel(data.settings)) {
       void processDiaryQueue();
@@ -2149,8 +2131,8 @@ export function initElsewhereApp(): void {
         ? 'home-view'
         : view === 'landing'
         ? 'landing-view'
-        : view === 'novel'
-        ? 'novel-view'
+        : view === 'novel' || view === 'meetingdetail'
+        ? 'novel-view'+(view==='meetingdetail'?' meeting-record-view':'')
         : view === 'intermission'
         ? 'novel-view intermission-view'
         : view === 'chat'
@@ -2539,12 +2521,12 @@ export function initElsewhereApp(): void {
  }月${when.getDate()}日 · ${
         weekdays[when.getDay()]
       }</div><div class="homescreen-time">${hm(Date.now())}</div></div>
- <button class="home-widget" data-action="view" data-view="chat"><div class="home-widget-top"><div class="widget-person">${avatarTag(
+ <button class="home-widget" data-action="openconversation" data-role-id="${esc(r.id)}"><div class="home-widget-top"><div class="widget-person">${avatarTag(
    r,
    'widget-avatar'
  )}<div><b>${esc(r.name)}</b><small>${esc(a.label)} · ${esc(
         a.where
-      )}</small></div></div><span class="widget-arrow">›</span></div><div class="widget-divider"></div><div class="widget-bottom"><span class="widget-caption">${captionText}</span><span class="widget-action">打开聊天 →</span></div></button>
+      )}</small></div></div><span class="widget-arrow">›</span></div><div class="widget-divider"></div><div class="widget-bottom"><span class="widget-caption">${captionText}</span><span class="widget-action">${r.scene&&r.scene.endedAt===undefined?'返回见面':'打开聊天'} →</span></div></button>
  <div class="shared-widgets" id="home-task-cards">${homeTasks.renderCards()}</div>
 
  ${
@@ -2554,13 +2536,8 @@ export function initElsewhereApp(): void {
        } · 继续计时 <span>›</span></button>`
      : ''
  }
- ${
-   ongoing(r)
-     ? `<button class="home-ongoing" data-action="resume">${uiIcon('sparkles')} 继续${
-         r.play ? '未落幕的戏剧' : '面对面的相处'
-       } <span>›</span></button>`
-     : ''
- }
+ ${r.play?`<button class="home-ongoing" data-action="resume">${uiIcon('drama')} 继续未落幕的戏剧 <span>›</span></button>`:''}
+
  </div></section><section class="home-page home-page-apps" aria-label="第二页：应用"><div class="home-desktop">
  <div class="home-apps">${[
    ['diary', '日记'],
@@ -2717,7 +2694,7 @@ export function initElsewhereApp(): void {
               id
             )}<span>${label}</span></button>`
         )
-        .join('')}<button data-action="view" data-view="focus">${glyph('focus')}<span>一起专注</span></button><button data-action="view" data-view="drama">${glyph('drama')}<span>戏剧</span></button></div></section>`;
+        .join('')}<button data-action="meet">${glyph('profile')}<span>见面</span></button><button data-action="view" data-view="focus">${glyph('focus')}<span>一起专注</span></button><button data-action="view" data-view="drama">${glyph('drama')}<span>戏剧</span></button></div></section>`;
     }
     if (chatPanel === 'sticker') {
       const gallery=uploadedStickers(role()?.chats||[]);
@@ -2790,22 +2767,23 @@ export function initElsewhereApp(): void {
   }
 
   function renderChatMessagesHtml(r: RoleData): string {
-    const activeChats = getActiveMessages(r.chats);
+    const timeline=meetingTimeline(r);
     return `<div class="chat-privacy">你与 ${esc(
       r.name
     )} 的私人对话 · ${esc(dateStr(now()))}</div>
     ${renderFirstMessageCard(r)}
-    ${activeChats
-      .map((m, i) => {
-        const dayChanged =
-          i === 0 ||
-          new Date(activeChats[i - 1].at).toDateString() !==
-            new Date(m.at).toDateString();
+    ${timeline
+      .map((item, i) => {
+        const m=item.kind==='message'?item.message:null;
+        const dayChanged=i===0||new Date(timeline[i-1].at).toDateString()!==new Date(item.at).toDateString();
+        const daymark=dayChanged?`<div class="daymark">${dateStr(item.at)}</div>`:'';
+        if(item.kind==='meeting')return daymark+meetingCardHtml(item.scene);
+        if(!m)return '';
         const isEditingThis =
           editingMessageId === m.id && editingMessageScope === 'chat';
         const canEditText = !m.kind || m.kind === 'chat';
         return `${
-          dayChanged ? `<div class="daymark">${dateStr(m.at)}</div>` : ''
+          daymark
         }<div class="message ${
           m.speaker === 'me' ? 'mine' : 'theirs'
         }" data-msg-id="${esc(m.id)}">${
@@ -3995,8 +3973,8 @@ export function initElsewhereApp(): void {
 
   function screenNovel(): string {
     const r = role()!;
-    const p = r.play || r.scene;
-    const isPlay = Boolean(r.play);
+    const isPlay=novelViewKind==='play';
+    const p=isPlay?r.play:r.scene;
     const scope: RevisionScope = isPlay ? 'play' : 'scene';
     if (!p) {
       view = 'home';
@@ -4005,7 +3983,7 @@ export function initElsewhereApp(): void {
     const title = isPlay ? (p as PlayData).title : `与${r.name}的见面`;
     const showBackstage=isPlay&&Boolean((p as PlayData).paused);
     if(showBackstage)view='intermission';
-    const activeMessages = getActiveMessages(p.messages);
+    const activeMessages = isPlay?getActiveMessages(p.messages):encounterHistory(r,p.messages);
     const revCount = ensureRevisionsList(r).filter(
       (x) => x.scope === scope
     ).length;
@@ -4029,7 +4007,7 @@ export function initElsewhereApp(): void {
       ${renderRevisionsDrawer(r, scope)}
       <div class="novel" id="scroll-area"><div class="chapter">${
         isPlay ? 'theatre / act one' : 'a moment together'
-      }</div><h2 class="scene-title">${esc(title)}</h2>${activeMessages
+      }</div><h2 class="scene-title">${esc(title)}</h2>${!isPlay?`<div class="row between"><span data-scene-location>地点：${esc(r.scene!.where)}</span><details><summary>场景选项</summary><button type="button" class="btn small secondary" data-action="edit-meeting-place" data-role-id="${esc(r.id)}" data-scene-id="${esc(p.id)}">备用地点纠错</button></details></div>`:''}${activeMessages
         .map((m) => {
           const isEditingThis =
             editingMessageId === m.id && editingMessageScope === scope;
@@ -4041,9 +4019,7 @@ export function initElsewhereApp(): void {
               : 'note'
           }" data-msg-id="${esc(m.id)}"><span class="speaker">${
             m.speaker === 'me' ? '你' : m.speaker === 'char' ? esc(r.name) : '场景'
-          }${m.editedAt ? ' · 已编辑' : ''}</span>${quoteBubbleHtml(m, r)}${esc(
-            m.text
-          )}
+          }${m.editedAt ? ' · 已编辑' : ''}</span>${quoteBubbleHtml(m, r)}${novelMessageHtml(m,r.id,p.id,isPlay?'theatre':'meeting')}
           ${
             m.speaker !== 'note'
               ? isEditingThis
@@ -4093,11 +4069,11 @@ export function initElsewhereApp(): void {
             </div>`
           : ''
       }
-      <form class="compose" id="novel-form"><textarea id="novel-input" ${showBackstage?'disabled':''} placeholder="写下你说的话或行动..." rows="1">${esc(
-        novelDraft
+      <form class="compose" id="novel-form" data-role-id="${esc(r.id)}" data-scene-id="${isPlay?'':esc(p.id)}"><textarea id="novel-input" ${showBackstage?'disabled':''} placeholder="写下你说的话或行动..." rows="1">${esc(
+        isPlay?novelDraft:r.scene?.draft||''
       )}</textarea><button class="btn" ${
         busy||showBackstage ? 'disabled' : ''
-      }>${uiIcon('send')}</button></form></section>${showBackstage?renderIntermissionPanel(r,p as PlayData):''}</div>`,
+      }>${uiIcon('send')}</button>${data.settings.mode==='api'&&!showBackstage&&activeMessages.at(-1)?.speaker==='me'?`<button type="button" class="btn secondary" data-action="retry-novel" ${busy?'disabled':''} title="不重复添加用户消息">重试回复</button>`:''}</form></section>${showBackstage?renderIntermissionPanel(r,p as PlayData):''}</div>`,
       false
     );
   }
@@ -4290,10 +4266,28 @@ export function initElsewhereApp(): void {
           (m) =>
             `<div class="entry"><time>${
               m.speaker === 'me' ? '你' : m.speaker === 'char' ? esc(r.name) : '场景'
-            }</time><p>${esc(m.text)}</p></div>`
+            }</time><div>${novelMessageHtml(m,r.id,p.id,'theatre')}</div></div>`
         )
         .join('')}</div>`
     );
+  }
+
+  function screenMeetingDetail():string {
+    const r=role()!,scene=(r.meetings||[]).find(p=>p.id===detailId&&p.endedAt!==undefined);
+    return shell(`${header('见面档案','chat')}${scene?meetingRecordHtml(r,scene):'<div class="viewport"><p class="sub">未找到本角色的已结束见面记录。</p></div>'}`,false);
+  }
+
+  function systemLogsHtml():string {
+    const date=systemLogDate||toLocalDateKey(now()),logs=data.logs||[];
+    return `<h3>系统 Log</h3><p>按本地日期查看连接与模式诊断；不记录 API Key、Prompt 或聊天全文。</p><div class="row"><button class="btn small secondary" data-action="exportlogs">导出日志 JSON</button><button class="btn small ghost" data-action="clearlogs">清空日志</button></div><details><summary>最近请求结构 · 当前角色</summary><pre>${esc(JSON.stringify(promptTraces.get(role()!.id)||{status:'当前会话尚无请求'},null,2))}</pre></details><div class="row between"><b>${esc(date)}${systemLogDate?'':' · 今日'}</b><button type="button" class="btn small ghost" data-action="logtoday">今日日志</button></div><details data-log-history><summary>历史日志</summary><label>选择日期<select class="field" data-log-date aria-label="日志日期">${logDays(logs,now()).map(day=>`<option value="${day}" ${date===day?'selected':''}>${day}</option>`).join('')}</select></label></details><div class="log-list">${logsForDay(logs,date).map(l=>`<details class="log-row" data-log-id="${esc(l.id)}"><summary>${esc(logTimestamp(l.at))} · ${esc(l.type)} · ${esc(l.detail.slice(0,75))}</summary><pre>${esc(JSON.stringify(l,null,2))}</pre></details>`).join('')||'<p class="sub">这一天暂无日志。</p>'}</div>`;
+  }
+  function refreshSystemLogs():void {
+    const root=$('#system-log-root');if(!root)return;
+    const key=JSON.stringify([systemLogDate,toLocalDateKey(now()),data.logs?.length,data.logs?.at(-1)?.id,role()?.id,promptTraces.get(role()!.id)]);
+    if(root.dataset.logKey===key)return;
+    const opened=new Set([...root.querySelectorAll<HTMLDetailsElement>('details[open]')].map(el=>el.dataset.logId||el.querySelector('summary')?.textContent));
+    root.innerHTML=systemLogsHtml();root.dataset.logKey=key;
+    root.querySelectorAll<HTMLDetailsElement>('details').forEach(el=>{if(opened.has(el.dataset.logId||el.querySelector('summary')?.textContent))el.open=true;});
   }
 
   function screenTerminal(): string {
@@ -4301,24 +4295,11 @@ export function initElsewhereApp(): void {
     return shell(`${header('终端','home')}<div class="viewport terminal-page"><details class="card terminal-settings" open><summary><span>01｜API 与模型</span>${uiIcon('down')}</summary><div id="terminal-api-root"></div></details><details class="card terminal-settings" data-style-panel><summary><span>02｜外观与主题</span>${uiIcon('down')}</summary><div data-style-body="appearance"></div></details><details class="card terminal-settings" data-style-panel><summary><span>03｜聊天气泡自定义</span>${uiIcon('down')}</summary><div data-style-body="bubbles"></div></details><details class="card terminal-other-settings terminal-settings"><summary><span>04｜其他手机设置</span>${uiIcon('down')}</summary>${cards.frames}${cards.logs}${cards.backup}</details></div>`);
   }
   function screenPresets(): string {
-    return shell(`${header('预设','home')}<div class="viewport"><div class="h2">预设</div><p class="sub">统一引擎第一阶段：原生规则用于实际对话；果实及其他 ST 预设仍仅隔离预览。即时设置自动保存，正文确认后提交。</p><div class="card" id="fruit-preset-root"></div></div>`);
+    return shell(`${header('预设','home')}<div class="viewport"><div class="h2">预设</div><p class="sub">为当前角色选择一份小说预设，见面与正式演出共用。手机与幕间保持原生；正则和第三方脚本不执行。即时设置自动保存，正文确认后提交。</p><div class="card" id="fruit-preset-root"></div></div>`);
   }
   function phoneSettingsCards() {
     const r=role()!;
-    return { logs: `<div class="card"><h3>系统 Log</h3><p>查看本地事件、API 请求状态、模式切换和错误；不会记录 API Key。仅展示脱敏消息结构，不展示 Prompt、聊天全文或密钥。</p><div class="row"><button class="btn small secondary" data-action="exportlogs">导出日志 JSON</button><button class="btn small ghost" data-action="clearlogs">清空日志</button></div><details><summary>最近请求结构 · 当前角色</summary><pre>${esc(JSON.stringify(promptTraces.get(r.id)||{status:"当前会话尚无请求",stage:"统一引擎第一阶段"},null,2))}</pre></details><div class="log-list">${
-        (data.logs || [])
-          .slice(-35)
-          .reverse()
-          .map(
-            (l) =>
-              `<details class="log-row"><summary>${esc(hm(l.at))} · ${esc(
-                l.type
-              )} · ${esc(l.detail.slice(0, 75))}</summary><pre>${esc(
-                JSON.stringify(l, null, 2)
-              )}</pre></details>`
-          )
-          .join('') || '<p class="sub">暂无日志，开始聊天或切换主题后会出现记录。</p>'
-      }</div></div>`,
+    return { logs: `<div class="card" id="system-log-root">${systemLogsHtml()}</div>`,
       frames: renderTerminalFrameAssetManagerCard(),
       backup: `<div class="card"><h3>数据与跨环境迁移</h3><p>各角色互相隔离。支持导出 / 导入本地 JSON 备份（包含全部角色、修订档案、日记分享状态与 IndexedDB 媒体附件，不包含 API Key）。</p><div class="row" style="margin-top:11px;flex-wrap:wrap"><button class="btn small secondary" data-action="export">导出备份</button><label class="btn small ghost" style="cursor:pointer">导入备份<input id="backup-file" type="file" accept=".json" hidden></label></div></div><p class="tiny muted">当前角色：${esc(
         r.name
@@ -4495,12 +4476,20 @@ export function initElsewhereApp(): void {
     }
   }
 
+  function captureMeetingDraft(persist=true):void {
+    const form=$<HTMLFormElement>('#novel-form'),input=$<HTMLTextAreaElement>('#novel-input');
+    const owner=data.roles.find(r=>r.id===form?.dataset.roleId),scene=owner?.scene;
+    if(input&&scene&&form?.dataset.sceneId===scene.id&&scene.draft!==input.value){scene.draft=input.value;meetingDraftDirty=true;}
+    if(persist&&meetingDraftDirty){clearTimeout(meetingDraftTimer);if(save())meetingDraftDirty=false;}
+  }
+
   function render(scroll = true): void {
+    captureMeetingDraft();
     if(view==='home' && homeTasks.isOpen()){homeTasks.refresh();return;}
     if (view === 'chat' && $('#message-input')) {
       chatDraft = ($('#message-input') as HTMLTextAreaElement).value;
     }
-    if (view === 'novel' && $('#novel-input')) {
+    if ($<HTMLFormElement>('#novel-form')?.dataset.sceneId==='' && $('#novel-input')) {
       novelDraft = ($('#novel-input') as HTMLTextAreaElement).value;
     }
     if (view === 'intermission' && $('#intermission-input')) {
@@ -4553,6 +4542,8 @@ export function initElsewhereApp(): void {
         ? screenIntermission()
         : view === 'roleinfo'
         ? screenRoleInfo()
+        : view === 'meetingdetail'
+        ? screenMeetingDetail()
         : view === 'playdetail'
         ? screenPlayDetail()
         : view === 'presets'
@@ -4572,6 +4563,7 @@ export function initElsewhereApp(): void {
     terminalAppearance.detach();
     homePager.detach();
     app.innerHTML = markup;
+    novelDisplay.mount(app);
     if(view==='terminal'){terminalApi.mount(document.getElementById('terminal-api-root'));terminalAppearance.mount(document.querySelector('.terminal-page'));}
     if(view==='presets')fruitManager.mount(document.getElementById('fruit-preset-root'));
     if(view==='home')homePager.mount(document.querySelector<HTMLElement>('.home-view')!);
@@ -4591,9 +4583,13 @@ export function initElsewhereApp(): void {
   }
 
   let leavingPresets=false;
-  window.addEventListener('beforeunload',(event)=>{if(fruitManager.hasUnsaved()){event.preventDefault();event.returnValue='';}});
-  function go(v: string): void {
+  window.addEventListener('beforeunload',(event)=>{captureMeetingDraft();if(fruitManager.hasUnsaved()){event.preventDefault();event.returnValue='';}});
+  function go(v: string,kind?:NovelKind): void {
+    if(kind)novelViewKind=kind;
+    if(v==='intermission')novelViewKind='play';
+    captureMeetingDraft();
     if(v!=='home')homeTasks.close();
+    if(v==='landing'&&data.selected&&novelTasks.cancel(data.selected))busy=false;
     const preserveStage=(view==='novel'&&v==='intermission')||(view==='intermission'&&v==='novel');
     if(['location','memories','profile'].includes(v))v='home';
     if(view==='presets'&&v!==view){
@@ -4645,53 +4641,56 @@ export function initElsewhereApp(): void {
     view = v;
     save();
     render(!preserveStage);
+    if(role())resumeLocalSceneReplies(role()!);
   }
 
-  async function apiReply(
-    r: RoleData,
-    kind: 'chat' | 'scene' | 'play' | 'intermission',
-    input: string
-  ): Promise<string> {
-    const s = {...data.settings},requestToken=token;
-    const url = s.endpoint.trim().replace(/\/+$/, '');
-    if (!/^https?:\/\//.test(url)) {
-      throw new Error('API 地址必须以 http(s) 开头');
-    }
-    if (!s.model.trim()) {
-      throw new Error('请先在终端填写模型 ID');
-    }
-    const source=kind==='scene'?r.scene:r.play;
-    const revision=JSON.stringify(getActiveMessages(kind==='scene'?r.scene?.messages:kind==='play'?r.play?.messages:kind==='intermission'?r.play?.intermissionMessages:r.chats));
-    const prompt=await compileRequest(r,kind,options=>compileNativeConversation(data,r,kind,input,{...options,isFocused:isFocused(r),nowTs:now()}),()=>data.roles.includes(r)&&(kind==='chat'||(kind==='scene'?r.scene:r.play)===source)&&revision===JSON.stringify(getActiveMessages(kind==='scene'?r.scene?.messages:kind==='play'?r.play?.messages:kind==='intermission'?r.play?.intermissionMessages:r.chats)));
-    syslog('api', `请求 ${kind} · ${s.model}`, {
-      messages: prompt.length,
-      chars: prompt.reduce((n, m) => n + m.content.length, 0),
-    });
-    const res = await fetch(url + '/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(requestToken ? { Authorization: 'Bearer ' + requestToken } : {}),
-      },
-      body: JSON.stringify({
-        model: s.model,
-        messages: prompt,
-        temperature: +s.temperature,
-        ...completionLimit(s,kind),
-      }),
-    });
-    if (!res.ok) {
-      throw new Error(
-        `接口返回 ${res.status}: ${(await res.text()).slice(0, 120)}`
-      );
-    }
-    const json = await res.json();
-    if(json.choices?.[0]?.finish_reason==='length')notify('本次回复达到服务或模型的长度上限，正文可能未完。');
-    syslog('api', `返回成功 ${kind}`, { usage: json.usage || null });
-    return (
-      json.choices?.[0]?.message?.content?.trim() ||
-      '……我想了一下，还不知道怎么回答。'
-    );
+  async function requestSceneCompletion(messages:{role:string;content:string}[],kind:'scene'|'play'|'intermission',sampling:Record<string,number>={},signal?:AbortSignal):Promise<Response> {
+    const settings={...data.settings},requestToken=token,url=settings.endpoint.trim().replace(/\/+$/,'');
+    if(!/^https?:\/\//.test(url)||!settings.model.trim()||!requestToken.trim())throw new Error('请先在终端连接 API、选择模型并保存 Key；原消息保留');
+    syslog('api',`请求 ${kind}`,{messages:messages.length});
+    return fetch(url+'/chat/completions',{method:'POST',signal,headers:{'Content-Type':'application/json',Authorization:'Bearer '+requestToken},body:JSON.stringify({model:settings.model,messages,stream:false,temperature:+settings.temperature,...sampling,...completionLimit(settings,kind)})});
+  }
+
+  async function apiReply(r:RoleData,kind:'intermission',input:string):Promise<string> {
+    const p=r.play,revision=JSON.stringify(getActiveMessages(p?.intermissionMessages));
+    const valid=()=>data.roles.includes(r)&&r.play===p&&revision===JSON.stringify(getActiveMessages(p?.intermissionMessages));
+    const prompt=await compileRequest(r,kind,options=>compileNativeConversation(data,r,kind,input,{...options,isFocused:isFocused(r),nowTs:now()}),valid);
+    const reply=await readChatResponse(await requestSceneCompletion(prompt,kind));
+    if(!valid())throw new Error('幕间来源已变化，回复未写入');
+    return reply;
+  }
+
+  async function generateNovelReply(r:RoleData,kind:NovelKind,input:string,regenerateId?:string):Promise<void> {
+    const task=novelTasks.begin(r,kind),userRevision=JSON.stringify([data.user,data.sharedTasks]);
+    const valid=()=>data.roles.includes(r)&&novelTasks.valid(task,r,data.selected)&&userRevision===JSON.stringify([data.user,data.sharedTasks]);
+    try{
+      const regeneration=regenerateId?prepareNovelRegeneration(r,kind,regenerateId):undefined;
+      if(regenerateId&&!regeneration)throw new Error('原回复不可重抽，记录已保留');
+      const source=regeneration?.role||r,at=regeneration?.targetAt??now(),selected:{value?:RequestPromptOptions;compiled?:ConversationCompilation}={};
+      const messages=await compileRequest(r,kind,options=>{
+        selected.value=options;
+        const result=compileNovelConversation(data,source,kind,input,{...options,nowTs:at});
+        if(options.presetId!=='native')try{novelSamplingParameters(options.preset);}catch(error){result.valid=false;result.status='blocked';result.diagnostics.push({code:'model-parameter-invalid',severity:'error',message:error instanceof Error?error.message:'预设采样参数无效'});}
+        selected.compiled=result;return result;
+      },valid);
+      const options=selected.value;if(!options?.profile||!valid())throw new Error('场景来源已变化，未发送');
+      const thirdParty=options.presetId!=='native';
+      let prepared:Awaited<ReturnType<typeof prepareSceneReply>>|undefined;
+      if(kind==='scene'&&!regenerateId&&!r.play&&selected.compiled){const context=buildNativeContext(data,r,'scene',input,{nowTs:at});prepared=await prepareSceneReply(r,data.user,createSceneObservation(r,context,buildNativeContext(data,r,'chat','',{nowTs:at}),identityContext(data,r)),selected.compiled,{requestId:task.id,now:at});}
+      if(!valid())throw new Error('场景来源已变化，未发送');
+      if(prepared)includeScenePromptTrace(r);
+      const result=await readNovelResponse(await requestSceneCompletion(prepared?.messages||messages,kind,thirdParty?novelSamplingParameters(options.preset):{},task.controller.signal),options.profile,thirdParty);
+      if(!valid())throw new Error('场景或消息已变化，迟到回复未写入');
+      const lastInput=(kind==='scene'?encounterHistory(r,task.stage.messages):getActiveMessages(task.stage.messages)).filter(m=>m.speaker==='me').at(-1);
+      const item:ChatMessage={id:uid(),speaker:'char',text:result.text,at:regeneration?regeneration.targetAt:now(),status:'active',replyTo:regeneration?regeneration.sourceId:lastInput?.id,kind,
+        ...(thirdParty?{novelOutput:{presetId:options.presetId,mode:kind==='play'?'theatre' as const:'meeting' as const,memoryEligible:false as const,...result.auxiliary}}:{})};
+      if(thirdParty&&result.sections&&item.novelOutput)item.novelOutput.document=bindNovelDocument(result.sections,{roleId:r.id,stageId:task.stage.id,messageId:item.id,mode:kind==='play'?'theatre':'meeting',revisionCount:item.revisionCount||0,createdAt:item.at,presetId:options.presetId,presetHash:options.preset.sha256});
+      if(prepared&&result.sceneEvent)item.sceneReply={...prepared.ticket,payload:result.sceneEvent};
+      commitNovelReply(r,task,item,save,regeneration||undefined,now());
+      if(item.sceneReply)await applySavedSceneReply(r,item);
+      syslog('api',`小说回复已保存 ${kind}`,{presetId:options.presetId});
+      if(regenerateId)notify('已重新生成；原版本及修订记录保留');
+    }finally{novelTasks.finish(task);}
   }
 
   async function generateRoleFirstMessage(r: RoleData): Promise<void> {
@@ -5016,60 +5015,13 @@ export function initElsewhereApp(): void {
     ][recent % 4];
   }
 
-  function isArrival(r: RoleData, text: string): boolean {
-    const t = String(text).replace(/\s/g, '');
-    if (
-      /(我到了.{0,12}(你在哪|在哪儿|你人呢)|我到(楼下|门口|你这|咖啡馆)|我看见你了|我已经在你面前|我就在你旁边)/.test(
-        t
-      )
-    ) {
-      return true;
-    }
-    const recent = getActiveMessages(r.chats)
-      .slice(-10)
-      .map((x) => x.text)
-      .join(' ');
-    return (
-      /(我到了|我已经到了|到啦)/.test(t) &&
-      /(见面|等你|过来|楼下|门口|咖啡馆|到了|碰面)/.test(recent)
-    );
-  }
+  function isArrival(r:RoleData,text:string):boolean {return canArrive(r,text,now());}
 
-  function isFarewell(text: string): boolean {
-    return /(我(先|要)?(回家|走了|离开|告辞)|再见|我得走了|我们(分开|道别))/.test(
-      String(text)
-    );
-  }
-
-  function beginEncounter(r: RoleData, arrival: string): void {
-    const a = routine(r, now());
-    const place = a.where;
-    r.scene = {
-      id: uid(),
-      startedAt: now(),
-      where: place,
-      messages: [
-        {
-          id: uid(),
-          speaker: 'note',
-          text: `${place}。你终于到了约定的地方，你们真正进入同一场景。`,
-          at: now(),
-          status: 'active',
-        },
-      ],
-    };
-    entry(
-      r,
-      'scene',
-      '由聊天自动进入面对面',
-      `触发：${arrival}；位置暂采用演示日程：${place}`,
-      now(),
-      { source: r.scene.id }
-    );
-    syslog('mode', `自动切换：聊天 → 面对面 (${r.name})`, {
-      cause: 'arrived',
-      source: r.scene.id,
-    });
+  function beginEncounter(r:RoleData,arrival:ChatMessage):boolean {
+    const scene=createEncounter(r,arrival,now(),uid());if(!scene)return false;
+    r.scene=scene;r.meetingPlan=scene.agreement||null;
+    entry(r,'scene','由聊天进入面对面',`地点：${scene.where}；约定来源：${scene.agreement?.sources.map(m=>m.id).join('、')}；到达消息：${arrival.id}`,now(),{source:scene.id,knownBy:['user',r.id]});
+    return true;
   }
 
   function mediaNote(item: Partial<ChatMessage>): string {
@@ -5234,6 +5186,8 @@ export function initElsewhereApp(): void {
       return;
     }
     if (!r || busy || !text.trim()) return;
+    if(kind==='scene'&&!r.scene||kind==='play'&&!r.play){notify('请先打开当前场景');return;}
+    const submissionBefore={scene:r.scene,sceneMessages:r.scene?structuredClone(r.scene.messages):null,playMessages:r.play?structuredClone(r.play.messages):null,chats:r.chats.length,events:r.events.length,meetingPlan:r.meetingPlan};
     if(kind==='chat'){chatDraft='';const input=$<HTMLTextAreaElement>('#message-input');if(input)input.value='';}
     busy = true;
     const at = now();
@@ -5257,18 +5211,15 @@ export function initElsewhereApp(): void {
     if (kind === 'chat') {
       r.chats.push(obj);
       eMemory(r, obj.text, 'me', 'chat', at, obj.id);
-      if (isArrival(r, obj.text)) {
-        beginEncounter(r, obj.text);
-        view = 'novel';
-        const sceneMsgId = uid();
-        r.scene!.messages.push({
-          id: sceneMsgId,
-          speaker: 'me',
-          text: obj.text,
-          at,
-          status: 'active',
-        });
+      if (!beginEncounter(r,obj)) {
+        r.chats.length=submissionBefore.chats;r.events.length=submissionBefore.events;busy=false;
+        const accepted=acceptPhoneMessage(r,obj);
+        chatDraft=accepted?'':obj.text;
+        const input=$<HTMLTextAreaElement>('#message-input');if(input)input.value=chatDraft;
+        if(!accepted)quotingMessage=obj.quote||null;
+        render(false);return;
       }
+      novelViewKind='scene';view='novel';
     } else {
       const p = kind === 'play' ? r.play! : r.scene!;
       p.messages.push(obj);
@@ -5278,51 +5229,35 @@ export function initElsewhereApp(): void {
         '你在' + (kind === 'play' ? '戏里' : '见面时') + '说过',
         obj.text,
         at,
-        { source: p.id, messageId: obj.id, speaker: 'me' }
+        { source: p.id, messageId: obj.id, speaker: 'me', knownBy:['user',r.id] }
       );
     }
     syslog('chat', `${useKind} 用户消息已提交`, { source: obj.id });
-    save();
+    if(!save()){
+      r.scene=submissionBefore.scene;if(r.scene&&submissionBefore.sceneMessages)r.scene.messages=submissionBefore.sceneMessages;
+      if(r.play&&submissionBefore.playMessages)r.play.messages=submissionBefore.playMessages;
+      r.chats.length=submissionBefore.chats;r.events.length=submissionBefore.events;r.meetingPlan=submissionBefore.meetingPlan;if(kind==='chat'){chatDraft=obj.text;const input=$<HTMLTextAreaElement>('#message-input');if(input)input.value=chatDraft;}else {if(kind==='play')novelDraft=obj.text;const input=$<HTMLTextAreaElement>('#novel-input');if(input)input.value=obj.text;if(kind==='scene'&&r.scene)r.scene.draft=obj.text;}busy=false;render(false);return;
+    }
+    if(kind==='chat'){revisePhoneSchedule(r);save();}
     render();
     if(awaitingNainOpening(r)&&!canUseRealModel(data.settings)){busy=false;render(false);notify('你的消息已保存；连接 API 后才能生成角色首条回复。');return;}
+    const submittedStage=useKind==='scene'?r.scene:r.play;
     try {
-      const reply =
-        data.settings.mode === 'api'
-          ? await apiReply(r, useKind, obj.text)
-          : demoReply(r, useKind, obj.text);
-      {
-        const p = useKind === 'play' ? r.play : r.scene;
-        if (!p) throw new Error('当前场景已关闭');
-        const item: ChatMessage = {
-          id: uid(),
-          speaker: 'char',
-          text: reply,
-          at: now(),
-          replyTo: obj.id,
-          status: 'active',
-        };
-        p.messages.push(item);
-        entry(
-          r,
-          useKind === 'play' ? 'drama' : 'scene',
-          `${r.name}的回复`,
-          reply,
-          item.at,
-          { source: p.id, messageId: item.id, speaker: 'char' }
-        );
-        if (useKind === 'scene' && isFarewell(obj.text)) {
-          endNovel();
-          syslog('mode', '自动切换：面对面 → 手机聊天', { cause: 'farewell' });
-        }
-        save();
+      if(data.settings.mode==='api')await generateNovelReply(r,useKind,obj.text);
+      else {
+        const p=useKind==='play'?r.play:r.scene;if(!p)throw new Error('当前场景已关闭');
+        const item:ChatMessage={id:uid(),speaker:'char',text:demoReply(r,useKind,obj.text),at:now(),replyTo:obj.id,status:'active'};
+        p.messages.push(item);entry(r,useKind==='play'?'drama':'scene',`${r.name}的回复`,item.text,item.at,{source:p.id,messageId:item.id,speaker:'char',knownBy:['user',r.id]});save();
       }
+      if(useKind==='scene'&&isFarewell(obj.text)&&role()===r&&r.scene===submittedStage)endNovel('scene',view==='novel'&&novelViewKind==='scene');
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       syslog('error', `生成失败：${msg}`);
       notify('生成失败：' + msg + '。你的输入已保存，可继续发送。');
     } finally {
-      busy = false;
-      render();
+      busy = novelTasks.has(data.selected||'');
+      if(view==='novel'&&role()?.id===r.id)render();
+      else if(view==='chat'&&role()?.id===r.id)patchDynamicRegionsOnTick();
     }
   }
 
@@ -5341,13 +5276,14 @@ export function initElsewhereApp(): void {
       const bubbles=splitChatBubbles(text,r);
       if(!bubbles.length)throw new Error('回复中没有有效的手机消息');
       const before={chats:structuredClone(r.chats),events:structuredClone(r.events),messageRevisions:structuredClone(r.messageRevisions),pendingReplies:structuredClone(r.pendingReplies),firstMessageState:structuredClone(r.firstMessageState)};
+      const sceneBefore=r.scene?structuredClone({where:r.scene.where,agreement:r.scene.agreement,locationEvidence:r.scene.locationEvidence}):null;
       const insertAt=Math.max(...plan.targetIds.map(target=>r.chats.findIndex(m=>m.id===target)))+1;
       if(!prepareRegenerateReply(r,'chat',id,now()).ok)return;
       const turnId=makeUid('turn'),messages=bubbles.map((bubble,i):ChatMessage=>({id:uid(),speaker:'char',kind:'chat',text:bubble,at:plan.targetAt+i,status:'active',replyTurnId:turnId,replyTo:plan.sourceIds.at(-1),replySourceIds:plan.sourceIds}));
       r.chats.splice(insertAt,0,...messages);
       for(const item of messages)eMemory(r,item.text,'char','chat',item.at,item.id);
       r.firstMessageState={status:'ready',updatedAt:now()};
-      if(!save()){Object.assign(r,before);throw new Error('重抽回复未能保存，原回复已保留');}
+      if(!save()){Object.assign(r,before);if(r.scene&&sceneBefore){r.scene.where=sceneBefore.where;if(sceneBefore.agreement)r.scene.agreement=sceneBefore.agreement;else delete r.scene.agreement;if(sceneBefore.locationEvidence)r.scene.locationEvidence=sceneBefore.locationEvidence;else delete r.scene.locationEvidence;}throw new Error('重抽回复未能保存，原回复已保留');}
     }catch(error){notify('重抽未完成：'+(error instanceof Error&&error.name!=='AbortError'?error.message:'来源已变化或请求已中断'));}
     finally{
       if(activeChatRequests.get(r.id)===controller){activeChatRequests.delete(r.id);chatTyping.delete(r.id);}
@@ -5365,100 +5301,56 @@ export function initElsewhereApp(): void {
       await regeneratePhoneReply(r,charMessageId);return;
     }
     if(busy)return;
-    const prep = prepareRegenerateReply(r, scope, charMessageId, now());
-    if (!prep.ok) {
-      notify(prep.reason || '无法重抽该条消息');
-      return;
-    }
-    busy = true;
-    syslog('revision', `重抽 ${scope} 角色回复`, {
-      targetMessageId: charMessageId,
-      revisionId: prep.revision?.id,
+    if(data.settings.mode!=='api'){notify('请先连接 API；原回复已保留。');return;}
+    busy=true;render(false);
+    try{await generateNovelReply(r,scope,'',charMessageId);}
+    catch(error){notify('重抽未完成：'+(error instanceof Error?error.message:'连接异常'));}
+    finally{busy=novelTasks.has(data.selected||'');if(view==='novel'&&role()===r)render(false);}
+  }
+
+  function editMeetingPlace(): void {
+    const owner=role(),scene=owner?.scene;
+    if(!owner||!scene||scene.endedAt!==undefined)return;
+    const expectedWhere=scene.where,dialog=document.createElement('dialog');
+    dialog.className='home-task-dialog';dialog.setAttribute('aria-labelledby','meeting-place-title');
+    dialog.innerHTML=`<div class="home-task-dialog-head"><h2 id="meeting-place-title">修改见面地点</h2><button type="button" data-place-close aria-label="关闭">×</button></div><form><label>当前实际地点<input class="field" name="where" value="${esc(scene.where)}" maxlength="120" required autocomplete="off"></label><p class="sub">不改写已有对白、小说正文或原始约定。</p><p class="home-task-error" data-place-error role="alert"></p><div class="home-task-dialog-actions"><button type="button" class="btn secondary" data-place-close>取消</button><button class="btn" type="submit">保存地点</button></div></form>`;
+    dialog.addEventListener('close',()=>dialog.remove());
+    dialog.addEventListener('click',event=>{if((event.target as Element).closest('[data-place-close]'))dialog.close();});
+    dialog.addEventListener('submit',event=>{
+      event.preventDefault();const form=dialog.querySelector('form')!;if(!form.reportValidity())return;
+      try{
+        if(role()!==owner||!data.roles.includes(owner))throw new Error('当前角色已变化，未保存地点');
+        const changed=updateEncounterLocation(owner,scene,expectedWhere,String(new FormData(form).get('where')||''),now(),save);
+        if(changed&&novelTasks.cancel(owner.id,'scene'))busy=false;
+        dialog.close();
+        if(view==='novel'&&novelViewKind==='scene')render(false);
+        notify(changed?'见面地点已保存':'地点未改变');
+      }catch(error){dialog.querySelector<HTMLElement>('[data-place-error]')!.textContent=error instanceof Error?error.message:'保存失败，原地点已保留';}
     });
-    save();
-    render(false);
-    try {
-      const promptText = prep.promptMessage?.text || '（请根据当前角色设定与情境发送一条新的开场消息）';
-      const replyToId = prep.promptMessage?.id || uid();
-      const reply =
-        data.settings.mode === 'api'
-          ? await apiReply(r, scope, promptText)
-          : demoReply(r, scope, promptText);
-      {
-        const p = scope === 'play' ? r.play : r.scene;
-        if (p) {
-          const item: ChatMessage = {
-            id: uid(),
-            speaker: 'char',
-            text: reply,
-            at: now(),
-            replyTo: replyToId,
-            status: 'active',
-          };
-          p.messages.push(item);
-          entry(
-            r,
-            scope === 'play' ? 'drama' : 'scene',
-            `${r.name}的回复`,
-            reply,
-            item.at,
-            { source: p.id, messageId: item.id, speaker: 'char' }
-          );
-        }
-      }
-      save();
-      notify('已重新生成回复，旧版本已归入修订记录');
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      syslog('error', `重抽失败：${msg}`);
-      notify('重抽失败：' + msg);
-    } finally {
-      busy = false;
-      render(false);
-    }
+    document.body.append(dialog);dialog.showModal();dialog.querySelector<HTMLInputElement>('[name=where]')?.focus({preventScroll:true});
   }
 
   function meet(): void {
     const r = role();
     if (!r) return;
     if (ongoing(r)) {
-      go('novel');
+      go('novel',r.scene?'scene':'play');
       return;
     }
     simulate(r);
-    const a = routine(r, now());
-    const scene = {
-      id: uid(),
-      startedAt: now(),
-      where: a.where,
-      messages: [
-        {
-          id: uid(),
-          speaker: 'note' as const,
-          text: `${a.where}。空气里有些平凡的声音。你们终于在同一个地方见到了面。`,
-          at: now(),
-          status: 'active' as const,
-        },
-        {
-          id: uid(),
-          speaker: 'char' as const,
-          text: `“你来了。”${r.name}抬起头，“刚好我有点时间。要不要坐一会儿？”`,
-          at: now(),
-          status: 'active' as const,
-        },
-      ],
-    };
-    r.scene = scene;
-    entry(r, 'scene', '你们开始见面', `地点：${a.where}`, now(), {
-      source: scene.id,
-    });
-    go('novel');
+    const scene=createEncounter(r,null,now(),uid());if(!scene)return;
+    const eventsBefore=r.events.length;
+    r.scene=scene;
+    entry(r,'scene','你们开始见面',`地点：${scene.where}`,now(),{source:scene.id,knownBy:['user',r.id]});
+    if(!save()){r.scene=null;r.events.length=eventsBefore;return;}
+    revisePhoneSchedule(r);save();go('novel','scene');
   }
 
-  function endNovel(): void {
+  function endNovel(kind:NovelKind=novelViewKind,returnToChat=true): void {
     const r = role();
+    if(r&&novelTasks.cancel(r.id))busy=false;
     if (!r) return;
-    if (r.play) {
+    if (kind==='play'&&r.play) {
       const p = r.play;
       p.endedAt = now();
       r.plays.push(p);
@@ -5504,22 +5396,14 @@ export function initElsewhereApp(): void {
         status: 'active',
       });
       r.play = null;
-    } else if (r.scene) {
-      entry(
-        r,
-        'scene',
-        '这次见面结束',
-        `在${r.scene.where}告别；开始于${dt(r.scene.startedAt)}，结束于${dt(
-          now()
-        )}。见面过程有独立保存的原始对白。`,
-        now(),
-        { source: r.scene.id }
-      );
-      r.scene.endedAt = now();
-      r.lifeAt = now();
-      if (!r.meetings) r.meetings = [];
-      r.meetings.push(r.scene);
-      r.scene = null;
+    } else if (kind==='scene'&&r.scene) {
+      captureMeetingDraft();
+      try{archiveMeeting(r,now(),save);}catch(error){notify(error instanceof Error?error.message:'见面未能归档，现场已保留');return;}
+      if(returnToChat)go('chat');
+      else if(view==='home')render(false);
+      else if(view==='chat')patchDynamicRegionsOnTick();
+      else refreshSystemLogs();
+      return;
     }
     save();
     go('chat');
@@ -5616,6 +5500,13 @@ export function initElsewhereApp(): void {
         link.href=url;link.download='Elsewhere_奈恩清档前恢复副本.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
       }catch{notify('恢复副本导出失败，原副本仍保留。');}})();return;
     }
+    if(act==='retry-novel'){
+      const current=role(),kind:NovelKind=novelViewKind,p=current&&(kind==='play'?current.play:current.scene);
+      const latest=getActiveMessages(p?.messages).at(-1);
+      if(!current||!p||busy||latest?.speaker!=='me')return;
+      busy=true;render(false);
+      void generateNovelReply(current,kind,latest.text).catch(error=>notify('生成未完成：'+(error instanceof Error?error.message:'连接异常'))).finally(()=>{busy=novelTasks.has(data.selected||'');if(view==='novel'&&role()===current)render(false);});return;
+    }
     if(act==='intermissionreply'){void requestIntermissionReply();return;}
     if (act === 'chatpanel') {
       chatPanel = chatPanel === b.dataset.panel ? '' : b.dataset.panel || '';
@@ -5650,10 +5541,12 @@ export function initElsewhereApp(): void {
       return;
     }
     if (act === 'enter') {
+      captureMeetingDraft();
       if (activeFocus()?.phase === 'work') {
         go('focus');
         return;
       }
+      if(data.selected&&novelTasks.cancel(data.selected))busy=false;
       data.selected = b.dataset.id || null;
       r = role();
       if (r) {
@@ -5991,15 +5884,25 @@ export function initElsewhereApp(): void {
       r.play.paused = false;
       syslog('intermission', '返回戏内演出', { source: r.play.id });
       save();
-      go('novel');
+      go('novel','play');
       return;
     }
     if (act === 'rollbackplay') {
       rollBackPlay();
       return;
     }
+    if(act==='openconversation'){
+      if(r&&r.id===b.dataset.roleId){if(r.scene&&r.scene.endedAt===undefined)go('novel','scene');else go('chat');}return;
+    }
+    if(act==='edit-meeting-place'){
+      if(r&&r.id===b.dataset.roleId&&r.scene?.id===b.dataset.sceneId)editMeetingPlace();return;
+    }
+    if(act==='viewmeeting'){
+      if(r?.meetings?.some(p=>p.id===b.dataset.id&&p.endedAt!==undefined)){detailId=b.dataset.id!;go('meetingdetail');}return;
+    }
+    if(act==='logtoday'){systemLogDate=null;refreshSystemLogs();return;}
     if (act === 'resume') {
-      if (ongoing(r)) go(r?.play?.paused ? 'intermission' : 'novel');
+      if (ongoing(r)) go(r?.play?.paused?'intermission':'novel',r?.play?'play':'scene');
       return;
     }
     if (act === 'meet') {
@@ -6007,7 +5910,7 @@ export function initElsewhereApp(): void {
       return;
     }
     if (act === 'endnovel') {
-      if (busy) {
+      if (busy&&(!r||!novelTasks.has(r.id))) {
         notify('请先完成当前回复，再结束场景');
         return;
       }
@@ -6705,9 +6608,11 @@ export function initElsewhereApp(): void {
     if (f.id === 'novel-form') {
       const inputEl = $('#novel-input') as HTMLTextAreaElement | null;
       const t = inputEl?.value || '';
-      novelDraft = '';
+      if(busy||!t.trim())return;
+      if(f.dataset.sceneId==='')novelDraft = '';
       if (inputEl) inputEl.value = '';
-      submitText(role()?.play ? 'play' : 'scene', t);
+      captureMeetingDraft();
+      submitText(novelViewKind,t);
       return;
     }
 
@@ -6749,7 +6654,7 @@ export function initElsewhereApp(): void {
         ],
       };
       save();
-      go('novel');
+      go('novel','play');
       return;
     }
 
@@ -6786,6 +6691,7 @@ export function initElsewhereApp(): void {
 
   appRoot.addEventListener('change', (e) => {
     const el = e.target as HTMLInputElement;
+    if(el.matches('[data-log-date]')){systemLogDate=el.value===toLocalDateKey(now())?null:el.value;refreshSystemLogs();return;}
     if (el.id === 'focus-minutes-slider') {
       ensureFocusData();
       const taskInputEl = document.getElementById('focus-task-input') as HTMLInputElement | null;
@@ -6945,7 +6851,7 @@ export function initElsewhereApp(): void {
   appRoot.addEventListener('input', (e) => {
     const el = e.target as HTMLTextAreaElement | HTMLInputElement;
     if (el.id === 'message-input') chatDraft = el.value;
-    if (el.id === 'novel-input') novelDraft = el.value;
+    if (el.id === 'novel-input') {if($<HTMLFormElement>('#novel-form')?.dataset.sceneId==='')novelDraft=el.value;captureMeetingDraft(false);clearTimeout(meetingDraftTimer);meetingDraftTimer=setTimeout(()=>captureMeetingDraft(),300);}
     if (el.id === 'intermission-input') intermissionDraft = el.value;
     if (el.id === 'focus-task-input') {
       focusTaskInputDraft = el.value;
@@ -7033,15 +6939,17 @@ export function initElsewhereApp(): void {
     syncRoleDiaryTasks(roleItem, data.settings, now(), { resetGenerating: true });
   }
   save();
+  for(const item of data.roles)resumeLocalSceneReplies(item);
   if (canUseRealModel(data.settings)) {
     void processDiaryQueue();
   }
 
-  document.addEventListener('visibilitychange',()=>{if(!document.hidden){pumpChatSchedules();if(view==='home')homeTasks.refresh();}});
+  document.addEventListener('visibilitychange',()=>{captureMeetingDraft();if(!document.hidden){pumpChatSchedules();if(view==='home')homeTasks.refresh();}});
   window.addEventListener('pageshow',()=>{pumpChatSchedules();if(view==='home')homeTasks.refresh();});
 
   if (typeof setInterval === 'function') {
     setInterval(() => {
+      refreshSystemLogs();
       if(view==='home')homeTasks.refresh();
       pumpChatSchedules();
       let chatDelivered=false;for(const item of data.roles){if(deliverPending(item)&&item.id===data.selected)chatDelivered=true;}

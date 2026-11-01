@@ -1,7 +1,9 @@
+import {meetingPlan,encounterHistory} from './encounter';
 import {compileConversationPrompt,requestMessages,type ConversationCompilation,type ConversationContext} from './conversationPrompt';
-import {nativePreset} from './fruit/nativePreset';
+import {nativePreset,isNativePreset} from './fruit/nativePreset';
+import {createLiveNovelContext} from './novelContext';
 import {createFruitState} from './fruit/preset';
-import type {FruitContext,FruitProfile} from './fruit/types';
+import type {FruitContext,FruitProfile,FruitPreset} from './fruit/types';
 import type { AppData, EventRecord, RoleData, ChatMessage } from './types';
 import { formatMessageContentForModel, getActiveMessages } from './revisions';
 import { getRoleKnownEvents, getSharedUserDiariesForRole } from './diary';
@@ -27,67 +29,22 @@ export const dateStr = (t: number): string =>
     day: 'numeric',
   });
 
+/** Current observations only: identity/job alone never proves an activity happened. */
 export function routine(
-  r: Pick<RoleData, 'job'>,
+  r: Pick<RoleData, 'job'> & Partial<RoleData>,
   t: number
 ): { icon: string; where: string; doing: string; label: string } {
-  const h = new Date(t).getHours();
-  const jobStr = String(r?.job || '');
-  if (h < 7)
-    return {
-      icon: '🌙',
-      where: '住处',
-      doing: '休息，手机调成了安静模式',
-      label: '安静的夜晚',
-    };
-  if (h < 9)
-    return {
-      icon: '🏡',
-      where: '住处',
-      doing: '起床、洗漱，慢慢整理一天的安排',
-      label: '晨间准备',
-    };
-  if (h < 12)
-    return {
-      icon: '📚',
-      where: jobStr.includes('书') ? '书店' : '工作地点',
-      doing: jobStr.includes('书') ? '整理书架和新到的书' : '处理工作，偶尔走神想别的事',
-      label: '忙自己的工作',
-    };
-  if (h < 14)
-    return {
-      icon: '🍜',
-      where: '小餐馆',
-      doing: '午饭和片刻休息',
-      label: '午间休息',
-    };
-  if (h < 18)
-    return {
-      icon: '📚',
-      where: jobStr.includes('书') ? '书店' : '工作地点',
-      doing: '继续忙自己的事，间或看看消息',
-      label: '下午的工作',
-    };
-  if (h < 20)
-    return {
-      icon: '🌳',
-      where: '街区',
-      doing: '离开工作地点，沿熟悉的路慢慢走',
-      label: '下班路上',
-    };
-  if (h < 22)
-    return {
-      icon: '☕',
-      where: '咖啡馆',
-      doing: '坐一会儿，整理今天发生的事情',
-      label: '晚上的空闲',
-    };
-  return {
-    icon: '🏡',
-    where: '住处',
-    doing: '回家，准备休息',
-    label: '一天结束',
-  };
+  if (r.scene && !r.scene.endedAt && r.scene.startedAt <= t)
+    return {icon:'chat',where:r.scene.where,doing:'与对方当面交谈',label:'正在见面'};
+  if (r.play && !r.play.endedAt && r.play.startedAt <= t)
+    return {icon:'drama',where:'戏剧场景',doing:r.play.paused?'正在幕间讨论':'正在排演戏剧',label:r.play.paused?'幕间讨论':'戏剧演出'};
+  const observation = (r.events || []).filter(e =>
+    e.kind === 'life' && e.at <= t && t - e.at <= 30 * 60000 &&
+    e.status !== 'retracted' && e.status !== 'superseded' &&
+    e.source && e.knownBy?.includes(r.id || '')
+  ).sort((a,b) => b.at - a.at)[0];
+  if (observation) return {icon:'clock',where:observation.where || '地点尚未确认',doing:`最近记录：${observation.detail}`,label:observation.title};
+  return {icon:'clock',where:'地点尚未确认',doing:'暂无可确认的活动记录',label:'当前活动未确认'};
 }
 
 export function keywords(s: string): string[] {
@@ -160,13 +117,13 @@ export function userTasksSummary(data: AppData): string {
     .join('；');
 }
 
-export function compileNativeConversation(
+export function buildNativeContext(
   data: AppData,
   r: RoleData,
   kind: 'chat' | 'scene' | 'play' | 'intermission',
   input: string,
   options: NativePromptOptions = {}
-): ConversationCompilation {
+): ConversationContext {
   const nowTs = options.nowTs ?? Date.now();
   const isFocused = Boolean(options.isFocused);
   let base = '';
@@ -192,7 +149,8 @@ export function compileNativeConversation(
     base = `你正在参与一段独立、封闭的虚构戏剧。仅作为剧中角色行动，不知道剧外的手机、聊天、角色本人真实身份、用户真实身份、日记或其他生活记录。剧名：${p.title}。世界规则与开场：${p.world}。用户在剧内的身份：${p.user}。你在剧内的身份：${p.char}。推进场景、表现人物心理与自身动作，不代替用户做出选择。剧内角色之间的关系仅以剧本及本场对白为准。`;
   } else {
     const a = routine(r, nowTs);
-    const candidates=r.events.filter(e=>e.kind!=='drama'&&e.at<=nowTs&&(!e.messageId||validIds.has(e.messageId)));
+    const bridgedIds=new Set((kind==='scene'?r.scene?.messages||[]:[]).flatMap(m=>m.sourceMessageId?[m.sourceMessageId]:[]));
+    const candidates=r.events.filter(e=>e.kind!=='drama'&&(e.kind!=='life'||Boolean(e.source&&e.knownBy?.includes(r.id)))&&e.at<=nowTs&&(!e.messageId||validIds.has(e.messageId)&&!bridgedIds.has(e.messageId)));
     recalled=retrieve({...r,events:candidates},input,12,nowTs);
     facts = recalled
       .map((e) => `[${dt(e.at)} | ${e.kind} | ${e.id}] ${e.title}: ${e.detail}`)
@@ -203,7 +161,9 @@ export function compileNativeConversation(
       .map((d) => `[${dt(d.at)} 用户主动分享给你的日记] ${d.text}`)
       .join('\n');
 
-    base = `你在扮演名为${r.name}的虚构人物（不是AI助手），有独立生活、工作、偏好和主观感受。身份：${r.job}。性格：${r.traits}。人设：${r.profile}。前史节点与未发生剧情边界：${r.canonNotes || '以用户设定为准'}。用户身份设定：${identityContext(data, r)}。你和用户目前的关系：${r.relationship}。此刻地点：${r.scene?.where || a.where}。正在做：${r.scene ? '与用户当面交谈' : a.doing}。当前日期时间：${dt(nowTs)}。保持人设一致，但不要机械附和，不替用户决定行为。禁止假装知道没有获悉的私事。所附历史是有来源的部分检索结果，不确定时不要编造。`;
+    base = `你在扮演名为${r.name}的虚构人物（不是AI助手），有独立生活、工作、偏好和主观感受。身份：${r.job}。所在区域与世界观：${r.place}。性格：${r.traits}。人设：${r.profile}。前史节点与未发生剧情边界：${r.canonNotes || '以用户设定为准'}。用户身份设定：${identityContext(data, r)}。你和用户目前的关系：${r.relationship}。此刻地点：${r.scene?.where || a.where}。正在做：${r.scene ? '与用户当面交谈' : a.doing}。当前日期时间：${dt(nowTs)}。保持人设一致，但不要机械附和，不替用户决定行为。禁止假装知道没有获悉的私事。所附历史是有来源的部分检索结果，不确定时不要编造。职业与世界设定只约束可能的活动，不代表当下已经发生；不得为所有角色套用固定的统一日程或编造具体行程。`;
+    const plan=kind==='chat'?meetingPlan(r,nowTs):r.scene?.agreement;
+    if(plan)base+=`\n\n约见记录（来自有效手机原话，不等于已经见面）：${plan.status}；地点：${plan.where||'未约定'}；时间：${plan.timeText||'未约定'}${plan.scheduledAt!==undefined?'（本地 '+dt(plan.scheduledAt)+'）':''}；来源消息：${plan.sources.map(m=>m.id).join('、')}。角色可以协商或拒绝；不能把提出邀请当成已接受或已到达。`;
     base += `\n\n玩家共享 DDL / 待办（所有角色可见，只能关心提醒，不得擅自改动）：${userTasksSummary(data) || '无'}。`;
     if (sharedDiaries) {
       base += `\n\n用户曾主动分享给你的个人日记（未在此列出的私人日记你不知情）：\n${sharedDiaries}`;
@@ -215,10 +175,10 @@ export function compileNativeConversation(
   const scope=kind==='play'?'play:'+r.play!.id:kind==='intermission'?'intermission:'+r.play!.id:'real:'+r.id;
   const raw=kind==='chat'?r.chats:kind==='scene'?r.scene?.messages:kind==='play'?r.play?.messages:r.play?.intermissionMessages;
   const userName=identityName(data,r),safeContent=(m:ChatMessage)=>m.quote&&allMessages.some(source=>source.id===m.quote!.id&&!getActiveMessages([source]).length)?m.text:formatMessageContentForModel(m,r.name,userName);
-  const history=getActiveMessages(raw).filter(m=>m.speaker!=='note'&&m.at<=nowTs).slice(-30).map(m=>({id:m.id,role:m.speaker==='me'?'user' as const:'assistant' as const,text:safeContent(m),knownBy:[r.id],at:m.at,scope,active:true,revisionValid:true}));
-  const isLaconic=/话少|寡言|惜字如金|简短|冷淡/.test(`${r.traits||''} ${r.profile||''}`);
+  const history=(kind==='scene'?encounterHistory(r,raw):getActiveMessages(raw)).filter(m=>m.speaker!=='note'&&m.at<=nowTs).slice(-30).map(m=>({id:m.id,role:m.speaker==='me'?'user' as const:'assistant' as const,text:safeContent(m),knownBy:[r.id],at:m.at,scope,active:true,revisionValid:true}));
+
   const values={char:kind==='play'?r.play!.char:r.name,user:kind==='play'?r.play!.user:userName,time:hm(nowTs),date:dateStr(nowTs),personality:kind==='play'?r.play!.char:r.traits,description:kind==='play'?r.play!.world:r.profile,
-    native_bubbles:isLaconic?'你平时打字偏简短克制，通常发 1 条（必要时最多 2 条）自然短消息即可。':'一次回复可以由 1 至 3 条（偶尔最多 4 条）独立的手机消息气泡组成，每条气泡用换行符（\\n）或 ||| 分隔，表现自然的短句、回应、补充或追问；不要机械地按每个句号切碎，也不必每次强行拆成多条。',
+    native_bubbles:'气泡数量随人物的打字习惯、情境与实际内容决定，不设固定数量。可以只发一条完整消息，也可发送独立的手机消息气泡；仅在确实另发一条时用换行或 ||| 分隔。不要机械拆句，不强制反问、安慰或总结，也不要固定采用「回应—感想—反问」的套路。',
     native_life:isFocused?'当前处于「专心聊」状态，双方都在手机前专注交谈，请自然连贯地回应；仍保有自己的性格与主见。':'你仍在照常生活，不必总是立刻有空；但不要声称已执行未发生的行动。',
     native_novel_rule:kind==='play'?'使用中文进行自然的沉浸式叙事。推进场景、表现人物心理与自身动作，不代替用户做出选择。':'你正在和用户面对面相处，采用文字小说式描写场景与自己的言语动作。回复使用自然中文。只写你自己的回应，不替用户行动。',
     native_output_rule:kind==='play'?'这是独立戏剧世界，严格遵守本剧角色人设；不要透露戏外知识。':'这是面对面的文字小说，仅描述自己和环境，不替用户行动。'};
@@ -231,12 +191,20 @@ export function compileNativeConversation(
   ];
   const currentInputs=(options.currentInputs||[]).map(m=>({id:m.id,role:'user' as const,text:`[消息 ID=${m.id}; createdAt=${new Date(m.at).toISOString()}; 本地发送时间=${new Date(m.at).toLocaleString('zh-CN',{hour12:false})}]\n${safeContent(m)}`,knownBy:[r.id],at:m.at,scope,active:m.speaker==='me'&&!['retracted','superseded','deleted'].includes(String(m.status)),revisionValid:true}));
   const context:ConversationContext={source:'native-live',mode,actorId:r.id,scope,now:nowTs,user:values.user,char:values.char,facts:factsForContext,history,examples:[],capabilities:{keywordRetrieval:true,semanticRetrieval:false,completeRevisionChain:false},native:{protectedText:options.openingTask?base+'\n'+options.openingTask:base,values,legacy:options.skipLegacyOnce?null:(r.preset||data.preset),currentInputs,suffix:kind==='intermission'?'这里是幕间讨论。你是戏外演员本人；不推进戏内剧情，不擅自操控用户。':undefined}};
-  return compileConversationPrompt(nativePreset(kind==='play'||kind==='intermission'?'theatre':'meeting'),options.profile||createFruitState().profiles.meeting,context,{purpose:'request'});
+  return context;
+}
+export function compileNativeConversation(data:AppData,r:RoleData,kind:'chat'|'scene'|'play'|'intermission',input:string,options:NativePromptOptions={}):ConversationCompilation {
+  return compileConversationPrompt(nativePreset(kind==='play'||kind==='intermission'?'theatre':'meeting'),options.profile||createFruitState().profiles.meeting,buildNativeContext(data,r,kind,input,options),{purpose:'request'});
+}
+export function compileNovelConversation(data:AppData,r:RoleData,kind:'scene'|'play',input:string,options:NativePromptOptions&{preset:FruitPreset}):ConversationCompilation {
+  if(isNativePreset(options.preset))return compileNativeConversation(data,r,kind,input,options);
+  const context=createLiveNovelContext(data,r,kind,buildNativeContext(data,r,kind,input,options));
+  return compileConversationPrompt(options.preset,options.profile||createFruitState().profiles.meeting,context,{purpose:'request'});
 }
 export interface NativePromptOptions {isFocused?:boolean;nowTs?:number;profile?:FruitProfile;currentInputs?:ChatMessage[];skipLegacyOnce?:boolean;openingTask?:string}
 export function compileOpeningPrompt(data:AppData,r:RoleData,at:number,options:NativePromptOptions={}){
  const copy={...r,chats:[],events:[]};
- return compileNativeConversation(data,copy,'chat','',{...options,nowTs:at,openingTask:`所在区域/世界观：${r.place||'以角色设定为准'}。\n向对方发送第一条手机消息，由你主动发出。必须严格符合性格、关系起点和已有前史，不假装已经有过未发生的对话。采用纯手机短消息格式，1～3小段自然文字，不写环境旁白或动作括号，不使用千篇一律的客服寒暄。`});
+ return compileNativeConversation(data,copy,'chat','',{...options,nowTs:at,openingTask:`所在区域/世界观：${r.place||'以角色设定为准'}。\n向对方发送第一条手机消息，由你主动发出。必须严格符合性格、关系起点和已有前史，不假装已经有过未发生的对话。采用自然的纯手机消息格式，按本人的打字习惯决定是否分条，不写环境旁白或动作括号，不使用千篇一律的客服寒暄。`});
 }
 export function buildMessagesForModel(data:AppData,r:RoleData,kind:'chat'|'scene'|'play'|'intermission',input:string,options:NativePromptOptions={}):{role:string;content:string}[]{
  return requestMessages(compileNativeConversation(data,r,kind,input,options));
@@ -266,8 +234,7 @@ function sanitizeSingleBubbleText(
 }
 
 /**
- * Splits a raw AI chat reply into 1..4 natural phone message bubbles
- * while respecting character typing habits and stripping accidental stage narration.
+ * Preserve model-selected message boundaries; never infer new bubbles from prose.
  */
 export function splitNaturalChatBubbles(
   rawText: string,
@@ -277,9 +244,6 @@ export function splitNaturalChatBubbles(
   if (!input) return [];
 
   const roleName = role?.name || '';
-  const traitsText = `${role?.traits || ''} ${role?.profile || ''}`;
-  const isLaconic = /话少|寡言|惜字如金|简短|冷淡/.test(traitsText);
-  const maxBubbles = isLaconic ? 2 : 4;
 
   let segments: string[] = [];
 
@@ -332,35 +296,9 @@ export function splitNaturalChatBubbles(
       .filter(Boolean);
   }
 
-  // 4. If still a single segment and character is not laconic, check if there is a natural conversational transition or follow-up question
-  if (segments.length === 1 && !isLaconic && segments[0].length >= 26) {
-    const single = segments[0];
-    // Split on natural topic-shift discourse markers after sentence-ending punctuation
-    const markerSplit = single
-      .split(/(?<=[。！？!?…~～])\s*(?=(?:对了|不过|话说|说起来|另外|至于|顺便|还有|而且|那么|你呢|那你))/g)
-      .map((x) => x.trim())
-      .filter(Boolean);
-    if (markerSplit.length > 1) {
-      segments = markerSplit;
-    } else {
-      // Or if there is a statement followed by a trailing question (not splitting every period!)
-      const trailingQ = single.match(/^(.{12,}?[。！!…])\s*([^。！!？?]{4,}[？?~～]*[？?])$/);
-      if (trailingQ) {
-        segments = [trailingQ[1].trim(), trailingQ[2].trim()];
-      }
-    }
-  }
-
   if (!segments.length) {
     const fallback = sanitizeSingleBubbleText(input, roleName) || input;
     return [fallback];
-  }
-
-  // Cap at maxBubbles by merging any trailing overflow into the last bubble
-  if (segments.length > maxBubbles) {
-    const head = segments.slice(0, maxBubbles - 1);
-    const tailMerged = segments.slice(maxBubbles - 1).join(' ');
-    return [...head, tailMerged];
   }
 
   return segments;

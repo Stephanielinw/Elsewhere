@@ -61,20 +61,35 @@ export async function parseFruitPreset(raw: Uint8Array, fileName: string, import
   const found=groups.findIndex(g=>g.characterId===100001),orderGroup=found<0?0:found;
   if(groups.length>1)diagnostics.push({code:'order-group',severity:'warning',message:`保留全部原始排序组；当前采用第 ${orderGroup+1} 组（优先 character_id=100001）`});
   const rules=ext.regex_scripts??[];if(!Array.isArray(rules)||rules.length>200)fail('extensions.regex_scripts 必须是受限数组');
-  const regex:FruitRegex[]=rules.map((v,i)=>{
+  const sourceIds=rules.map(v=>object(v)&&typeof v.id==='string'?v.id:''),uniqueIds=new Set(sourceIds.filter(id=>id&&safeKey(id)&&sourceIds.filter(other=>other===id).length===1)),regexIds=new Set<string>();
+  const regex:FruitRegex[]=[];
+  for(const [i,v]of rules.entries()){
     if(!object(v))return fail(`正则 ${i+1} 无效`);
     const replacement=text(v.replaceString??'','正则替换文本');
     const hasExecutableMarkup=/<script\b|\bon\w+\s*=|javascript:|<iframe\b/i.test(replacement);
-    return {id:text(v.id??String(i),'正则 ID',200),name:text(v.scriptName??`正则 ${i+1}`,'正则名称',500),enabled:v.disabled!==true,pattern:text(v.findRegex??'','正则表达式',20000),placement:Array.isArray(v.placement)?v.placement.filter((x):x is number=>typeof x==='number'&&Number.isInteger(x)):[],side:v.promptOnly===true?'prompt':v.markdownOnly===true?'display':'other',hasExecutableMarkup,status:hasExecutableMarkup?'disabled-safety':'unsupported',reason:hasExecutableMarkup?'替换含可执行 HTML/脚本，禁止执行':'仅识别元数据；本轮不运行导入正则，改用受限结构解析'};
-  });
+    const sourceId=v.id===undefined?'':text(v.id,'正则 ID',200),pattern=text(v.findRegex??'','正则表达式',20000),placement=Array.isArray(v.placement)?v.placement.filter((x):x is number=>typeof x==='number'&&Number.isInteger(x)):[];
+    const side:FruitRegex['side']=v.promptOnly===true?'prompt':v.markdownOnly===true?'display':'other';let id=sourceId;
+    if(!uniqueIds.has(id)){
+      // Array indices cannot identify a saved switch after the author inserts a rule.
+      const signature=JSON.stringify([v.scriptName??'',pattern,replacement,placement,side]),digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(signature));
+      const base='regex:'+Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');id=base;let n=1;while(regexIds.has(id)||uniqueIds.has(id))id=base+':'+n++;
+    }
+    const depth=(key:string)=>{const x=v[key];if(x===undefined||x===null)return null;if(typeof x!=='number'||!Number.isInteger(x)||x< -1||x>10000)fail('正则深度无效');return x;};
+    const trimStrings=v.trimStrings===undefined?[]:v.trimStrings;if(!Array.isArray(trimStrings)||trimStrings.length>200)fail('正则 trimStrings 无效');
+    const substituteRegex=v.substituteRegex??0;if(substituteRegex!==0&&substituteRegex!==1&&substituteRegex!==2)fail('正则宏模式不支持');
+    let captureGroupCount=0,inClass=false;const namedCaptureGroups:string[]=[];
+    for(let k=0;k<pattern.length;k++){if(pattern[k]==='\\'){k++;continue;}if(pattern[k]==='[')inClass=true;if(pattern[k]===']')inClass=false;if(pattern[k]!=='('||inClass)continue;if(pattern[k+1]!=='?')captureGroupCount++;else if(pattern.startsWith('(?<',k)&&!['=','!'].includes(pattern[k+3])){captureGroupCount++;const end=pattern.indexOf('>',k+3);if(end>k)namedCaptureGroups.push(pattern.slice(k+3,end));}}
+    const macros=[...new Set([...pattern.matchAll(/\{\{([^{}]{1,200})\}\}/g),...replacement.matchAll(/\{\{([^{}]{1,200})\}\}/g)].map(m=>m[1].trim()))];
+    regexIds.add(id);regex.push({id,name:text(v.scriptName??`正则 ${i+1}`,'正则名称',500),enabled:v.disabled!==true&&v.enabled!==false,pattern,replacement,placement,side,markdownOnly:v.markdownOnly===true,promptOnly:v.promptOnly===true,minDepth:depth('minDepth'),maxDepth:depth('maxDepth'),runOnEdit:v.runOnEdit===true,trimStrings:trimStrings.map(x=>text(x,'trimStrings',10000)),substituteRegex,orderIndex:i,captureGroupCount,namedCaptureGroups,macros,hasExecutableMarkup,status:hasExecutableMarkup?'disabled-safety':'unsupported',reason:hasExecutableMarkup?'替换含可执行 HTML/脚本，禁止执行':'仅识别元数据；本轮不运行导入正则，改用受限结构解析'});
+  }
   const modelParameters:FruitPreset['modelParameters']={};
   for(const [key,v]of Object.entries(doc)){
     if(['prompts','prompt_order','extensions','name'].includes(key)||!safeKey(key))continue;
     if(typeof v==='number'&&Number.isFinite(v)||typeof v==='boolean'||typeof v==='string'&&v.length<10000)modelParameters[key]=v;
     else diagnostics.push({code:'model-parameter',severity:'warning',message:`模型参数 ${key} 形状不支持，仅保留于原件`});
   }
-  diagnostics.push({code:'runtime-options',severity:'warning',message:'模型参数、上下文包装、续写和供应商专有选项仅保留预览，尚未映射到真实请求。'});
-  if(regex.length)diagnostics.push({code:'regex-inert',severity:'warning',message:`识别 ${regex.length} 条正则，全部只读，不执行替换或改写历史`});
+  diagnostics.push({code:'runtime-options',severity:'warning',message:'正式小说仅映射有效的 temperature、top_p、frequency_penalty、presence_penalty。模型、连接与输出预算由终端及任务决定；其余供应商参数、上下文包装与续写选项仅保留原件。'});
+  if(regex.length)diagnostics.push({code:'regex-inert',severity:'warning',message:`识别 ${regex.length} 条正则，仅保存开关，不执行替换或改写历史`});
   for(const key of Object.keys(ext))if(key!=='regex_scripts')diagnostics.push({code:'extension-inert',severity:'warning',message:`扩展 ${key} 仅保留原始数据；不执行脚本/QR/扩展事件`});
   const allTags=[...new Set(prompts.flatMap(p=>[...p.content.matchAll(/<\/?([\p{L}][\p{L}\p{N}_-]*)(?=[\s/>])/gu)].map(m=>m[1])))];
   if(allTags.length>512)diagnostics.push({code:'tag-inventory-limit',severity:'warning',message:'标签清单超出 512 项，完整数据仍保存在原件；这里只显示受限清单'});
@@ -107,6 +122,7 @@ export function validateProfile(value: unknown): FruitProfile {
   const style=text(value.style,'文风',2000),output=value.output;
   for(const k of ['scene','summary','characters','auxiliary'])if(typeof output[k]!=='boolean')fail('输出选项必须是布尔值');
   const profile:FruitProfile={overrides,style,length:{min,max},output:{scene:output.scene===true,summary:output.summary===true,characters:output.characters===true,auxiliary:output.auxiliary===true}};
+  if(value.regexOverrides!==undefined){if(!object(value.regexOverrides)||Object.keys(value.regexOverrides).length>200)fail('正则开关格式无效');profile.regexOverrides={};for(const [id,on]of Object.entries(value.regexOverrides)){if(!safeKey(id)||id.length>200||typeof on!=='boolean')fail('正则开关需要安全 ID 和布尔值');profile.regexOverrides[id]=on;}}
   if(value.edits!==undefined){if(!object(value.edits)||Object.keys(value.edits).length>1000)fail('Prompt 编辑数量无效');profile.edits={};for(const [id,edit]of Object.entries(value.edits)){if(!safeKey(id)||id.length>200)fail('编辑 ID 无效');profile.edits[id]=validatePromptEdit(edit);}}
   if(value.order!==undefined){if(!Array.isArray(value.order)||value.order.length>1100||value.order.some(id=>typeof id!=='string'||!safeKey(id))||new Set(value.order).size!==value.order.length)fail('排序覆盖格式或重复项无效');profile.order=[...value.order];}
   if(value.customPrompts!==undefined){if(!Array.isArray(value.customPrompts)||value.customPrompts.length>100)fail('自建条目最多 100 个');const used=new Set<string>();profile.customPrompts=value.customPrompts.map((v)=>{if(!object(v)||typeof v.identifier!=='string'||!v.identifier.startsWith('custom:')||v.identifier.length>200||used.has(v.identifier))return fail('自建条目 ID 无效或重复');used.add(v.identifier);const {identifier,...rest}=v;const edit=validatePromptEdit(rest);if(typeof edit.name!=='string'||!edit.name.trim()||typeof edit.content!=='string'||!edit.role||edit.position===undefined||edit.depth===undefined||edit.injectionOrder===undefined)return fail('自建条目字段不完整');return {identifier,name:edit.name,content:edit.content,role:edit.role,position:edit.position,depth:edit.depth,injectionOrder:edit.injectionOrder} satisfies FruitCustomPrompt;});}

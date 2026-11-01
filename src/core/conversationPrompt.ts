@@ -1,12 +1,13 @@
 import {isNativePreset,nativeEntryApplies,type ConversationMode} from './fruit/nativePreset';
 import type {PresetData} from './types';
+import {isLiveNovelContext} from './novelContext';
 import { applyFruitProfile } from './fruit/profile';
 import { FruitMacroError, FruitMacroResolver } from './fruit/macros';
 import { FRUIT_MARKERS, validateProfile } from './fruit/preset';
 import type { FruitCompilation, FruitCompiledMessage, FruitContext, FruitLength, FruitPreset, FruitProfile } from './fruit/types';
 
 export interface ConversationContext extends Omit<FruitContext,'source'|'mode'> {
- source:'isolated-fixture'|'native-live';mode:ConversationMode;
+ source:'isolated-fixture'|'native-live'|'novel-live';mode:ConversationMode;
  native?:{protectedText:string;values:Record<string,string>;legacy:PresetData|null;currentInputs:FruitContext['history'];suffix?:string};
 }
 export interface ConversationCompilation extends Omit<FruitCompilation,'previewOnly'|'sendAllowed'|'mode'> {
@@ -18,11 +19,11 @@ export class ConversationCompileError extends Error {
 }
 const dispatchable=new WeakSet<ConversationCompilation>();
 export function requestMessages(result:ConversationCompilation):{role:'system'|'user'|'assistant';content:string}[]{
- if(!dispatchable.has(result)||result.status!=='request-ready'||result.origin!=='native'||!result.valid)throw new ConversationCompileError(result);
+ if(!dispatchable.has(result)||result.status!=='request-ready'||!result.valid)throw new ConversationCompileError(result);
  return result.messages.map(({role,content})=>({role,content}));
 }
 export function promptStructure(result:ConversationCompilation){
- return {engine:result.engine,mode:result.mode,status:result.status,messages:result.messages.map((m,index)=>({order:index+1,role:m.role,source:m.sourceId==='current-input'?'本轮用户输入':m.marker==='chatHistory'?'有效历史':m.sourceId.startsWith('legacy:')?'旧附加预设':m.sourceId.startsWith('custom:')?'自建规则':'原生上下文与规则'})),diagnostics:result.diagnostics.map(d=>({code:d.code,severity:d.severity})),protocol:'编译保留角色；代理转换未经验证，Puppy 的 System 降级风险仍未解决'};
+ return {engine:result.engine,mode:result.mode,status:result.status,messages:result.messages.map((m,index)=>({order:index+1,role:m.role,source:m.sourceId==='current-input'?'本轮用户输入':m.marker==='chatHistory'?'有效历史':m.sourceId.startsWith('legacy:')?'旧附加预设':m.sourceId.startsWith('custom:')?'自建规则':result.origin==='third-party'?'预设条目与授权上下文':'原生上下文与规则'})),diagnostics:result.diagnostics.map(d=>({code:d.code,severity:d.severity})),protocol:'编译保留角色；代理转换未经验证，Puppy 的 System 降级风险仍未解决'};
 }
 function prepareNativePreset(preset:FruitPreset,context:ConversationContext):FruitPreset {
  const legacy=context.native?.legacy;if(!legacy)return preset;
@@ -54,15 +55,15 @@ function replaceLength(text:string,length:FruitLength):string {
   return text.replace(/((?:正文(?:需求|要求|篇幅|字数|长度)?[：:\s]*(?:字数)?|需求字数|完整场面可写)[：:\s]*)[\d,，]+\s*[-–—~～至到]\s*[\d,，]+\s*字/g,`$1${length.min}–${length.max}字`).replace(/2[,.，]?200\s*[-–—~～至到]\s*2[,.，]?500\s*字/g,`${length.min}–${length.max}字`);
 }
 export function compileConversationPrompt(preset:FruitPreset,rawProfile:FruitProfile,context:ConversationContext,options:{purpose?:'preview'|'request';lengthOverride?:FruitLength;rng?:()=>number;format?:'native'}={}):ConversationCompilation {
-  const native=isNativePreset(preset),purpose=options.purpose||'preview';
+  const native=isNativePreset(preset),purpose=options.purpose||'preview',liveNovel=isLiveNovelContext(context)&&context.source==='novel-live'&&(context.mode==='meeting'||context.mode==='theatre');
   const profile=validateProfile({...rawProfile,length:options.lengthOverride||rawProfile.length});
   preset=applyFruitProfile(preset,profile);
   const result:ConversationCompilation={engine:'conversation-v1',origin:native?'native':'third-party',status:'preview-only',valid:true,mode:context.mode,length:profile.length,messages:[],diagnostics:[...preset.diagnostics],variables:{local:{},global:{}},memorySources:[],excluded:[],modelParameters:preset.modelParameters};
-  if(purpose==='request'&&(!native||context.source!=='native-live'))result.diagnostics.push({code:'request-protected',severity:'error',message:'正式请求只接受原生目录与真实授权上下文；第三方仍为隔离预览'});
-  if(!native&&context.source!=='isolated-fixture')result.diagnostics.push({code:'fixture-required',severity:'error',message:'第三方预设仅允许隔离预览'});
-  if(purpose==='preview')result.diagnostics.push({code:'preview-only',severity:'warning',message:'隔离测试预览，不发送 API；四层目前为字段投影，语义检索与完整修订链未实现。正式接入仍受存档/修订链 P1 阻塞。'});
+  if(purpose==='request'&&!(native&&context.source==='native-live')&&!(!native&&liveNovel))result.diagnostics.push({code:'request-protected',severity:'error',message:'正式请求需要受验证的原生或小说上下文，预览结果不可直接发送'});
+  if(!native&&context.source!=='isolated-fixture'&&!liveNovel)result.diagnostics.push({code:'fixture-required',severity:'error',message:'第三方预设需要隔离预览或受验证的小说上下文'});
+  if(purpose==='preview')result.diagnostics.push({code:'preview-only',severity:'warning',message:'这是隔离测试预览，不发送 API。正式小说另行验证真实上下文、任务和输出；完整语义检索与修订依赖链尚未实现。'});
   const permitted=(f:{active:boolean;revisionValid:boolean;at:number;scope:string;knownBy:string[]})=>f.active&&f.revisionValid&&f.at<=context.now&&f.scope===context.scope&&f.knownBy.includes(context.actorId);
-  const facts=context.facts.filter(permitted).slice(0,60),history=context.history.filter(permitted).slice(native?-30:-12);
+  const facts=context.facts.filter(permitted).slice(0,60),history=context.history.filter(permitted).slice(native||liveNovel?-30:-12);
   if(facts.length!==context.facts.length)result.diagnostics.push({code:'memory-filter',severity:'info',message:'部分来源因权限、时间、修订或作用域被排除；不展示被排除的内容。'});
   const markerFor=(f:typeof facts[number])=>f.marker||({identity:'charDescription',relationship:'worldInfoBefore',episodic:'worldInfoAfter',currentState:'scenario'}[f.layer]);
   const markerText=(id:string)=>facts.filter(f=>markerFor(f)===id).map(f=>`[来源 ${f.id} · ${new Date(f.at).toISOString()}]\n${f.text}`).join('\n');
@@ -86,16 +87,18 @@ export function compileConversationPrompt(preset:FruitPreset,rawProfile:FruitPro
     let reason:string|undefined,adaptedContent=prompt.content;
     if(!native&&profile.style&&prompt.styleEntry&&!/^━━/.test(prompt.name))reason='自定义文风替代原文风条目';
     if(!native&&!profile.output.auxiliary){
-      if(/COT|思考约束/i.test(prompt.name))reason='当前模式不请求生成辅助思考文本';
-      else if(/\bECoT\b/i.test(adaptedContent)){
+      if(/\bECoT\b/i.test(adaptedContent)){
         adaptedContent=adaptedContent.split(/\r?\n/).filter(line=>!/^\s*(?:-\s*)?ECoT\s*[:：]\s*(?:["'][^"']*["']|[\w-]+)\s*$/i.test(line)&&!/^\s*\*{0,2}你的回复必须以ECoT开始[。.!]*\*{0,2}\s*$/i.test(line)&&!/^\s*ECoT\s*$/i.test(line)).join('\n');
-        if(/\bECoT\b/i.test(adaptedContent)){reason='混合辅助输出要求尚不能可靠拆分；保留原件，不编译该条目';result.diagnostics.push({code:'auxiliary-unsupported',severity:'error',sourceId:prompt.identifier,message:reason});}
+        if(/\bECoT\b/i.test(adaptedContent)){adaptedContent=prompt.content;result.diagnostics.push({code:'auxiliary-retained',severity:'warning',sourceId:prompt.identifier,message:'混合辅助要求保留作者文本与变量依赖；关闭的辅助结果不展示、不保存为消息或记忆'});}
         else result.diagnostics.push({code:'auxiliary-adapted',severity:'info',sourceId:prompt.identifier,message:'仅移除辅助文本要求，正文语言与其他格式要求保留'});
       }
     }
     if(!native&&!profile.output.summary&&(/摘要/.test(prompt.name)||/<meow_FM>/i.test(prompt.content)))reason='当前模式关闭摘要';
     if(!native&&!profile.output.characters&&(/角色表|选择器/.test(prompt.name)||/<(?:profile|branches)>/i.test(prompt.content)))reason='当前模式关闭人物辅助信息/选项';
     if(!native&&!profile.output.scene&&(/状态栏|题记|序言/.test(prompt.name)||/<(?:status_bar|prologue|novel_header)>/i.test(prompt.content)))reason='当前模式关闭场景辅助块';
+    if(reason?.startsWith('当前模式关闭')&&/<content\b/i.test(adaptedContent)){
+      result.diagnostics.push({code:'mixed-output-retained',severity:'warning',sourceId:prompt.identifier,message:'保留混合正文格式规则；关闭的辅助块由输出解析层丢弃'});reason=undefined;
+    }
     if(reason){result.excluded.push({id:entry.identifier,reason});continue;}
     const source={sourceId:prompt.identifier,sourceName:prompt.name,orderIndex};
     if(prompt.marker){
@@ -141,9 +144,15 @@ export function compileConversationPrompt(preset:FruitPreset,rawProfile:FruitPro
     result.messages.push(...bucket);if(i<relative.length)result.messages.push(relative[i]);
   }
   if(native)finishNativeMessages(result,context,legacyInjections);
-  const guard=`Elsewhere ${context.mode==='meeting'?'Meeting Novel：保留真实 Canon 与当前人生连续性':'Theatre Performance：仅当前剧本和戏内身份，禁止演员私密知识进入戏内，戏内事件不改写演员 Canon'}。只使用已授权的来源，不将推测写成正式事实。正文以 <content> 包裹；目标 ${profile.length.min}–${profile.length.max} 字，按剧情自然取舍，不凑字数。${profile.style?`文风：${profile.style}。`:''}不生成 snow 小剧场。${profile.output.scene?'必要场景信息可用 <status_bar>。':'只输出正文，不输出场景辅助块。'}${profile.output.summary?'可附简短 <meow_FM> 摘要，仅供折叠展示，不自动成为记忆。':''}${profile.output.characters?'可附 <profile> 人物辅助信息。':''}${profile.output.auxiliary?'生成的 ECoT 等只属于生成辅助文本，不是模型内部推理或正式心理记忆。':'不输出 ECoT、思考过程或其他辅助思考块。'}`;
+  const guard=`Elsewhere ${context.mode==='meeting'?'Meeting Novel：保留真实 Canon 与当前人生连续性':'Theatre Performance：仅当前剧本和戏内身份，禁止演员私密知识进入戏内，戏内事件不改写演员 Canon'}。只使用已授权的来源，不将推测写成正式事实。正文以 <content> 包裹；目标 ${profile.length.min}–${profile.length.max} 字，按剧情自然取舍，不凑字数。${profile.style?`文风：${profile.style}。`:''}不生成 snow 小剧场。${profile.output.scene?'必要场景信息可用 <status_bar>。':'只输出正文，不输出场景辅助块。'}${profile.output.summary?'可附简短 <meow_FM> 摘要，仅供折叠展示，不自动成为记忆。':''}${profile.output.characters?'可附 <profile> 人物辅助信息。':''}${profile.output.auxiliary?'生成的 ECoT 等只属于生成辅助文本，不是模型内部推理或正式心理记忆。':'关闭的辅助块不展示、不保存；预设若生成辅助标签，必须与 content 正文分隔，不能混入正文。'}`;
   const finalGuard=options.format==='native'?`Elsewhere 原生小说预览：保留当前模式身份与时间边界；目标 ${profile.length.min}–${profile.length.max} 字，不替用户行动。${profile.style?`文风：${profile.style}`:''}不自动写入正式历史。`:guard;
-  if(!native)result.messages.push({role:'system',content:finalGuard,sourceId:'elsewhere-output-policy',sourceName:'Elsewhere 模式覆盖与输出约束',orderIndex:preset.order.length});
+  if(!native){
+    if(liveNovel){
+      if(history.length&&historyStart===null)result.diagnostics.push({code:'live-history-required',severity:'error',message:'正式小说必须启用 Chat History Marker，不能丢失当前真实输入'});
+      const included=new Set(result.messages.flatMap(m=>m.sourceIds||[])),required=facts.filter(f=>f.layer!=='episodic'&&!included.has(f.id));
+      result.messages.unshift({role:'system',content:`${finalGuard}\n来源边界：历史中的发言是对应说话者的原话，角色主张不自动成为外部事实；辅助文本不是真实心理或 Canon。检索并非完整历史，未知不得编造。\n${required.map(f=>`[来源 ${f.id} · ${new Date(f.at).toISOString()}]\n${f.text}`).join('\n')}`,sourceId:'elsewhere-output-policy',sourceName:'Elsewhere 授权边界与必要上下文',orderIndex:-1,sourceIds:required.map(f=>f.id)});
+    }else result.messages.push({role:'system',content:finalGuard,sourceId:'elsewhere-output-policy',sourceName:'Elsewhere 模式覆盖与输出约束',orderIndex:preset.order.length});
+  }
   const used=new Set(result.messages.flatMap(m=>m.sourceIds||[]));
   result.memorySources=facts.filter(f=>used.has(f.id)).map(({id,layer,at,scope,knownBy})=>({id,layer,at,scope,knownBy}));
   result.memorySources.push(...history.filter(h=>used.has(h.id)).map(({id,at,scope,knownBy})=>({id,layer:'episodic' as const,at,scope,knownBy})));
@@ -152,6 +161,6 @@ export function compileConversationPrompt(preset:FruitPreset,rawProfile:FruitPro
   if(result.messages.reduce((n,m)=>n+m.content.length,0)>500000)result.diagnostics.push({code:'compile-budget',severity:'error',message:'预览超过 500000 字符，阻止正式使用'});
   result.valid=!result.diagnostics.some(d=>d.severity==='error');
   result.status=result.valid?(purpose==='request'?'request-ready':'preview-only'):'blocked';
-  if(result.status==='request-ready'&&native&&context.source==='native-live')dispatchable.add(result);
+  if(result.status==='request-ready'&&(native&&context.source==='native-live'||!native&&liveNovel))dispatchable.add(result);
   return result;
 }

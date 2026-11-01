@@ -8,8 +8,9 @@ export interface FruitPrompt {
 }
 export interface FruitOrder { identifier: string; enabled: boolean }
 export interface FruitRegex {
-  id: string; name: string; enabled: boolean; pattern: string;
+  id: string; name: string; enabled: boolean; pattern: string; replacement:string;
   side: 'prompt' | 'display' | 'other'; placement: number[];
+  markdownOnly:boolean;promptOnly:boolean;minDepth:number|null;maxDepth:number|null;runOnEdit:boolean;trimStrings:string[];substituteRegex:0|1|2;orderIndex:number;captureGroupCount:number;namedCaptureGroups:string[];macros:string[];
   hasExecutableMarkup: boolean; status: 'disabled-safety' | 'unsupported'; reason: string;
 }
 export interface FruitPreset {
@@ -22,6 +23,7 @@ export interface FruitLength { min: number; max: number }
 export type FruitPromptEdit = Partial<Pick<FruitPrompt,'name'|'role'|'content'|'position'|'depth'|'injectionOrder'>>;
 export type FruitCustomPrompt = Pick<FruitPrompt,'identifier'|'name'|'role'|'content'|'position'|'depth'|'injectionOrder'>;
 export interface FruitProfile {
+  regexOverrides?:Record<string,boolean>;
   edits?: Record<string,FruitPromptEdit>;
   order?: string[];
   customPrompts?: FruitCustomPrompt[];

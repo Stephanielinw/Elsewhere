@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#edf6ff">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>Elsewhere · 一角色一手机 (Phase 1 Standalone)</title>
 <style>
 /* Elsewhere v0.5. Original system-style UI, not a copy of third-party code/assets. */
@@ -44,17 +47,20 @@
 .focus-card{padding:22px 15px;border-radius:23px;background:linear-gradient(160deg,#fff,#faf7ff);border:1px solid #ece7f0;text-align:center;margin:14px 0 16px}.focus-kicker{font-size:11px;letter-spacing:1.4px;color:var(--accent);font-weight:770}.focus-standby{font-size:67px;letter-spacing:-4px;margin:36px 0 12px;font-weight:320;font-variant-numeric:tabular-nums;color:#4e3d5c}.focus-ring{height:214px;width:214px;background:conic-gradient(var(--accent) var(--progress,0%),#eee8f1 var(--progress,0%));padding:12px;border-radius:50%;display:grid;place-items:center;margin:22px auto 19px}.focus-ring-inner{background:#fff;height:100%;width:100%;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center}.focus-ring-inner strong{font-size:48px;letter-spacing:-2px;font-variant-numeric:tabular-nums;color:var(--ink);font-weight:500}.focus-ring-inner span{color:var(--muted);font-size:12px;margin-top:7px}.focus-caption{color:#9b91a2;font-size:12px;line-height:1.7;max-width:280px;margin:13px auto}.focus-buttons{display:flex;gap:9px;justify-content:center;margin-top:18px}.focus-buttons .btn{flex:1}.focus-fields{display:grid;grid-template-columns:1fr 1fr;gap:12px}.focus-check{display:flex;align-items:flex-start;gap:8px;font-size:12px;line-height:1.5;margin:14px 0 9px}.focus-check input{accent-color:var(--accent);margin-top:4px}.focus-secondary{margin-top:9px}.focus-companion{text-align:left;margin:14px 0 4px;padding:13px;border:1px solid #ece5f1;background:#f7f2fb;border-radius:16px}.focus-companion-head{display:flex;align-items:center;gap:9px;margin-bottom:10px}.focus-companion-avatar{height:34px;width:34px;border-radius:50%;background:#eadbf1;display:grid;place-items:center;font-size:21px}.focus-companion-head b{font-size:12px}.focus-companion-head small{display:block;font-size:10px;color:var(--muted);margin-top:4px}.focus-live-indicator{font-size:9px;color:var(--accent);margin-left:auto;white-space:nowrap}.focus-moments{display:flex;flex-direction:column;gap:7px;max-height:225px;overflow:auto}.focus-moment{display:flex;gap:9px;align-items:flex-start;padding:9px;border-radius:10px;background:#fff8;opacity:.8}.focus-moment.latest{opacity:1;background:#fff}.focus-moment-icon{font-size:18px}.focus-moment div{flex:1;min-width:0}.focus-moment b{font-size:11px;display:block}.focus-moment p{font-size:11px;line-height:1.5;color:var(--muted);margin:4px 0 0}.focus-moment time{font-size:10px;color:var(--muted);white-space:nowrap}.focus-companion-note{font-size:10px;color:var(--muted);line-height:1.6}
 /* Novel mode intentionally leaves the phone paradigm for reading. */
 .novel-view{background:#f6f0e5;color:#392f29}.novel-view .top{background:#f9f3e9;border-color:#e7ded0}.novel-view .home-indicator{color:#403a36}.novel{overflow:auto;flex:1;min-height:0;padding:30px 25px 24px}.chapter{font-size:10px;letter-spacing:2px;color:#a18b75;text-transform:uppercase;text-align:center}.scene-title{font-family:Georgia,"Songti SC",serif;text-align:center;font-weight:500;font-size:29px;margin:16px 0 30px}.passage{white-space:pre-wrap;line-height:1.9;font-size:14px;font-family:Georgia,"Songti SC",serif;margin:20px 0}.passage .speaker{display:block;color:#8e7762;font:600 11px -apple-system,"PingFang SC",sans-serif;margin:0 0 6px}.passage.mine{padding:13px 15px;background:#ebe2d3;border-radius:12px}.passage.note{font-style:italic;color:#827260;text-align:center}.novel-view .compose{background:#f7efe4}.novel-view .compose textarea{border-color:#e1d5c6;background:#fffbf5}
-@media(max-width:500px){#app{padding:0;background:transparent}.shell{height:100dvh;width:100%;max-width:none;min-height:0;padding:0;border-radius:0;box-shadow:none;background:transparent}.shell:before,.shell:after{display:none}.phone{border-radius:0}.home-indicator{height:max(26px,env(safe-area-inset-bottom))}.home-view .home-indicator{height:max(20px,env(safe-area-inset-bottom))}.home-desktop{padding-left:22px;padding-right:22px}.dock{margin-bottom:5px}}
+@media(max-width:500px){#app{padding:0;background:transparent}.shell{height:100dvh;width:100%;max-width:none;min-height:0;padding:0;border-radius:0;box-shadow:none;background:transparent}.shell:before,.shell:after{display:none}.phone{border-radius:0}.home-desktop{padding-left:22px;padding-right:22px}.dock{margin-bottom:5px}}
 @media(max-height:700px){.homescreen-clock{margin:10px 0 15px}.homescreen-time{font-size:59px}.home-apps{gap:13px 4px;margin-top:18px}.tile{height:54px;width:54px}.dock .tile{height:49px;width:49px}.home-widget{padding:10px 12px}}
 @media(max-width:360px){.tile{width:53px;height:53px}.home-apps{gap:16px 2px}.dock .tile{width:49px;height:49px}.homescreen-time{font-size:65px}.chat-shortcuts button{gap:3px}.chat-shortcuts span{font-size:10px}}
 @media(prefers-reduced-motion:no-preference){.tile{transition:transform .15s ease}.home-widget,.role{transition:background .15s ease}.role:hover{background:#f6f1fa}.home-widget:active{background:#ffffff6a}}
 
 /* ELSEWHERE v1 alpha: immersive full-window interface, no hardware silhouette. */
-html,body,#app{width:100%;height:100%;min-height:100dvh}
-#app{padding:0;background:var(--bg);display:block}
-.shell{width:100%;height:100dvh;min-height:0;padding:0;border-radius:0;background:transparent;box-shadow:none;isolation:isolate}
+html,body,#app{width:100%;height:100%;min-height:0}
+html,body{overflow:hidden;background:var(--bg)}
+:root{--app-safe-top:env(safe-area-inset-top,0px);--app-safe-bottom:env(safe-area-inset-bottom,0px)}
+:root[data-keyboard-open=true]{--app-safe-bottom:0px}
+#app{position:fixed;top:var(--app-viewport-top,0px);left:0;height:var(--app-viewport-height,100dvh);padding:0;background:var(--bg);display:block;overflow:hidden}
+.shell{width:100%;height:100%;min-height:0;padding:0;border-radius:0;background:transparent;box-shadow:none;isolation:isolate}
 .shell:before,.shell:after{display:none!important}
-.phone{width:100%;height:100%;border-radius:0;max-width:none}
+.phone{width:100%;height:100%;border-radius:0;max-width:none;padding:var(--app-safe-top) env(safe-area-inset-right,0px) var(--app-safe-bottom) env(safe-area-inset-left,0px)}
 .home-view,.landing-view{color:var(--ink);background:var(--bg)}
 .home-view .home-indicator,.landing-view .home-indicator{color:var(--ink)}
 .home-view .wallpaper,.landing-view .wallpaper{background:radial-gradient(ellipse 65% 65% at 13% 6%,color-mix(in srgb,var(--accent) 25%,transparent),transparent 80%),radial-gradient(ellipse 70% 70% at 92% 80%,color-mix(in srgb,var(--accent) 18%,transparent),transparent 80%),linear-gradient(150deg,var(--bg),var(--surface2))}
@@ -118,10 +124,12 @@ html,body,#app{width:100%;height:100%;min-height:100dvh}
 
 /* Alpha 4 · Liquid Glass-inspired interface. All glass surfaces are CSS, no copyrighted Apple assets. */
 :root{--glass-stroke:rgba(255,255,255,.72);--glass-fill:rgba(255,255,255,.49);--glass-darkshadow:0 14px 35px rgba(54,52,86,.13),inset 0 1px 0 rgba(255,255,255,.7)}
-.phone{background:transparent}
+.phone{background:var(--bg)}
+.mobile-home{display:none}
+.chat-view>.wallpaper:not(.has-custom-wallpaper){display:none}
 .wallpaper{display:block;position:absolute;inset:-25px;z-index:-1;pointer-events:none;background:radial-gradient(ellipse 67% 55% at 11% 13%,color-mix(in srgb,var(--accent) 35%,#e0f1ff) 0%,transparent 75%),radial-gradient(ellipse 65% 65% at 90% 31%,#f8c9df 0%,transparent 78%),radial-gradient(ellipse 72% 72% at 38% 100%,#aedddc 0%,transparent 82%),linear-gradient(130deg,var(--bg),#f2eefb)!important}
 .phone.theme-night .wallpaper{background:radial-gradient(ellipse 70% 55% at 20% 10%,#455579 0,transparent 73%),radial-gradient(ellipse 60% 60% at 95% 58%,#774f7e 0,transparent 74%),linear-gradient(150deg,#22283a,#34314b)!important}
-.home-view,.landing-view,.app-view,.chat-view,.intermission-view{background:transparent!important;color:var(--ink)}
+.home-view,.landing-view,.app-view,.intermission-view{background:transparent!important;color:var(--ink)}
 .home-view .home-desktop{background:transparent}
 .home-view .wallpaper:after,.landing-view .wallpaper:after{opacity:.6!important;background:radial-gradient(ellipse at center,#ffffff54,transparent 68%)!important}
 .home-widget,.mini-widget,.home-ongoing,.login-list,.card,.entry,.focus-card{background:var(--glass-fill)!important;border:1px solid var(--glass-stroke)!important;box-shadow:var(--glass-darkshadow);backdrop-filter:blur(28px) saturate(185%);-webkit-backdrop-filter:blur(28px) saturate(185%)}
@@ -135,8 +143,9 @@ html,body,#app{width:100%;height:100%;min-height:100dvh}
 
 .dock{background:rgba(255,255,255,.37)!important;border:1px solid rgba(255,255,255,.8)!important;box-shadow:0 18px 35px rgba(66,60,92,.16),inset 0 1px 1px #fff!important;border-radius:29px;backdrop-filter:blur(30px) saturate(190%);-webkit-backdrop-filter:blur(30px) saturate(190%)}
 .dock .tile{width:min(55px,13vw);height:min(55px,13vw)}
-.app-view .top,.chat-view .chat-header,.intermission-view .top{background:rgba(255,255,255,.31)!important;border-bottom:1px solid rgba(255,255,255,.62)!important;backdrop-filter:blur(30px) saturate(185%);-webkit-backdrop-filter:blur(30px) saturate(185%)}
-.app-view .field,.app-view .chat-drawer,.app-view .compose,.chat-view .compose,.chat-view .chat-drawer,.intermission-compose{background:rgba(255,255,255,.43)!important;border-color:rgba(255,255,255,.64)!important;backdrop-filter:blur(20px) saturate(160%);-webkit-backdrop-filter:blur(20px) saturate(160%)}
+.app-view .top,.intermission-view .top{background:color-mix(in srgb,var(--surface) 31%,transparent);border-bottom:1px solid rgba(255,255,255,.62)!important;backdrop-filter:blur(30px) saturate(185%);-webkit-backdrop-filter:blur(30px) saturate(185%)}
+.app-view .field,.app-view .chat-drawer,.app-view .compose,.chat-view .chat-drawer,.intermission-compose{background:rgba(255,255,255,.43)!important;border-color:rgba(255,255,255,.64)!important;backdrop-filter:blur(20px) saturate(160%);-webkit-backdrop-filter:blur(20px) saturate(160%)}
+.chat-view .chat-header,.chat-view .compose{background:var(--bg)}
 .app-view .viewport,.chat-view .chat-history{background:transparent}.role,.role-row{background:rgba(255,255,255,.09)}
 .login-list{color:var(--ink);overflow:hidden}.landing-mark{background:rgba(255,255,255,.48);border-color:#fff}.landing .lead,.logo{color:var(--muted)}.landing .brand{color:var(--ink)}
 /* Real backstage window: visual and semantic separation from the fictional novel. */
@@ -2049,9 +2058,11 @@ html,body,#app{width:100%;height:100%;min-height:100dvh}
 
 /* Touch/standalone surfaces use system safe areas. */
 @media (any-pointer:coarse), (display-mode:standalone) {
-  .phone{padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) 0 env(safe-area-inset-left,0px)}
-  .phone>.home-indicator{height:calc(27px + env(safe-area-inset-bottom,0px));padding-bottom:env(safe-area-inset-bottom,0px)}
-  .home-view>.home-indicator{height:calc(23px + env(safe-area-inset-bottom,0px))}
+  .phone>.home-indicator{display:none}
+  .top .mobile-home{display:grid;place-items:center;min-width:36px;width:36px;height:36px;padding:6px}
+  dialog[open]{top:calc(var(--app-viewport-top,0px) + var(--app-safe-top) + 12px);bottom:auto;margin:0 auto;max-height:calc(var(--app-viewport-height,100dvh) - var(--app-safe-top) - var(--app-safe-bottom) - 24px);overflow:auto}
+  .frame-modal-backdrop{top:var(--app-viewport-top,0px);bottom:auto;height:var(--app-viewport-height,100dvh);padding:calc(var(--app-safe-top) + 12px) 12px calc(var(--app-safe-bottom) + 12px)}
+  .frame-modal-sheet{max-height:100%}
   /* Keep keyboard text at 16px, including dialogs and older !important field styles. */
   :root :is(input,textarea,select,[contenteditable]:not([contenteditable="false"])){font-size:16px!important}
   .compose textarea{height:44px;min-height:44px}
@@ -2134,7 +2145,6 @@ html,body,#app{width:100%;height:100%;min-height:100dvh}
 .fp-artifact-preview>summary{font-size:11px;color:var(--muted);cursor:pointer;display:flex;align-items:center;gap:5px;padding:10px 0}
 
 /* Glass is a sibling background, never the layer carrying navigation text. */
-.phone{padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) 0 env(safe-area-inset-left,0px)}
 .home-topbar-shell{position:sticky;top:10px;z-index:20;flex:none;margin-top:10px;border-radius:19px}
 .home-topbar-glass{position:absolute;inset:0;z-index:0;border-radius:inherit;pointer-events:none;background:color-mix(in srgb,var(--surface) 86%,transparent);border:1px solid var(--glass-stroke);box-shadow:0 3px 14px #40334508;-webkit-backdrop-filter:blur(18px) saturate(150%);backdrop-filter:blur(18px) saturate(150%)}
 .home-topbar-content{position:relative;z-index:1;display:grid;grid-template-columns:auto auto minmax(0,1fr);align-items:center;gap:10px;padding:9px 10px;color:var(--ink)}
@@ -15489,7 +15499,7 @@ ${prevLogs}` : "",
       back
     )}" aria-label="\u8FD4\u56DE">\u2039 <span>\u8FD4\u56DE</span></button><div class="grow"><h1>${esc(
       title
-    )}</h1></div>${right}</div>`;
+    )}</h1></div>${right}${back !== "home" ? `<button type="button" class="icon-btn mobile-home" data-action="home" aria-label="\u8FD4\u56DE\u624B\u673A\u684C\u9762">${uiIcon("home")}</button>` : ""}</div>`;
     const appTile = (id, name) => `<button class="app-icon" data-action="view" data-view="${id}" aria-label="\u6253\u5F00${name}"><span class="tile tile-${id}">${glyph(
       id
     )}</span><span class="app-name">${name}</span></button>`;
@@ -17079,6 +17089,13 @@ ${prevLogs}` : "",
         (n, i) => root.style.setProperty(n, a[i])
       );
       if (root.dataset) root.dataset.theme = key;
+      let themeColor = document.querySelector('meta[name="theme-color"]');
+      if (!themeColor) {
+        themeColor = document.createElement("meta");
+        themeColor.name = "theme-color";
+        document.head.append(themeColor);
+      }
+      themeColor.content = a[0];
       root.style.fontFamily = appearanceFontFamily(data, role());
       void hydrateAppearanceFont(data, role()).catch(() => {
       });
@@ -19767,7 +19784,55 @@ ${prevLogs}` : "",
     else if (nainMigration.error) notify(nainMigration.error);
   }
 
+  // src/mobileViewport.ts
+  function visibleViewportFrame(v, layoutHeight, editing, wasKeyboard) {
+    if (!Number.isFinite(v.height) || v.height <= 0 || !Number.isFinite(v.offsetTop) || Math.abs(v.scale - 1) > 0.01) return null;
+    return { height: v.height, top: Math.max(0, v.offsetTop), keyboard: layoutHeight - v.height > 80 && (editing || wasKeyboard) };
+  }
+  function installMobileViewport() {
+    const root = document.documentElement, media = matchMedia("(any-pointer:coarse), (display-mode:standalone)"), viewport = window.visualViewport, abort = new AbortController();
+    let raf = 0, keyboard = false;
+    function update() {
+      raf = 0;
+      if (!media.matches || !viewport) {
+        root.style.removeProperty("--app-viewport-height");
+        root.style.removeProperty("--app-viewport-top");
+        delete root.dataset.keyboardOpen;
+        keyboard = false;
+        return;
+      }
+      const editing = Boolean(document.activeElement?.matches("textarea,select,input:not([type=button],[type=submit],[type=checkbox],[type=radio],[type=range],[type=file],[type=color]),[contenteditable]:not([contenteditable=false])"));
+      const frame = visibleViewportFrame(viewport, root.clientHeight, editing, keyboard);
+      if (!frame) return;
+      const pane = document.querySelector("#scroll-area");
+      const pinned = pane && pane.scrollHeight - pane.clientHeight - pane.scrollTop < 2;
+      keyboard = frame.keyboard;
+      root.dataset.keyboardOpen = String(keyboard);
+      root.style.setProperty("--app-viewport-height", frame.height + "px");
+      root.style.setProperty("--app-viewport-top", frame.top + "px");
+      if (pane && pinned) pane.scrollTop = pane.scrollHeight;
+    }
+    const schedule = () => {
+      if (!raf) raf = requestAnimationFrame(update);
+    };
+    for (const name of ["resize", "scroll"]) viewport?.addEventListener(name, schedule, { signal: abort.signal, passive: true });
+    for (const name of ["resize", "pageshow"]) window.addEventListener(name, schedule, { signal: abort.signal, passive: true });
+    for (const name of ["focusin", "focusout"]) document.addEventListener(name, schedule, { signal: abort.signal });
+    media.addEventListener("change", schedule, { signal: abort.signal });
+    update();
+    return () => {
+      abort.abort();
+      cancelAnimationFrame(raf);
+      root.style.removeProperty("--app-viewport-height");
+      root.style.removeProperty("--app-viewport-top");
+      delete root.dataset.keyboardOpen;
+    };
+  }
+
   // src/main.tsx
+  var import_meta = {};
+  var disposeViewport = installMobileViewport();
+  if (import_meta.hot) import_meta.hot.dispose(disposeViewport);
   initElsewhereApp();
 })();
 

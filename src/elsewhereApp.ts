@@ -2112,7 +2112,7 @@ export function initElsewhereApp(): void {
       back
     )}" aria-label="返回">‹ <span>返回</span></button><div class="grow"><h1>${esc(
       title
-    )}</h1></div>${right}</div>`;
+    )}</h1></div>${right}${back!=='home'?`<button type="button" class="icon-btn mobile-home" data-action="home" aria-label="返回手机桌面">${uiIcon('home')}</button>`:''}</div>`;
 
   const appTile = (id: string, name: string): string =>
     `<button class="app-icon" data-action="view" data-view="${id}" aria-label="打开${name}"><span class="tile tile-${id}">${glyph(
@@ -4333,6 +4333,9 @@ export function initElsewhereApp(): void {
       (n, i) => root.style.setProperty(n, a[i])
     );
     if (root.dataset) root.dataset.theme = key;
+    let themeColor=document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+    if(!themeColor){themeColor=document.createElement('meta');themeColor.name='theme-color';document.head.append(themeColor);}
+    themeColor.content=a[0];
     root.style.fontFamily=appearanceFontFamily(data,role());
     void hydrateAppearanceFont(data,role()).catch(()=>{});
   }

@@ -46,10 +46,10 @@ test('batch inputs keep individual IDs, timestamps and quotes; controls stay bef
  assert.ok(messages.at(-1)!.content.includes('[引用 角色甲 的消息：「历史回答」]'));
  assert.deepEqual(r.chats.map(m=>m.id),['h1','h2','b1','b2']);
 });
-test('active assistant claims can influence later history and recall, while retraction removes both',()=>{
+test('active assistant claims remain in history and distinct summaries, while retraction removes both',()=>{
  const {data,r}=fixture();const claim='你刚才提到了软件预设和格式规范';
  r.chats=[{id:'bad',speaker:'char',text:claim,at,status:'active'}];
- r.events=[{id:'claim',kind:'chat',title:'角色甲说过',detail:claim,at,messageId:'bad',speaker:'char',knownBy:[r.id],status:'active'}];
+ r.events=[{id:'claim',kind:'chat',title:'角色甲说过',detail:'尚无其他证据确认这段说法；角色声称：'+claim,at,messageId:'bad',speaker:'char',knownBy:[r.id],status:'active'}];
  const before=buildMessagesForModel(data,r,'chat','格式规范',{nowTs:at+1000});
  assert.ok(before.some(m=>m.role==='assistant'&&m.content===claim));
  assert.ok(before[0].content.includes(claim));

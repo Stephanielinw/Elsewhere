@@ -13,6 +13,8 @@ import {monitorItemsForDisplay,newestMonitorFirst} from './core/monitorPresentat
 import {uiIcon,plainUiLabel} from './uiIcons';
 import {chatTiming,setChatFocused,enqueueChat,prepareChatDue,claimChatBatch,chatBatchValid,chatRevisionKey,completeChatBatch,failChatBatch,recoverChatTiming,retryChatTiming,reviseChatTiming,sourceStillValid} from './core/chatScheduler';
 import {compileChatBatchPrompt,buildPhoneRegeneration,readChatResponse} from './core/chatBatchPrompt';
+import {describeChatVoice,chatVoiceSummary} from './core/chatVoice';
+import {createChatVoiceDialog} from './chatVoiceView';
 import {createHomeTasks} from './homeTasksView';
 import {createHomePager} from './homePager';
 import {novelMessageHtml} from './novelOutputView';
@@ -1575,7 +1577,8 @@ export function initElsewhereApp(): void {
     for(const item of [...r.chats,...(r.scene?.messages||[])])if(item.sceneReply)void applySavedSceneReply(r,item);
   }
   type RequestPromptOptions=NativePromptOptions&{preset:FruitPreset;presetId:string};
-  const promptTraces=new Map<string,ReturnType<typeof promptStructure>&{profileRevision:number;requestedPresetId:string;actualPresetId:string;profileOwnerRoleId:string;profileSource:string;actualPresetHash:string;profileBaseHash:string}>();
+  const promptTraces=new Map<string,ReturnType<typeof promptStructure>&{profileRevision:number;requestedPresetId:string;actualPresetId:string;profileOwnerRoleId:string;profileSource:string;actualPresetHash:string;profileBaseHash:string;sentAt?:number;voice?:ReturnType<typeof chatVoiceSummary>}>();
+  const chatVoiceDialog=createChatVoiceDialog({role,globalPreset:()=>data.preset,load:id=>loadRequestPreset('chat',id),save,trace:id=>{const t=promptTraces.get(id);return t?.mode==='chat'&&t.sentAt?t:undefined;}});
   function includeScenePromptTrace(r:RoleData):void {
     const trace=promptTraces.get(r.id);
     if(trace)trace.messages=[{order:1,role:'system',source:'同次场景事件控制'},...trace.messages.map(m=>({...m,order:m.order+1}))];
@@ -1600,7 +1603,7 @@ export function initElsewhereApp(): void {
       if(!valid())throw new Error('请求来源已变化，未发送');
       try{
         const compilation=build({profile:snapshot.profile,skipLegacyOnce,preset:snapshot.preset,presetId:snapshot.actualPresetId});
-        promptTraces.set(r.id,{...promptStructure(compilation),profileRevision:snapshot.revision,requestedPresetId:snapshot.requestedPresetId,actualPresetId:snapshot.actualPresetId,profileOwnerRoleId:snapshot.roleId,profileSource:snapshot.configSource,actualPresetHash:snapshot.presetHash,profileBaseHash:snapshot.profileBaseHash});
+        promptTraces.set(r.id,{...promptStructure(compilation),profileRevision:snapshot.revision,requestedPresetId:snapshot.requestedPresetId,actualPresetId:snapshot.actualPresetId,profileOwnerRoleId:snapshot.roleId,profileSource:snapshot.configSource,actualPresetHash:snapshot.presetHash,profileBaseHash:snapshot.profileBaseHash,...(kind==='chat'?{voice:chatVoiceSummary(describeChatVoice(snapshot.profile,r,data.preset),skipLegacyOnce)}:{})});
         const messages=requestMessages(compilation);
         if(!valid())throw new Error('请求来源已变化，未发送');
         return messages;
@@ -1619,6 +1622,7 @@ export function initElsewhereApp(): void {
         headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},
         body:JSON.stringify({model:settings.model,messages,stream:false,temperature:+settings.temperature,...completionLimit(settings,task)}),
       });
+      const trace=promptTraces.get(r.id);if(trace?.mode==='chat')trace.sentAt=now();
       chatTyping.add(r.id);
       if(view==='chat'&&role()?.id===r.id)patchDynamicRegionsOnTick();
       return readChatResponse(await pendingResponse);
@@ -2694,7 +2698,7 @@ export function initElsewhereApp(): void {
               id
             )}<span>${label}</span></button>`
         )
-        .join('')}<button data-action="meet">${glyph('profile')}<span>见面</span></button><button data-action="view" data-view="focus">${glyph('focus')}<span>一起专注</span></button><button data-action="view" data-view="drama">${glyph('drama')}<span>戏剧</span></button></div></section>`;
+        .join('')}<button data-action="meet">${glyph('profile')}<span>见面</span></button><button data-action="view" data-view="focus">${glyph('focus')}<span>一起专注</span></button><button data-action="view" data-view="drama">${glyph('drama')}<span>戏剧</span></button><button data-action="chatvoice">${glyph('chat')}<span>聊天表达</span></button></div></section>`;
     }
     if (chatPanel === 'sticker') {
       const gallery=uploadedStickers(role()?.chats||[]);
@@ -5604,6 +5608,7 @@ export function initElsewhereApp(): void {
       go('roleform');
       return;
     }
+    if(act==='chatvoice'){chatVoiceDialog.open();return;}
     if (act === 'cancelroleform') {
       resetRoleAvatarDraft();
       go(formMode === 'edit' ? roleFormReturnView : 'landing');

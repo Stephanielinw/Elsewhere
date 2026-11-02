@@ -1,6 +1,7 @@
 import {meetingPlan,encounterHistory} from './encounter';
 import {compileConversationPrompt,requestMessages,type ConversationCompilation,type ConversationContext} from './conversationPrompt';
 import {nativePreset,isNativePreset} from './fruit/nativePreset';
+import {nativeBubbleRule,projectChatVoiceProfile,chatVoiceChoice} from './chatVoice';
 import {createLiveNovelContext} from './novelContext';
 import {createFruitState} from './fruit/preset';
 import type {FruitContext,FruitProfile,FruitPreset} from './fruit/types';
@@ -131,6 +132,13 @@ export function buildNativeContext(
   let recalled:EventRecord[]=[];
   const allMessages=[...r.chats,...(r.scene?.messages||[]),...(r.play?.messages||[]),...(r.play?.intermissionMessages||[]),...(r.meetings||[]).flatMap(s=>s.messages),...r.plays.flatMap(p=>[...p.messages,...(p.intermissionMessages||[])])];
   const validIds=new Set(getActiveMessages(allMessages).map(m=>m.id));
+  const mode=kind==='scene'?'meeting':kind==='play'?'theatre':kind;
+  const scope=kind==='play'?'play:'+r.play!.id:kind==='intermission'?'intermission:'+r.play!.id:'real:'+r.id;
+  const raw=kind==='chat'?r.chats:kind==='scene'?r.scene?.messages:kind==='play'?r.play?.messages:r.play?.intermissionMessages;
+  const userName=identityName(data,r),safeContent=(m:ChatMessage)=>m.quote&&allMessages.some(source=>source.id===m.quote!.id&&!getActiveMessages([source]).length)?m.text:formatMessageContentForModel(m,r.name,userName);
+  const recentMessages=(kind==='scene'?encounterHistory(r,raw):getActiveMessages(raw)).filter(m=>m.speaker!=='note'&&m.at<=nowTs).slice(-30);
+  const history=recentMessages.map(m=>({id:m.id,role:m.speaker==='me'?'user' as const:'assistant' as const,text:safeContent(m),knownBy:[r.id],at:m.at,scope,active:true,revisionValid:true}));
+  const shownPhoneSources=new Map((kind==='chat'?recentMessages:[]).map(m=>[m.id,m]));
 
   if (kind === 'intermission') {
     const p = r.play!;
@@ -150,7 +158,12 @@ export function buildNativeContext(
   } else {
     const a = routine(r, nowTs);
     const bridgedIds=new Set((kind==='scene'?r.scene?.messages||[]:[]).flatMap(m=>m.sourceMessageId?[m.sourceMessageId]:[]));
-    const candidates=r.events.filter(e=>e.kind!=='drama'&&(e.kind!=='life'||Boolean(e.source&&e.knownBy?.includes(r.id)))&&e.at<=nowTs&&(!e.messageId||validIds.has(e.messageId)&&!bridgedIds.has(e.messageId)));
+    const candidates=r.events.filter(e=>{
+      const message=e.messageId?shownPhoneSources.get(e.messageId):undefined;
+      // Only omit a verbatim record of the same visible source; summaries and facts remain candidates.
+      const duplicate=e.kind==='chat'&&message&&e.detail===message.text&&e.at===message.at&&(!e.speaker||e.speaker===message.speaker)&&(!e.source||e.source==='chat');
+      return !duplicate&&e.kind!=='drama'&&(e.kind!=='life'||Boolean(e.source&&e.knownBy?.includes(r.id)))&&e.at<=nowTs&&(!e.messageId||validIds.has(e.messageId)&&!bridgedIds.has(e.messageId));
+    });
     recalled=retrieve({...r,events:candidates},input,12,nowTs);
     facts = recalled
       .map((e) => `[${dt(e.at)} | ${e.kind} | ${e.id}] ${e.title}: ${e.detail}`)
@@ -171,14 +184,8 @@ export function buildNativeContext(
     base += `\n\n可检索的剧外经历（并非保证完整，剧内虚构剧情不等于现实历史）：\n${facts || '暂无'}`;
   }
 
-  const mode=kind==='scene'?'meeting':kind==='play'?'theatre':kind;
-  const scope=kind==='play'?'play:'+r.play!.id:kind==='intermission'?'intermission:'+r.play!.id:'real:'+r.id;
-  const raw=kind==='chat'?r.chats:kind==='scene'?r.scene?.messages:kind==='play'?r.play?.messages:r.play?.intermissionMessages;
-  const userName=identityName(data,r),safeContent=(m:ChatMessage)=>m.quote&&allMessages.some(source=>source.id===m.quote!.id&&!getActiveMessages([source]).length)?m.text:formatMessageContentForModel(m,r.name,userName);
-  const history=(kind==='scene'?encounterHistory(r,raw):getActiveMessages(raw)).filter(m=>m.speaker!=='note'&&m.at<=nowTs).slice(-30).map(m=>({id:m.id,role:m.speaker==='me'?'user' as const:'assistant' as const,text:safeContent(m),knownBy:[r.id],at:m.at,scope,active:true,revisionValid:true}));
-
   const values={char:kind==='play'?r.play!.char:r.name,user:kind==='play'?r.play!.user:userName,time:hm(nowTs),date:dateStr(nowTs),personality:kind==='play'?r.play!.char:r.traits,description:kind==='play'?r.play!.world:r.profile,
-    native_bubbles:'气泡数量随人物的打字习惯、情境与实际内容决定，不设固定数量。可以只发一条完整消息，也可发送独立的手机消息气泡；仅在确实另发一条时用换行或 ||| 分隔。不要机械拆句，不强制反问、安慰或总结，也不要固定采用「回应—感想—反问」的套路。',
+    native_bubbles:nativeBubbleRule,
     native_life:isFocused?'当前处于「专心聊」状态，双方都在手机前专注交谈，请自然连贯地回应；仍保有自己的性格与主见。':'你仍在照常生活，不必总是立刻有空；但不要声称已执行未发生的行动。',
     native_novel_rule:kind==='play'?'使用中文进行自然的沉浸式叙事。推进场景、表现人物心理与自身动作，不代替用户做出选择。':'你正在和用户面对面相处，采用文字小说式描写场景与自己的言语动作。回复使用自然中文。只写你自己的回应，不替用户行动。',
     native_output_rule:kind==='play'?'这是独立戏剧世界，严格遵守本剧角色人设；不要透露戏外知识。':'这是面对面的文字小说，仅描述自己和环境，不替用户行动。'};
@@ -194,7 +201,8 @@ export function buildNativeContext(
   return context;
 }
 export function compileNativeConversation(data:AppData,r:RoleData,kind:'chat'|'scene'|'play'|'intermission',input:string,options:NativePromptOptions={}):ConversationCompilation {
-  return compileConversationPrompt(nativePreset(kind==='play'||kind==='intermission'?'theatre':'meeting'),options.profile||createFruitState().profiles.meeting,buildNativeContext(data,r,kind,input,options),{purpose:'request'});
+  const profile=options.profile||createFruitState().profiles.meeting;
+  return compileConversationPrompt(nativePreset(kind==='play'||kind==='intermission'?'theatre':'meeting'),kind==='chat'?projectChatVoiceProfile(profile,chatVoiceChoice(r.chatVoice)):profile,buildNativeContext(data,r,kind,input,options),{purpose:'request'});
 }
 export function compileNovelConversation(data:AppData,r:RoleData,kind:'scene'|'play',input:string,options:NativePromptOptions&{preset:FruitPreset}):ConversationCompilation {
   if(isNativePreset(options.preset))return compileNativeConversation(data,r,kind,input,options);

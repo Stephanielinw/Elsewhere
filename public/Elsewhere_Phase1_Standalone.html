@@ -2234,6 +2234,7 @@ html,body,#app{width:100%;height:100%;min-height:100dvh}
 .regex-preview-rules{display:grid;gap:10px;white-space:normal}.regex-preview-rules label{display:flex;align-items:start;gap:10px}.regex-preview-rules small{display:block}
 @media(max-width:600px){.regex-preview-layout{grid-template-columns:minmax(0,1fr)}.novel-author-card{height:400px}}
 .regex-preview-night{background:#22273a;color:#f2f1ff;border-radius:8px;padding:8px}
+.chat-voice-dialog .fruit-dialog-body{padding:20px}.chat-voice-options{border:0;padding:0;margin:20px 0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.chat-voice-options label{display:flex;gap:8px;padding:14px 10px;border:1px solid var(--line);border-radius:16px;background:var(--surface2);cursor:pointer;min-width:0}.chat-voice-options label:has(input:checked){border-color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,var(--surface))}.chat-voice-options input{accent-color:var(--accent);flex:none;font-size:16px}.chat-voice-options small{display:block;color:var(--muted);line-height:1.6;margin-top:5px}.chat-voice-rules details{padding:12px 0;border-top:1px solid var(--line)}.chat-voice-rules summary{cursor:pointer;line-height:1.7;overflow-wrap:anywhere}.chat-voice-rules .fruit-code{max-height:280px;white-space:pre-wrap;overflow-wrap:anywhere}.chat-voice-status[data-state=error]{color:var(--ink);font-weight:650}
 
 </style>
 </head>
@@ -5657,6 +5658,45 @@ ${JSON.stringify(control)}`;
     return parseSceneDecision(JSON.stringify(resolve(event)), observation);
   }
 
+  // src/core/chatVoice.ts
+  var nativeBubbleRule = "\u6C14\u6CE1\u6570\u91CF\u968F\u4EBA\u7269\u7684\u6253\u5B57\u4E60\u60EF\u3001\u60C5\u5883\u4E0E\u5B9E\u9645\u5185\u5BB9\u51B3\u5B9A\uFF0C\u4E0D\u8BBE\u56FA\u5B9A\u6570\u91CF\u3002\u53EF\u4EE5\u53EA\u53D1\u4E00\u6761\u5B8C\u6574\u6D88\u606F\uFF0C\u4E5F\u53EF\u53D1\u9001\u72EC\u7ACB\u7684\u624B\u673A\u6D88\u606F\u6C14\u6CE1\uFF1B\u4EC5\u5728\u786E\u5B9E\u53E6\u53D1\u4E00\u6761\u65F6\u7528\u6362\u884C\u6216 ||| \u5206\u9694\u3002\u4E0D\u8981\u673A\u68B0\u62C6\u53E5\uFF0C\u4E0D\u5F3A\u5236\u53CD\u95EE\u3001\u5B89\u6170\u6216\u603B\u7ED3\uFF0C\u4E5F\u4E0D\u8981\u56FA\u5B9A\u91C7\u7528\u300C\u56DE\u5E94\u2014\u611F\u60F3\u2014\u53CD\u95EE\u300D\u7684\u5957\u8DEF\u3002";
+  var candidateChatVoice = {
+    "native.chat.voice": "\u4F60\u6B63\u5728\u7528\u624B\u673A\u548C\u7528\u6237\u53D1\u6D88\u606F\u3002\u56DE\u590D\u4F7F\u7528\u81EA\u7136\u4E2D\u6587\u3002\u4ECE\u81EA\u5DF1\u7684\u6027\u683C\u3001\u7ECF\u5386\u3001\u5173\u7CFB\u4E0E\u5F53\u524D\u5904\u5883\u51FA\u53D1\uFF0C\u51B3\u5B9A\u4F60\u600E\u4E48\u770B\u3001\u60F3\u8C08\u4EC0\u4E48\uFF0C\u518D\u7528\u5C5E\u4E8E\u81EA\u5DF1\u7684\u8BCD\u6C47\u548C\u4E60\u60EF\u8868\u8FBE\u3002\u4F60\u6709\u81EA\u5DF1\u7684\u610F\u89C1\u3001\u5174\u8DA3\u548C\u5B89\u6392\uFF1B\u53EF\u4EE5\u7B80\u77ED\u5E94\u4E00\u58F0\uFF0C\u4E5F\u53EF\u4EE5\u8BA4\u771F\u5C55\u5F00\uFF0C\u4E0D\u5FC5\u523B\u610F\u5C55\u793A\u6027\u683C\u6807\u7B7E\u3002",
+    "native.chat.bubbles": "\u6309\u4EBA\u7269\u4E60\u60EF\u548C\u5185\u5BB9\u81EA\u7136\u5206\u6761\uFF0C\u6362\u884C\u6216 ||| \u53EF\u5206\u9694\u72EC\u7ACB\u6D88\u606F\uFF0C\u4E0D\u8BBE\u6570\u91CF\u3002\u8BA9\u4EA4\u6D41\u968F\u5F53\u524D\u4E8B\u60C5\u53D1\u5C55\uFF0C\u65E0\u9700\u628A\u6BCF\u6B21\u56DE\u590D\u5199\u6210\u5B8C\u6574\u95EE\u7B54\u3001\u5206\u6790\u6216\u60C5\u7EEA\u670D\u52A1\u6D41\u7A0B\u3002"
+  };
+  var chatVoiceChoice = (value) => value === "B" ? "B" : "A";
+  function projectChatVoiceProfile(profile, choice) {
+    if (choice === "A") return profile;
+    const edits = { ...profile.edits };
+    for (const [id, content] of Object.entries(candidateChatVoice)) if (typeof edits[id]?.content !== "string") edits[id] = { ...edits[id], content };
+    return { ...profile, edits };
+  }
+  function saveChatVoice(role, choice, save) {
+    const previous = role.chatVoice;
+    role.chatVoice = choice;
+    try {
+      if (save()) return true;
+    } catch {
+    }
+    if (previous === void 0) delete role.chatVoice;
+    else role.chatVoice = previous;
+    return false;
+  }
+  function describeChatVoice(profile, role, globalPreset) {
+    const choice = chatVoiceChoice(role.chatVoice), preset = applyFruitProfile(nativePreset("meeting"), projectChatVoiceProfile(profile, choice));
+    const rules = preset.order.flatMap((entry2, index) => {
+      if (!Object.hasOwn(candidateChatVoice, entry2.identifier)) return [];
+      const p = preset.prompts.find((p2) => p2.identifier === entry2.identifier);
+      const edited = typeof profile.edits?.[p.identifier]?.content === "string";
+      return [{ id: p.identifier, name: p.name, source: edited ? "user-edit" : choice === "B" ? "candidate-b" : "builtin-a", enabled: profile.overrides[p.identifier] ?? entry2.enabled, order: index + 1, role: p.role, position: p.position, depth: p.depth, content: p.content.replaceAll("{{native_bubbles}}", nativeBubbleRule) }];
+    });
+    const legacy2 = role.preset || globalPreset;
+    return { choice, rules, legacySource: role.preset ? "role" : globalPreset ? "global" : "none", legacyName: legacy2?.name || "", legacy: (legacy2?.prompts || []).map((p, index) => ({ id: "legacy:" + index, name: p.name || "\u65E7\u6761\u76EE " + (index + 1), enabled: Boolean(p.enabled), order: index + 1, role: p.role === "user" || p.role === "assistant" ? p.role : "system", marker: Boolean(p.marker), position: Number(p.injection_position) === 1 ? 1 : 0, depth: Math.max(0, Number(p.injection_depth) || 0), content: p.content || "" })) };
+  }
+  function chatVoiceSummary(info, skipLegacyOnce = false) {
+    return { choice: info.choice, rules: info.rules.map(({ id, source, enabled, order }) => ({ id, source, enabled, order })), legacySource: skipLegacyOnce ? "none" : info.legacySource, legacyCount: skipLegacyOnce ? 0 : info.legacy.length, legacySkippedOnce: skipLegacyOnce };
+  }
+
   // src/core/prompt.ts
   var dt = (t) => new Date(t).toLocaleString("zh-CN", {
     month: "numeric",
@@ -5729,6 +5769,13 @@ ${JSON.stringify(control)}`;
     let recalled = [];
     const allMessages = [...r.chats, ...r.scene?.messages || [], ...r.play?.messages || [], ...r.play?.intermissionMessages || [], ...(r.meetings || []).flatMap((s) => s.messages), ...r.plays.flatMap((p) => [...p.messages, ...p.intermissionMessages || []])];
     const validIds2 = new Set(getActiveMessages(allMessages).map((m) => m.id));
+    const mode = kind === "scene" ? "meeting" : kind === "play" ? "theatre" : kind;
+    const scope = kind === "play" ? "play:" + r.play.id : kind === "intermission" ? "intermission:" + r.play.id : "real:" + r.id;
+    const raw = kind === "chat" ? r.chats : kind === "scene" ? r.scene?.messages : kind === "play" ? r.play?.messages : r.play?.intermissionMessages;
+    const userName = identityName(data, r), safeContent = (m) => m.quote && allMessages.some((source) => source.id === m.quote.id && !getActiveMessages([source]).length) ? m.text : formatMessageContentForModel(m, r.name, userName);
+    const recentMessages = (kind === "scene" ? encounterHistory(r, raw) : getActiveMessages(raw)).filter((m) => m.speaker !== "note" && m.at <= nowTs).slice(-30);
+    const history = recentMessages.map((m) => ({ id: m.id, role: m.speaker === "me" ? "user" : "assistant", text: safeContent(m), knownBy: [r.id], at: m.at, scope, active: true, revisionValid: true }));
+    const shownPhoneSources = new Map((kind === "chat" ? recentMessages : []).map((m) => [m.id, m]));
     if (kind === "intermission") {
       const p = r.play;
       const activePlayMsgs = getActiveMessages(p.messages);
@@ -5739,7 +5786,11 @@ ${JSON.stringify(control)}`;
     } else {
       const a = routine(r, nowTs);
       const bridgedIds = new Set((kind === "scene" ? r.scene?.messages || [] : []).flatMap((m) => m.sourceMessageId ? [m.sourceMessageId] : []));
-      const candidates = r.events.filter((e) => e.kind !== "drama" && (e.kind !== "life" || Boolean(e.source && e.knownBy?.includes(r.id))) && e.at <= nowTs && (!e.messageId || validIds2.has(e.messageId) && !bridgedIds.has(e.messageId)));
+      const candidates = r.events.filter((e) => {
+        const message = e.messageId ? shownPhoneSources.get(e.messageId) : void 0;
+        const duplicate = e.kind === "chat" && message && e.detail === message.text && e.at === message.at && (!e.speaker || e.speaker === message.speaker) && (!e.source || e.source === "chat");
+        return !duplicate && e.kind !== "drama" && (e.kind !== "life" || Boolean(e.source && e.knownBy?.includes(r.id))) && e.at <= nowTs && (!e.messageId || validIds2.has(e.messageId) && !bridgedIds.has(e.messageId));
+      });
       recalled = retrieve({ ...r, events: candidates }, input, 12, nowTs);
       facts = recalled.map((e) => `[${dt(e.at)} | ${e.kind} | ${e.id}] ${e.title}: ${e.detail}`).join("\n");
       const sharedDiaries = getSharedUserDiariesForRole(r).filter((d) => d.at <= nowTs).slice(-5).map((d) => `[${dt(d.at)} \u7528\u6237\u4E3B\u52A8\u5206\u4EAB\u7ED9\u4F60\u7684\u65E5\u8BB0] ${d.text}`).join("\n");
@@ -5762,11 +5813,6 @@ ${sharedDiaries}`;
 \u53EF\u68C0\u7D22\u7684\u5267\u5916\u7ECF\u5386\uFF08\u5E76\u975E\u4FDD\u8BC1\u5B8C\u6574\uFF0C\u5267\u5185\u865A\u6784\u5267\u60C5\u4E0D\u7B49\u4E8E\u73B0\u5B9E\u5386\u53F2\uFF09\uFF1A
 ${facts || "\u6682\u65E0"}`;
     }
-    const mode = kind === "scene" ? "meeting" : kind === "play" ? "theatre" : kind;
-    const scope = kind === "play" ? "play:" + r.play.id : kind === "intermission" ? "intermission:" + r.play.id : "real:" + r.id;
-    const raw = kind === "chat" ? r.chats : kind === "scene" ? r.scene?.messages : kind === "play" ? r.play?.messages : r.play?.intermissionMessages;
-    const userName = identityName(data, r), safeContent = (m) => m.quote && allMessages.some((source) => source.id === m.quote.id && !getActiveMessages([source]).length) ? m.text : formatMessageContentForModel(m, r.name, userName);
-    const history = (kind === "scene" ? encounterHistory(r, raw) : getActiveMessages(raw)).filter((m) => m.speaker !== "note" && m.at <= nowTs).slice(-30).map((m) => ({ id: m.id, role: m.speaker === "me" ? "user" : "assistant", text: safeContent(m), knownBy: [r.id], at: m.at, scope, active: true, revisionValid: true }));
     const values = {
       char: kind === "play" ? r.play.char : r.name,
       user: kind === "play" ? r.play.user : userName,
@@ -5774,7 +5820,7 @@ ${facts || "\u6682\u65E0"}`;
       date: dateStr(nowTs),
       personality: kind === "play" ? r.play.char : r.traits,
       description: kind === "play" ? r.play.world : r.profile,
-      native_bubbles: "\u6C14\u6CE1\u6570\u91CF\u968F\u4EBA\u7269\u7684\u6253\u5B57\u4E60\u60EF\u3001\u60C5\u5883\u4E0E\u5B9E\u9645\u5185\u5BB9\u51B3\u5B9A\uFF0C\u4E0D\u8BBE\u56FA\u5B9A\u6570\u91CF\u3002\u53EF\u4EE5\u53EA\u53D1\u4E00\u6761\u5B8C\u6574\u6D88\u606F\uFF0C\u4E5F\u53EF\u53D1\u9001\u72EC\u7ACB\u7684\u624B\u673A\u6D88\u606F\u6C14\u6CE1\uFF1B\u4EC5\u5728\u786E\u5B9E\u53E6\u53D1\u4E00\u6761\u65F6\u7528\u6362\u884C\u6216 ||| \u5206\u9694\u3002\u4E0D\u8981\u673A\u68B0\u62C6\u53E5\uFF0C\u4E0D\u5F3A\u5236\u53CD\u95EE\u3001\u5B89\u6170\u6216\u603B\u7ED3\uFF0C\u4E5F\u4E0D\u8981\u56FA\u5B9A\u91C7\u7528\u300C\u56DE\u5E94\u2014\u611F\u60F3\u2014\u53CD\u95EE\u300D\u7684\u5957\u8DEF\u3002",
+      native_bubbles: nativeBubbleRule,
       native_life: isFocused ? "\u5F53\u524D\u5904\u4E8E\u300C\u4E13\u5FC3\u804A\u300D\u72B6\u6001\uFF0C\u53CC\u65B9\u90FD\u5728\u624B\u673A\u524D\u4E13\u6CE8\u4EA4\u8C08\uFF0C\u8BF7\u81EA\u7136\u8FDE\u8D2F\u5730\u56DE\u5E94\uFF1B\u4ECD\u4FDD\u6709\u81EA\u5DF1\u7684\u6027\u683C\u4E0E\u4E3B\u89C1\u3002" : "\u4F60\u4ECD\u5728\u7167\u5E38\u751F\u6D3B\uFF0C\u4E0D\u5FC5\u603B\u662F\u7ACB\u523B\u6709\u7A7A\uFF1B\u4F46\u4E0D\u8981\u58F0\u79F0\u5DF2\u6267\u884C\u672A\u53D1\u751F\u7684\u884C\u52A8\u3002",
       native_novel_rule: kind === "play" ? "\u4F7F\u7528\u4E2D\u6587\u8FDB\u884C\u81EA\u7136\u7684\u6C89\u6D78\u5F0F\u53D9\u4E8B\u3002\u63A8\u8FDB\u573A\u666F\u3001\u8868\u73B0\u4EBA\u7269\u5FC3\u7406\u4E0E\u81EA\u8EAB\u52A8\u4F5C\uFF0C\u4E0D\u4EE3\u66FF\u7528\u6237\u505A\u51FA\u9009\u62E9\u3002" : "\u4F60\u6B63\u5728\u548C\u7528\u6237\u9762\u5BF9\u9762\u76F8\u5904\uFF0C\u91C7\u7528\u6587\u5B57\u5C0F\u8BF4\u5F0F\u63CF\u5199\u573A\u666F\u4E0E\u81EA\u5DF1\u7684\u8A00\u8BED\u52A8\u4F5C\u3002\u56DE\u590D\u4F7F\u7528\u81EA\u7136\u4E2D\u6587\u3002\u53EA\u5199\u4F60\u81EA\u5DF1\u7684\u56DE\u5E94\uFF0C\u4E0D\u66FF\u7528\u6237\u884C\u52A8\u3002",
       native_output_rule: kind === "play" ? "\u8FD9\u662F\u72EC\u7ACB\u620F\u5267\u4E16\u754C\uFF0C\u4E25\u683C\u9075\u5B88\u672C\u5267\u89D2\u8272\u4EBA\u8BBE\uFF1B\u4E0D\u8981\u900F\u9732\u620F\u5916\u77E5\u8BC6\u3002" : "\u8FD9\u662F\u9762\u5BF9\u9762\u7684\u6587\u5B57\u5C0F\u8BF4\uFF0C\u4EC5\u63CF\u8FF0\u81EA\u5DF1\u548C\u73AF\u5883\uFF0C\u4E0D\u66FF\u7528\u6237\u884C\u52A8\u3002"
@@ -5792,7 +5838,8 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
     return context;
   }
   function compileNativeConversation(data, r, kind, input, options = {}) {
-    return compileConversationPrompt(nativePreset(kind === "play" || kind === "intermission" ? "theatre" : "meeting"), options.profile || createFruitState().profiles.meeting, buildNativeContext(data, r, kind, input, options), { purpose: "request" });
+    const profile = options.profile || createFruitState().profiles.meeting;
+    return compileConversationPrompt(nativePreset(kind === "play" || kind === "intermission" ? "theatre" : "meeting"), kind === "chat" ? projectChatVoiceProfile(profile, chatVoiceChoice(r.chatVoice)) : profile, buildNativeContext(data, r, kind, input, options), { purpose: "request" });
   }
   function compileNovelConversation(data, r, kind, input, options) {
     if (isNativePreset(options.preset)) return compileNativeConversation(data, r, kind, input, options);
@@ -6580,6 +6627,78 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
       const timestamp = confirmed ? Math.max(...messages.map((m) => m.at), ...events.map((e) => e.at), ...diary ? [diary.sharedAt?.[role.id] ?? diary.at] : []) : item.timestamp;
       return { ...item, confirmed, sourceMessageCount: messages.length, sourceEventCount: events.length, timestamp, title, summary: description, where: item.category === "scene" ? facts.sceneBlocks.find((b) => b.messages.some((m) => messages.some((source) => source.id === m.id)))?.where : void 0, innerThought: item.innerThought ? { ...item.innerThought, surfaceState: description } : void 0 };
     }));
+  }
+
+  // src/chatVoiceView.ts
+  var sourceLabel = { "builtin-a": "A \xB7 \u539F\u751F\u9ED8\u8BA4", "candidate-b": "B \xB7 \u5019\u9009\u9ED8\u8BA4", "user-edit": "\u539F\u751F\u9884\u8BBE\u4E2D\u5DF2\u4FDD\u5B58\u7684\u6B63\u6587\u8986\u76D6\uFF08\u5171\u4EAB\uFF0C\u4F18\u5148\u4FDD\u7559\uFF09" };
+  function createChatVoiceDialog(hooks) {
+    let current;
+    function open2() {
+      current?.close();
+      const selected = hooks.role();
+      if (!selected) return;
+      const role = selected;
+      const dialog = document.createElement("dialog");
+      current = dialog;
+      dialog.className = "fruit-dialog chat-voice-dialog";
+      dialog.setAttribute("aria-label", "\u804A\u5929\u8868\u8FBE\u4E0E\u6709\u6548\u914D\u7F6E");
+      dialog.innerHTML = `<div class="fruit-dialog-top"><b>\u804A\u5929\u8868\u8FBE</b><button type="button" class="fruit-close" data-voice-close aria-label="\u5173\u95ED\u804A\u5929\u8868\u8FBE">${uiIcon("close")}</button></div><div class="fruit-dialog-body"><h2>${escHtml(role.name)}</h2><p class="sub">\u9009\u62E9\u540E\u4FDD\u5B58\uFF0C\u4EC5\u7528\u4E8E\u8FD9\u4E2A\u89D2\u8272\u7684\u540E\u7EED\u624B\u673A\u751F\u6210\u3002\u6B63\u5728\u751F\u6210\u7684\u56DE\u590D\u6CBF\u7528\u53D1\u51FA\u65F6\u7684\u914D\u7F6E\u3002</p><fieldset class="chat-voice-options" aria-label="\u624B\u673A\u804A\u5929\u8868\u8FBE\u65B9\u6848"><legend class="sr-only">\u8868\u8FBE\u65B9\u6848</legend><label><input type="radio" name="chat-voice" value="A"><span><b>A \xB7 \u5F53\u524D\u89C4\u5219</b><small>\u9ED8\u8BA4\u4FDD\u7559\u73B0\u6709\u8868\u8FBE</small></span></label><label><input type="radio" name="chat-voice" value="B"><span><b>B \xB7 \u89D2\u8272\u9A71\u52A8</b><small>\u5019\u9009\u65B9\u6848\uFF0C\u5C1A\u65E0\u771F\u5B9E\u8D28\u91CF\u7ED3\u8BBA</small></span></label></fieldset><p class="chat-voice-status" role="status" data-voice-status>\u8BFB\u53D6\u5DF2\u4FDD\u5B58\u914D\u7F6E\u2026</p><div data-voice-config></div><button type="button" class="btn secondary" data-voice-refresh>\u91CD\u65B0\u8BFB\u53D6\u914D\u7F6E</button></div>`;
+      const status = dialog.querySelector("[data-voice-status]"), host = dialog.querySelector("[data-voice-config]");
+      let generation = 0;
+      const active = () => current === dialog && dialog.isConnected && hooks.role() === role;
+      function radios() {
+        dialog.querySelectorAll("input[name=chat-voice]").forEach((input) => input.checked = input.value === chatVoiceChoice(role.chatVoice));
+      }
+      async function refresh() {
+        const ticket = ++generation;
+        try {
+          const snapshot2 = await hooks.load(role.id);
+          if (!active() || ticket !== generation) return;
+          const info = describeChatVoice(snapshot2.profile, role, hooks.globalPreset()), trace = hooks.trace(role.id), used = info.rules.filter((r) => r.enabled && r.source === "candidate-b").length;
+          host.innerHTML = `<section class="chat-voice-rules" aria-label="\u6709\u6548\u8868\u8FBE\u914D\u7F6E"><h3>\u5F53\u524D\u6709\u6548\u914D\u7F6E \xB7 \u53EA\u8BFB</h3><p class="sub">\u539F\u751F Profile \u6CBF\u7528\u5DF2\u6709\u5171\u4EAB\u8BBE\u7F6E\uFF1BA/B \u9009\u62E9\u6309\u89D2\u8272\u4FDD\u5B58\u3002\u914D\u7F6E\u4FEE\u8BA2 ${snapshot2.revision}\u3002${info.choice === "B" ? `B \u4F5C\u7528\u4E8E ${used} \u4E2A\u5DF2\u542F\u7528\u7684\u9ED8\u8BA4\u8868\u8FBE\u6761\u76EE\uFF1B\u5DF2\u4FDD\u5B58\u6B63\u6587\u548C\u505C\u7528\u72B6\u6001\u4E0D\u88AB\u66FF\u6362\u3002` : "A \u6CBF\u7528\u5F53\u524D\u539F\u751F\u89C4\u5219\u53CA\u5DF2\u4FDD\u5B58\u7684\u4E2A\u6027\u5316\u8986\u76D6\u3002"}</p>${info.rules.map((r) => `<details data-voice-rule="${escHtml(r.id)}"><summary>${escHtml(r.name)} \xB7 ${r.enabled ? "\u5DF2\u542F\u7528" : "\u5DF2\u505C\u7528"}</summary><p>${escHtml(sourceLabel[r.source])} \xB7 \u9884\u8BBE\u987A\u5E8F ${r.order} \xB7 ${escHtml(r.role)}</p><pre class="fruit-code">${escHtml(r.content)}</pre><small>\u4F4D\u7F6E ${r.position === 1 ? "In-Chat" : "\u76F8\u5BF9"}${r.position === 1 ? " \xB7 \u6DF1\u5EA6 " + r.depth : ""}\u3002\u5185\u7F6E\u5206\u6761\u5B8F\u5DF2\u5C55\u5F00\uFF0C\u5176\u4ED6\u81EA\u5B9A\u4E49\u5B8F\u6309\u53D1\u9001\u65F6\u4E0A\u4E0B\u6587\u89E3\u6790\uFF1B\u8BFB\u53D6\u914D\u7F6E\u4E0D\u4EE3\u8868\u5DF2\u901A\u8FC7\u7F16\u8BD1\u3002</small></details>`).join("")}<details data-voice-legacy><summary>\u65E7\u9644\u52A0\u9884\u8BBE \xB7 ${info.legacySource === "role" ? "\u89D2\u8272\u914D\u7F6E" : info.legacySource === "global" ? "\u5168\u5C40\u914D\u7F6E" : "\u65E0"} \xB7 ${info.legacy.length} \u9879</summary><p class="sub">${escHtml(info.legacyName)}${info.legacy.length ? "\u3002\u8FD9\u4E9B\u6761\u76EE\u4ECD\u6309\u539F\u89C4\u5219\u751F\u6548\uFF0C\u53EF\u80FD\u4E0E\u8868\u8FBE\u65B9\u6848\u91CD\u590D\u6216\u51B2\u7A81\uFF1B\u4E0D\u4F1A\u81EA\u52A8\u7981\u7528\u3002" : "\u3002\u89D2\u8272\u7A7A\u914D\u7F6E\u4ECD\u53EF\u8986\u76D6\u5168\u5C40\u914D\u7F6E\u3002"}\u4EE5\u4E0B\u987A\u5E8F\u662F\u65E7\u9884\u8BBE\u5185\u90E8\u987A\u5E8F\uFF1B\u6DF1\u5EA6\u6CE8\u5165\u7684\u6700\u7EC8\u4F4D\u7F6E\u4EE5\u8BF7\u6C42\u7ED3\u6784\u4E3A\u51C6\u3002</p>${info.legacy.map((r) => `<details><summary>${r.order}. ${escHtml(r.name)} \xB7 ${r.enabled ? "\u5DF2\u542F\u7528" : "\u5DF2\u505C\u7528"}${r.marker ? " \xB7 Marker" : ""}</summary><p>${escHtml(r.role)} \xB7 ${r.position === 1 ? "\u6DF1\u5EA6 " + r.depth : "\u76F8\u5BF9\u4F4D\u7F6E"}</p><pre class="fruit-code">${escHtml(r.content || "\uFF08\u65E0\u6B63\u6587\uFF09")}</pre></details>`).join("")}</details><details data-voice-trace><summary>\u672C\u4F1A\u8BDD\u5B9E\u9645\u53D1\u9001\u7684\u624B\u673A\u8BF7\u6C42\u7ED3\u6784</summary><p class="sub">\u4EC5\u89D2\u8272\u3001\u987A\u5E8F\u548C\u6765\u6E90\uFF0C\u4E0D\u542B\u804A\u5929\u3001\u4EBA\u7269\u8D44\u6599\u3001\u89C4\u5219\u6B63\u6587\u6216 Key\u3002\u6253\u5F00\u9762\u677F\u4E0D\u4F1A\u751F\u6210\u8BF7\u6C42\u3002</p><pre class="fruit-code">${escHtml(trace ? JSON.stringify(trace, null, 2) : "\u6B64\u4F1A\u8BDD\u6682\u65E0\u53EF\u7528\u7684\u5DF2\u53D1\u9001\u624B\u673A\u8BF7\u6C42\u3002")}</pre></details></section>`;
+          if (!status.dataset.state) status.textContent = "\u914D\u7F6E\u5DF2\u8BFB\u53D6\uFF1B\u67E5\u770B\u4E0D\u8C03\u7528\u6A21\u578B\uFF0C\u4E5F\u4E0D\u4FDD\u5B58\u9884\u8BBE\u3002";
+        } catch (error) {
+          if (active() && ticket === generation) {
+            status.textContent = "\u8BFB\u53D6\u5931\u8D25\uFF1A" + (error instanceof Error ? error.message : "\u8BF7\u91CD\u8BD5") + "\u3002\u539F\u914D\u7F6E\u4FDD\u7559\u3002";
+            status.dataset.state = "error";
+          }
+        }
+      }
+      dialog.addEventListener("change", (event) => {
+        const input = event.target;
+        if (!(input instanceof HTMLInputElement) || input.name !== "chat-voice") return;
+        if (!active()) {
+          dialog.close();
+          return;
+        }
+        status.textContent = "\u4FDD\u5B58\u4E2D\u2026";
+        status.dataset.state = "saving";
+        const saved = saveChatVoice(role, input.value === "B" ? "B" : "A", hooks.save);
+        radios();
+        status.dataset.state = saved ? "saved" : "error";
+        status.textContent = saved ? "\u5DF2\u4FDD\u5B58 \xB7 \u4ECE\u4E0B\u6B21\u624B\u673A\u751F\u6210\u751F\u6548\u3002" : "\u4FDD\u5B58\u5931\u8D25\uFF0C\u539F\u9009\u62E9\u5DF2\u6062\u590D\uFF1B\u53EF\u91CD\u65B0\u9009\u62E9\u540E\u91CD\u8BD5\u3002";
+        void refresh();
+      });
+      dialog.addEventListener("click", (event) => {
+        const target = event.target instanceof Element ? event.target.closest("button") : null;
+        if (target?.hasAttribute("data-voice-close")) dialog.close();
+        if (target?.hasAttribute("data-voice-refresh")) {
+          delete status.dataset.state;
+          status.textContent = "\u8BFB\u53D6\u914D\u7F6E\u2026";
+          void refresh();
+        }
+      });
+      dialog.addEventListener("close", () => {
+        generation++;
+        dialog.remove();
+        if (current === dialog) current = void 0;
+      });
+      document.body.append(dialog);
+      radios();
+      dialog.showModal();
+      void refresh();
+    }
+    return { open: open2 };
   }
 
   // src/core/homeTasks.ts
@@ -14818,6 +14937,10 @@ ${prevLogs}` : "",
       for (const item of [...r.chats, ...r.scene?.messages || []]) if (item.sceneReply) void applySavedSceneReply(r, item);
     }
     const promptTraces = /* @__PURE__ */ new Map();
+    const chatVoiceDialog = createChatVoiceDialog({ role, globalPreset: () => data.preset, load: (id) => loadRequestPreset("chat", id), save, trace: (id) => {
+      const t = promptTraces.get(id);
+      return t?.mode === "chat" && t.sentAt ? t : void 0;
+    } });
     function includeScenePromptTrace(r) {
       const trace = promptTraces.get(r.id);
       if (trace) trace.messages = [{ order: 1, role: "system", source: "\u540C\u6B21\u573A\u666F\u4E8B\u4EF6\u63A7\u5236" }, ...trace.messages.map((m) => ({ ...m, order: m.order + 1 }))];
@@ -14865,7 +14988,7 @@ ${prevLogs}` : "",
         if (!valid()) throw new Error("\u8BF7\u6C42\u6765\u6E90\u5DF2\u53D8\u5316\uFF0C\u672A\u53D1\u9001");
         try {
           const compilation = build({ profile: snapshot2.profile, skipLegacyOnce, preset: snapshot2.preset, presetId: snapshot2.actualPresetId });
-          promptTraces.set(r.id, { ...promptStructure(compilation), profileRevision: snapshot2.revision, requestedPresetId: snapshot2.requestedPresetId, actualPresetId: snapshot2.actualPresetId, profileOwnerRoleId: snapshot2.roleId, profileSource: snapshot2.configSource, actualPresetHash: snapshot2.presetHash, profileBaseHash: snapshot2.profileBaseHash });
+          promptTraces.set(r.id, { ...promptStructure(compilation), profileRevision: snapshot2.revision, requestedPresetId: snapshot2.requestedPresetId, actualPresetId: snapshot2.actualPresetId, profileOwnerRoleId: snapshot2.roleId, profileSource: snapshot2.configSource, actualPresetHash: snapshot2.presetHash, profileBaseHash: snapshot2.profileBaseHash, ...kind === "chat" ? { voice: chatVoiceSummary(describeChatVoice(snapshot2.profile, r, data.preset), skipLegacyOnce) } : {} });
           const messages = requestMessages(compilation);
           if (!valid()) throw new Error("\u8BF7\u6C42\u6765\u6E90\u5DF2\u53D8\u5316\uFF0C\u672A\u53D1\u9001");
           return messages;
@@ -14885,6 +15008,8 @@ ${prevLogs}` : "",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
         body: JSON.stringify({ model: settings.model, messages, stream: false, temperature: +settings.temperature, ...completionLimit(settings, task) })
       });
+      const trace = promptTraces.get(r.id);
+      if (trace?.mode === "chat") trace.sentAt = now();
       chatTyping.add(r.id);
       if (view === "chat" && role()?.id === r.id) patchDynamicRegionsOnTick();
       return readChatResponse(await pendingResponse);
@@ -15793,7 +15918,7 @@ ${prevLogs}` : "",
           ([id, label2]) => `<button data-action="chatpanel" data-panel="${id}">${attachmentIcon(
             id
           )}<span>${label2}</span></button>`
-        ).join("")}<button data-action="meet">${glyph("profile")}<span>\u89C1\u9762</span></button><button data-action="view" data-view="focus">${glyph("focus")}<span>\u4E00\u8D77\u4E13\u6CE8</span></button><button data-action="view" data-view="drama">${glyph("drama")}<span>\u620F\u5267</span></button></div></section>`;
+        ).join("")}<button data-action="meet">${glyph("profile")}<span>\u89C1\u9762</span></button><button data-action="view" data-view="focus">${glyph("focus")}<span>\u4E00\u8D77\u4E13\u6CE8</span></button><button data-action="view" data-view="drama">${glyph("drama")}<span>\u620F\u5267</span></button><button data-action="chatvoice">${glyph("chat")}<span>\u804A\u5929\u8868\u8FBE</span></button></div></section>`;
       }
       if (chatPanel === "sticker") {
         const gallery = uploadedStickers(role()?.chats || []);
@@ -18260,6 +18385,10 @@ ${prevLogs}` : "",
         resetRoleAvatarDraft();
         draftRoleFrame = buildStagedFrameFromOwner(r);
         go("roleform");
+        return;
+      }
+      if (act === "chatvoice") {
+        chatVoiceDialog.open();
         return;
       }
       if (act === "cancelroleform") {

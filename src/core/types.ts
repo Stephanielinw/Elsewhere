@@ -381,6 +381,7 @@ export interface RoleData {
   lastInvitation: number;
   pendingReplies?: PendingReplyJob[];
   chatTiming?: ChatTimingState;
+  chatVoice?: 'A' | 'B';
   chatInvite?: ChatInviteState | null;
   meetingPlan?: MeetingPlan | null;
   messageRevisions?: MessageRevisionRecord[];

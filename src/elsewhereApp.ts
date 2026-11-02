@@ -1684,7 +1684,13 @@ export function initElsewhereApp(): void {
     const chatsBefore=r.chats.length,eventsBefore=r.events.length,planBefore=r.meetingPlan;
     r.chats.push(item);eMemory(r,item.text,'me','chat',item.at,item.id);enqueueChat(r,item.id,item.at);r.meetingPlan=meetingPlan(r,item.at);
     if(!save()){r.chats.length=chatsBefore;r.events.length=eventsBefore;r.chatTiming=timingBefore;r.meetingPlan=planBefore;return false;}
-    if(role()?.id===r.id)quotingMessage=null;return true;
+    if(role()?.id===r.id)quotingMessage=null;
+    // Accepted sends reveal the new bubble after the caller restores its draft/focus.
+    queueMicrotask(()=>{
+      const pane=$<HTMLElement>('#scroll-area');
+      if(view==='chat'&&role()?.id===r.id&&pane?.dataset.roleId===r.id)pane.scrollTop=pane.scrollHeight;
+    });
+    return true;
   }
 
   function revisePhoneSchedule(r:RoleData):void {
@@ -4312,30 +4318,19 @@ export function initElsewhereApp(): void {
 
   function applyTheme(): void {
     const root = document.documentElement;
-    const palettes: Record<ThemeName, [string, string, string, string, string, string]> = {
-      blue: ['#edf6ff', '#ffffff', '#deecfb', '#568bbd', '#254767', '#6885a3'],
-      green: ['#ecf8ee', '#ffffff', '#dbf0e1', '#659d78', '#2f5946', '#678b77'],
-      pink: ['#fff0f6', '#ffffff', '#fbe1ed', '#d27fa6', '#6e3d59', '#a1788f'],
-      coffee: ['#f8f1e8', '#ffffff', '#efe2d4', '#a88161', '#654b3b', '#9a8372'],
-      night: ['#22273a', '#30364c', '#3b435d', '#b2b6ee', '#f2f1ff', '#afb4cc'],
-    };
     const legacyMap: Record<string, ThemeName> = {
       violet: 'pink',
       sand: 'coffee',
     };
     const rawTheme =
       role()?.theme || legacyMap[data.theme] || data.theme || 'blue';
-    const key: ThemeName = palettes[rawTheme as ThemeName]
+    const key: ThemeName = ['blue','green','pink','coffee','night'].includes(rawTheme)
       ? (rawTheme as ThemeName)
       : 'blue';
-    const a = palettes[key];
-    (['--bg', '--surface', '--surface2', '--accent', '--ink', '--muted'] as const).forEach(
-      (n, i) => root.style.setProperty(n, a[i])
-    );
     if (root.dataset) root.dataset.theme = key;
     let themeColor=document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
     if(!themeColor){themeColor=document.createElement('meta');themeColor.name='theme-color';document.head.append(themeColor);}
-    themeColor.content=a[0];
+    themeColor.content=getComputedStyle(root).getPropertyValue('--bg').trim();
     root.style.fontFamily=appearanceFontFamily(data,role());
     void hydrateAppearanceFont(data,role()).catch(()=>{});
   }
@@ -4371,6 +4366,7 @@ export function initElsewhereApp(): void {
   }
 
   async function hydrateMedia(rootEl: ParentNode = document): Promise<void> {
+    const pinnedPanes=new Map<HTMLElement,number>();
     // Attach graceful fallback handlers for remote preset avatar frames & thumbnails
     rootEl
       .querySelectorAll<HTMLImageElement>('.avatar-frame[src], .frame-thumb-img[src]')
@@ -4420,6 +4416,17 @@ export function initElsewhereApp(): void {
           wallpaperURL = url;
         } else mediaURLs.push(url);
         item.dataset.hydratedKey = key;
+        const pane=item.closest<HTMLElement>('#scroll-area');
+        if(item instanceof HTMLImageElement&&pane){
+          if(pane.scrollHeight-pane.clientHeight-pane.scrollTop<60)pinnedPanes.set(pane,pane.scrollTop);
+          item.addEventListener('load',()=>{
+            const top=pinnedPanes.get(pane);
+            // Follow image growth only while the reader has stayed pinned in this chat.
+            if(top!==undefined&&Math.abs(pane.scrollTop-top)<1&&pane.isConnected&&view==='chat'&&pane.dataset.roleId===role()?.id){
+              pane.scrollTop=pane.scrollHeight;pinnedPanes.set(pane,pane.scrollTop);
+            }else pinnedPanes.delete(pane);
+          },{once:true});
+        }
         item.src = url;
         if (isAvatarImg) {
           item.closest('.has-avatar-img')?.classList.add('avatar-loaded');
@@ -4460,10 +4467,11 @@ export function initElsewhereApp(): void {
         if (sc && sc.dataset.roleId===r.id) {
           const wasAtBottom =
             sc.scrollHeight - sc.scrollTop - sc.clientHeight < 60;
+          const readingTop=sc.scrollTop;
           clearMediaURLs();
           sc.innerHTML = renderChatMessagesHtml(r);
           hydrateMedia();
-          if (wasAtBottom) sc.scrollTop = sc.scrollHeight;
+          sc.scrollTop = wasAtBottom ? sc.scrollHeight : readingTop;
         }
       }
     } else if (view === 'focus') {
@@ -7010,7 +7018,7 @@ export function initElsewhereApp(): void {
           editingMessageId,
           intermissionToolsOpen: Boolean(intermissionTools?.open),
         });
-        if (deferFullRender) {
+        if (deferFullRender || view==='chat') {
           patchDynamicRegionsOnTick();
         } else {
           render();

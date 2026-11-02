@@ -4,6 +4,8 @@ import path from 'node:path';
 
 const root = process.cwd();
 const css = fs.readFileSync(path.join(root, 'src/styles.css'), 'utf8');
+const themeBoot = fs.readFileSync(path.join(root, 'index.html'), 'utf8').match(/<script id="theme-boot">[\s\S]*?<\/script>/)?.[0];
+if (!themeBoot) throw new Error('Missing first-paint theme bootstrap');
 
 const result = await esbuild.build({
   entryPoints: [path.join(root, 'src/main.tsx')],
@@ -25,7 +27,7 @@ const result = await esbuild.build({
   }],
 });
 
-const jsCode = result.outputFiles[0].text;
+const jsCode = result.outputFiles[0].text.replaceAll('// raw-source:' + root + path.sep, '// raw-source:');
 
 const html = `<!doctype html>
 <html lang="zh-CN">
@@ -39,6 +41,7 @@ const html = `<!doctype html>
 <style>
 ${css}
 </style>
+${themeBoot}
 </head>
 <body>
 <div id="app"></div>

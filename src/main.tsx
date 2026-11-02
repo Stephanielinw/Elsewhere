@@ -1,4 +1,3 @@
-import './styles.css';
 import { initElsewhereApp } from './elsewhereApp';
 import {installMobileViewport} from './mobileViewport';
 

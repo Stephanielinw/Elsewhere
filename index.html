@@ -6,6 +6,28 @@
     <meta name="theme-color" content="#edf6ff" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <script id="theme-boot">
+      // Restore only the theme before first paint; application data stays untouched.
+      try {
+        let saved;
+        try { saved = JSON.parse(localStorage.getItem('elsewhere-v01') || 'null'); } catch {}
+        const role = saved?.roles?.find(r => r.id === saved.selected);
+        const legacy = {violet: 'pink', sand: 'coffee'};
+        const requested = role?.theme || legacy[saved?.theme] || saved?.theme;
+        document.documentElement.dataset.theme = ['blue', 'green', 'pink', 'coffee', 'night'].includes(requested) ? requested : 'blue';
+        const updateColor = () => {
+          const color = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+          if (color) {
+            document.querySelector('meta[name="theme-color"]').content = color;
+            document.removeEventListener('load', updateColor, true);
+          }
+        };
+        // Vite can move the stylesheet below this script in production.
+        document.addEventListener('load', updateColor, true);
+        updateColor();
+      } catch {}
+    </script>
     <title>Elsewhere · 一角色一手机</title>
     <meta name="description" content="以角色为中心、具有真实手机操作体验的 AI 角色扮演与生活模拟应用。" />
     <meta property="og:title" content="Elsewhere · 一角色一手机" />

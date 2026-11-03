@@ -88,7 +88,7 @@ html,body{overflow:hidden;background:var(--bg)}
 @media(max-height:740px){.shared-widgets .mini-list{height:68px}.homescreen-time{font-size:54px}.home-apps{margin:13px 0 8px;gap:13px 4px}}
 .bubble-editor{min-height:135px;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;tab-size:2}
 .avatar,.widget-avatar,.chat-contact-avatar,.focus-companion-avatar{position:relative;overflow:visible;isolation:isolate}
-.avatar-frame{position:absolute;top:50%;left:50%;height:100%;width:100%;object-fit:contain;transform:translate(calc(-50% + var(--frame-x,0px)),calc(-50% + var(--frame-y,0px))) scale(var(--frame-size,1.25));pointer-events:none;z-index:2}
+.avatar-frame{position:absolute;top:50%;left:50%;height:100%;width:100%;object-fit:contain;transform:translate(calc(-50% + var(--frame-x,0%)),calc(-50% + var(--frame-y,0%))) scale(var(--frame-size,1.21));pointer-events:none;z-index:2}
 .frame-preview{display:flex;align-items:center;gap:14px;background:var(--surface2);padding:18px;border-radius:15px;margin:10px 0}.frame-preview .avatar{flex-shrink:0}.frame-controls{flex-wrap:wrap;gap:8px}.frame-controls label{font-size:11px;color:var(--muted)}.frame-controls input{width:72px;display:block;padding:7px;margin-top:4px}
 
 /* Alpha 2: identity and character management */
@@ -457,7 +457,7 @@ html,body{overflow:hidden;background:var(--bg)}
   inset:0;
   width:100%;
   height:100%;
-  border-radius:inherit;
+  border-radius:50%;
   object-fit:cover;
   object-position:center;
   display:block;
@@ -495,7 +495,7 @@ html,body{overflow:hidden;background:var(--bg)}
 .avatar-preview-box{
   width:64px;
   height:64px;
-  border-radius:20px;
+  border-radius:50%;
   font-size:24px;
   box-shadow:0 8px 20px rgba(45, 36, 56, .12);
 }

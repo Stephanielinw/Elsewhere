@@ -3,6 +3,40 @@ import type { AppData } from './types';
 const MEDIA_DB = 'elsewhere-media-v1';
 const MEDIA_STORE = 'blobs';
 
+/** Runtime URLs only. Original Blobs remain in the existing media store. */
+export function createMediaSources(read:(id:string)=>Promise<Blob|undefined>){
+ type Source={url?:string;pending?:Promise<string|undefined>;decoded?:HTMLImageElement;decoding?:Promise<string|undefined>};
+ const entries=new Map<string,Source>();
+ const prune=(active:ReadonlySet<string>)=>{for(const[id,entry]of entries)if(!active.has(id)){if(entry.url)URL.revokeObjectURL(entry.url);entries.delete(id);}};
+ return {
+  get(id:string):Promise<string|undefined>{
+   const prior=entries.get(id);if(prior)return prior.pending||Promise.resolve(prior.url);
+   const entry:Source={};entries.set(id,entry);
+   entry.pending=read(id).then(blob=>{
+    if(entries.get(id)!==entry)return undefined;
+    if(!blob){entries.delete(id);return undefined;}
+    entry.url=URL.createObjectURL(blob);entry.pending=undefined;return entry.url;
+   }).catch(error=>{if(entries.get(id)===entry)entries.delete(id);throw error;});
+   return entry.pending;
+  },
+  async getDecoded(id:string):Promise<string|undefined>{
+   const url=await this.get(id),entry=entries.get(id);
+   if(!url||!entry)return undefined;
+   if(entry.decoded)return url;
+   if(!entry.decoding){
+    const image=new Image();image.src=url;
+    entry.decoding=image.decode().then(()=>{
+     if(entries.get(id)!==entry)return undefined;
+     entry.decoded=image;return url;
+    }).catch(error=>{entry.decoding=undefined;if(entries.get(id)!==entry)return undefined;throw error;});
+   }
+   return entry.decoding;
+  },
+  peek(id:string):string|undefined {const entry=entries.get(id);return entry?.decoded?entry.url:undefined;},
+  prune,clear:()=>prune(new Set()),
+ };
+}
+
 export function mediaDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     if (typeof window === 'undefined' || !('indexedDB' in window)) {

@@ -1,3 +1,5 @@
+import {avatarView,renderWithAvatars} from './avatarView';
+import {frameDraft,frameStyle,saveFrameOnly,DEFAULT_FRAME_SCALE,type FrameDraft,type AvatarFrameFields} from './core/avatarAppearance';
 import {meetingTimeline,archiveMeeting} from './core/meetingHistory';
 import {meetingCardHtml,meetingRecordHtml} from './meetingHistoryView';
 import {logsForDay,logDays,logTimestamp} from './core/systemLogs';
@@ -50,6 +52,7 @@ import {
 } from './core/defaults';
 import {
   buildBackupPayload,
+  createMediaSources,
   mediaDelete,
   mediaGet,
   mediaPut,
@@ -214,8 +217,27 @@ export function initElsewhereApp(): void {
   let voiceRecorder: MediaRecorder | null = null;
   let voiceStart = 0;
   let voiceCancelled = false;
-  let mediaURLs: string[] = [];
-  let wallpaperURL = '';
+  const mediaSources = createMediaSources(mediaGet);
+  const avatarLoadingIds=new Set<string>();
+  const avatarPreviewURLs=new Map<string,boolean>();
+  let roleAvatarUploadVersion=0,userAvatarUploadVersion=0;
+
+  async function makeAvatarPreview(blob:Blob):Promise<string>{
+    const url=URL.createObjectURL(blob);avatarPreviewURLs.set(url,true);
+    try{const image=new Image();image.src=url;await image.decode();return url;}
+    catch(error){avatarPreviewURLs.delete(url);URL.revokeObjectURL(url);throw error;}
+  }
+
+  async function saveAvatarPhoto(owner:{avatarMediaId?:string},blob:Blob):Promise<void>{
+    const id=makeUid('ava');avatarLoadingIds.add(id);
+    try{
+      await mediaPut(id,blob);
+      if(!await mediaSources.getDecoded(id))throw new Error('头像尚未解码');
+      const old=owner.avatarMediaId;owner.avatarMediaId=id;
+      if(old&&old!==id)await mediaDelete(old).catch(()=>{});
+    }catch(error){if(owner.avatarMediaId!==id)await mediaDelete(id).catch(()=>{});throw error;}
+    finally{avatarLoadingIds.delete(id);}
+  }
   let detailId = '';
 
   // Phase 1 state: IME composition guard, inline message editing, quote replying, revision history drawer
@@ -226,14 +248,7 @@ export function initElsewhereApp(): void {
   let quotingMessage: MessageQuote | null = null;
   let showRevisionsDrawer = false;
 
-  interface StagedFrameState {
-    frameId: string;
-    frameMediaId: string;
-    frameData: string;
-    frameScale: number;
-    frameX: number;
-    frameY: number;
-  }
+  type StagedFrameState = FrameDraft;
 
   // UI 01-B & UI 02 state: staged avatar & avatar frame draft for UserProfile and RoleForm
   let draftUserAvatarBlob: Blob | null = null;
@@ -273,6 +288,7 @@ export function initElsewhereApp(): void {
   let frameModalOwner: 'role' | 'user' | null = null;
   let modalFrameDraft: StagedFrameState | null = null;
   let frameModalAdjustOpen = false;
+  const modalFrameChoices = new Map<string, StagedFrameState>();
 
   // UI 03-B state: Focus companion system (task input draft, history date picker, settlement modal, AI summary retry)
   let focusTaskInputDraft = '';
@@ -280,24 +296,8 @@ export function initElsewhereApp(): void {
   let focusSettlementModalSessionId: string | null = null;
   let focusSummaryAiBusy = false;
 
-  function buildStagedFrameFromOwner(
-    owner?: {
-      frameId?: string;
-      frameMediaId?: string;
-      frameData?: string;
-      frameScale?: number;
-      frameX?: number;
-      frameY?: number;
-    } | null
-  ): StagedFrameState {
-    return {
-      frameId: owner?.frameId || (owner?.frameData || owner?.frameMediaId ? 'custom' : 'none'),
-      frameMediaId: owner?.frameMediaId || '',
-      frameData: owner?.frameData || '',
-      frameScale: Number(owner?.frameScale) || 1.25,
-      frameX: Number(owner?.frameX) || 0,
-      frameY: Number(owner?.frameY) || 0,
-    };
+  function buildStagedFrameFromOwner(owner?: AvatarFrameFields | null): StagedFrameState {
+    return frameDraft(owner);
   }
 
   function getOrInitUserFrameDraft(): StagedFrameState {
@@ -326,10 +326,17 @@ export function initElsewhereApp(): void {
       : getOrInitRoleFrameDraft(r);
   }
 
+  function selectModalFrame(staged:StagedFrameState,asset:Pick<StagedFrameState,'frameId'|'frameData'|'frameMediaId'>):void {
+    if(staged.frameId===asset.frameId) return;
+    modalFrameChoices.set(staged.frameId,{...staged});
+    Object.assign(staged,modalFrameChoices.get(asset.frameId)||{...asset,frameScale:DEFAULT_FRAME_SCALE,frameX:0,frameY:0,frameLayoutVersion:1});
+  }
+
   function closeFrameModal(): void {
     frameModalOwner = null;
     modalFrameDraft = null;
     frameModalAdjustOpen = false;
+    modalFrameChoices.clear();
   }
 
   function formatFrameDraftSummary(
@@ -341,6 +348,7 @@ export function initElsewhereApp(): void {
       frameScale?: number;
       frameX?: number;
       frameY?: number;
+      frameLayoutVersion?: 1;
     } | null
   ): string {
     const savedNorm = buildStagedFrameFromOwner(savedOwner);
@@ -350,7 +358,7 @@ export function initElsewhereApp(): void {
       staged.frameData !== savedNorm.frameData ||
       Number(staged.frameScale) !== Number(savedNorm.frameScale) ||
       Number(staged.frameX) !== Number(savedNorm.frameX) ||
-      Number(staged.frameY) !== Number(savedNorm.frameY);
+      Number(staged.frameY) !== Number(savedNorm.frameY) || staged.frameLayoutVersion !== savedNorm.frameLayoutVersion;
     const suffix = isModified ? '（待保存草稿）' : '';
     if (
       staged.frameId === 'none' ||
@@ -376,9 +384,7 @@ export function initElsewhereApp(): void {
   }
 
   function resetUserAvatarDraft(): void {
-    if (draftUserAvatarPreviewUrl) {
-      URL.revokeObjectURL(draftUserAvatarPreviewUrl);
-    }
+    userAvatarUploadVersion++;
     draftUserAvatarBlob = null;
     draftUserAvatarPreviewUrl = '';
     draftUserAvatarRemove = false;
@@ -390,9 +396,7 @@ export function initElsewhereApp(): void {
   }
 
   function resetRoleAvatarDraft(): void {
-    if (draftRoleAvatarPreviewUrl) {
-      URL.revokeObjectURL(draftRoleAvatarPreviewUrl);
-    }
+    roleAvatarUploadVersion++;
     draftRoleAvatarBlob = null;
     draftRoleAvatarPreviewUrl = '';
     draftRoleAvatarRemove = false;
@@ -470,113 +474,8 @@ export function initElsewhereApp(): void {
     return record;
   }
 
-  function renderAvatarFrameHtml(
-    owner?: {
-      frameId?: string;
-      frameMediaId?: string;
-      frameData?: string;
-      frameScale?: number;
-      frameX?: number;
-      frameY?: number;
-    } | null
-  ): string {
-    if (!owner) return '';
-    const scale = Number(owner.frameScale) || 1.25;
-    const x = Number(owner.frameX) || 0;
-    const y = Number(owner.frameY) || 0;
-    const styleAttr = `--frame-size:${scale};--frame-x:${x}px;--frame-y:${y}px`;
-    if (owner.frameMediaId) {
-      return `<img class="avatar-frame" alt="" data-media-id="${esc(
-        owner.frameMediaId
-      )}" data-frame-id="${esc(
-        owner.frameId || 'custom_media'
-      )}" style="${styleAttr}">`;
-    }
-    if (owner.frameData && isAllowedFrameSource(owner.frameData)) {
-      return `<img class="avatar-frame" alt="" src="${esc(
-        owner.frameData
-      )}" loading="lazy" data-frame-id="${esc(
-        owner.frameId || ''
-      )}" style="${styleAttr}">`;
-    }
-    if (owner.frameId && owner.frameId !== 'none') {
-      const preset = findPresetFrameByIdOrUrl(owner.frameId);
-      if (preset) {
-        return `<img class="avatar-frame" alt="" src="${esc(
-          preset.url
-        )}" loading="lazy" data-frame-id="${esc(
-          preset.id
-        )}" style="${styleAttr}">`;
-      }
-    }
-    return '';
-  }
-
-  function userAvatarTag(
-    u?: UserProfileData | null,
-    cl = 'avatar',
-    opts?: { previewUrl?: string; removed?: boolean; fallbackName?: string }
-  ): string {
-    const frame = renderAvatarFrameHtml(u);
-    const hasFrameCl = frame ? ' has-avatar-frame' : '';
-    const fallback =
-      Array.from(String(opts?.fallbackName ?? u?.name ?? '我').trim() || '我')[0] ||
-      '我';
-    const altText = esc((opts?.fallbackName ?? u?.name) || '我的头像');
-    if (opts?.previewUrl) {
-      return `<span class="${cl} has-avatar-img avatar-loaded${hasFrameCl}" data-avatar-box="user"><span class="avatar-fallback">${esc(
-        fallback
-      )}</span><img class="avatar-img" src="${esc(
-        opts.previewUrl
-      )}" alt="${altText}">${frame}</span>`;
-    }
-    const mediaId = !opts?.removed ? u?.avatarMediaId : '';
-    if (mediaId) {
-      return `<span class="${cl} has-avatar-img${hasFrameCl}" data-avatar-box="user"><span class="avatar-fallback">${esc(
-        fallback
-      )}</span><img class="avatar-img" data-media-id="${esc(
-        mediaId
-      )}" alt="${altText}">${frame}</span>`;
-    }
-    return `<span class="${cl}${hasFrameCl}" data-avatar-box="user"><span class="avatar-fallback">${esc(
-      fallback
-    )}</span>${frame}</span>`;
-  }
-
-  function avatarTag(
-    r?: RoleData | null,
-    cl = 'avatar',
-    opts?: { previewUrl?: string; removed?: boolean; fallbackName?: string }
-  ): string {
-    const frame = renderAvatarFrameHtml(r);
-    const hasFrameCl = frame ? ' has-avatar-frame' : '';
-    const fallback =
-      Array.from(String(opts?.fallbackName ?? r?.name ?? '?').trim() || '?')[0] ||
-      '?';
-    const altText = esc((opts?.fallbackName ?? r?.name) || '角色头像');
-    if (opts?.previewUrl) {
-      return `<span class="${cl} has-avatar-img avatar-loaded${hasFrameCl}" data-avatar-box="role" data-role-id="${esc(
-        r?.id || ''
-      )}"><span class="avatar-fallback">${esc(
-        fallback
-      )}</span><img class="avatar-img" src="${esc(
-        opts.previewUrl
-      )}" alt="${altText}">${frame}</span>`;
-    }
-    const mediaId = !opts?.removed ? r?.avatarMediaId : '';
-    if (mediaId) {
-      return `<span class="${cl} has-avatar-img${hasFrameCl}" data-avatar-box="role" data-role-id="${esc(
-        r?.id || ''
-      )}"><span class="avatar-fallback">${esc(
-        fallback
-      )}</span><img class="avatar-img" data-media-id="${esc(
-        mediaId
-      )}" alt="${altText}">${frame}</span>`;
-    }
-    return `<span class="${cl}${hasFrameCl}" data-avatar-box="role" data-role-id="${esc(
-      r?.id || ''
-    )}"><span class="avatar-fallback">${esc(fallback)}</span>${frame}</span>`;
-  }
+  const userAvatarTag = (u?: UserProfileData | null, cl='avatar', opts?: Parameters<typeof avatarView>[3]) => avatarView(u,'user',cl,{...opts,loadedUrl:opts?.removed||opts?.previewUrl?undefined:mediaSources.peek(u?.avatarMediaId||'')});
+  const avatarTag = (r?: RoleData | null, cl='avatar', opts?: Parameters<typeof avatarView>[3]) => avatarView(r,'role',cl,{...opts,loadedUrl:opts?.removed||opts?.previewUrl?undefined:mediaSources.peek(r?.avatarMediaId||'')});
 
   function syncModalAdjustInputsToStaged(
     ownerType: 'role' | 'user',
@@ -642,7 +541,7 @@ export function initElsewhereApp(): void {
         ? `当前预览：${activePresetItem.label} (#${String(
             activePresetItem.index
           ).padStart(3, '0')})${
-            staged.frameMediaId ? ' · 本地缓存' : ' · 动态 GIF'
+            staged.frameMediaId ? ' · 本地缓存' : ' · GIF 素材'
           }`
         : activeCustomItem
         ? `当前预览：${activeCustomItem.name}（用户上传）`
@@ -845,9 +744,7 @@ export function initElsewhereApp(): void {
     staged: StagedFrameState
   ): void {
     if (!avatarBoxEl) return;
-    const scale = Number(staged.frameScale) || 1.25;
-    const x = Number(staged.frameX) || 0;
-    const y = Number(staged.frameY) || 0;
+    delete avatarBoxEl.dataset.avatarRenderKey;
 
     let resolvedMediaId = '';
     let resolvedUrl = '';
@@ -883,9 +780,7 @@ export function initElsewhereApp(): void {
     }
 
     frameImg.classList.remove('frame-img-error');
-    frameImg.style.setProperty('--frame-size', String(scale));
-    frameImg.style.setProperty('--frame-x', `${x}px`);
-    frameImg.style.setProperty('--frame-y', `${y}px`);
+    frameImg.style.cssText = frameStyle(staged);
     frameImg.dataset.frameId = resolvedFrameId;
 
     if (resolvedMediaId) {
@@ -1005,6 +900,7 @@ export function initElsewhereApp(): void {
         cell.classList.toggle('selected', isSel);
       }
     });
+    patchFrameModalAdjustDrawerInPlace(ownerType);
   }
 
   function patchFrameModalAdjustDrawerInPlace(ownerType: 'role' | 'user'): void {
@@ -1135,6 +1031,7 @@ export function initElsewhereApp(): void {
     }
     frameModalOwner = ownerType;
     frameModalAdjustOpen = false;
+    modalFrameChoices.clear();
 
     document
       .querySelector<HTMLElement>('[data-testid="avatar-frame-modal-backdrop"]')
@@ -1161,16 +1058,18 @@ export function initElsewhereApp(): void {
     document
       .querySelector<HTMLElement>('[data-testid="avatar-frame-modal-backdrop"]')
       ?.remove();
+    clearMediaURLs();
   }
 
-  function applyFrameModalInPlace(ownerType: 'role' | 'user'): void {
-    if (!modalFrameDraft) {
-      closeFrameModalInPlace();
-      return;
-    }
+  function applyFrameModalInPlace(ownerType: 'role' | 'user'): boolean {
+    if (!modalFrameDraft) return false;
     syncModalAdjustInputsToStaged(ownerType, modalFrameDraft);
     const appliedDraft: StagedFrameState = { ...modalFrameDraft };
     const { baseOwner } = getModalBaseOwnerAndDisplayName(ownerType);
+    if (baseOwner && !saveFrameOnly(baseOwner, appliedDraft, save)) {
+      notify('头像框保存失败，原设置已保留，请重试');
+      return false;
+    }
 
     if (ownerType === 'role') {
       draftRoleFrame = appliedDraft;
@@ -1200,6 +1099,7 @@ export function initElsewhereApp(): void {
     if (labelEl) {
       labelEl.textContent = formatFrameDraftSummary(appliedDraft, baseOwner);
     }
+    return true;
   }
 
   function renderAvatarFrameModal(
@@ -1228,6 +1128,7 @@ export function initElsewhereApp(): void {
       frameScale: staged.frameScale,
       frameX: staged.frameX,
       frameY: staged.frameY,
+      frameLayoutVersion: staged.frameLayoutVersion,
     };
 
     const { isRemoteActive, currentStatusText } =
@@ -1237,13 +1138,13 @@ export function initElsewhereApp(): void {
     const previewAvatarHtml =
       ownerType === 'role'
         ? avatarTag(mergedOwner as RoleData, 'avatar large frame-live-preview', {
-            previewUrl: draftRoleAvatarPreviewUrl,
-            removed: draftRoleAvatarRemove,
+            previewUrl: baseOwner ? undefined : draftRoleAvatarPreviewUrl,
+            removed: baseOwner ? false : draftRoleAvatarRemove,
             fallbackName: displayName,
           })
         : userAvatarTag(mergedOwner as UserProfileData, 'avatar large frame-live-preview', {
-            previewUrl: draftUserAvatarPreviewUrl,
-            removed: draftUserAvatarRemove,
+            previewUrl: baseOwner ? undefined : draftUserAvatarPreviewUrl,
+            removed: baseOwner ? false : draftUserAvatarRemove,
             fallbackName: displayName,
           });
 
@@ -1267,7 +1168,7 @@ export function initElsewhereApp(): void {
           </div>
           <div class="frame-preview-info">
             <b>实时叠加预览 · ${esc(displayName)}</b>
-            <p class="tiny muted">点击下方缩略图立即预览；点击弹窗底部「应用」更新编辑草稿，点击「取消」放弃本次调整。</p>
+            <p class="tiny muted">${baseOwner ? '应用后立即保存头像框；姓名、人设和新头像草稿仍需单独保存。' : '应用到新角色草稿，创建角色后正式保存。'}</p>
             <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:6px">
               <button type="button" class="btn small secondary" data-action="selectpresetframe" data-owner="${ownerType}" data-frame-id="none" data-testid="frame-clear-btn-${ownerType}">不使用头像框</button>
               <button type="button" class="btn small ghost frame-adjust-toggle ${
@@ -1307,7 +1208,7 @@ export function initElsewhereApp(): void {
 
         <div class="frame-modal-footer">
           <button type="button" class="btn secondary frame-modal-btn" data-action="cancelframemodal" data-testid="cancel-frame-modal-btn">取消</button>
-          <button type="button" class="btn frame-modal-btn" data-action="applyframemodal" data-testid="apply-frame-modal-btn">应用</button>
+          <button type="button" class="btn frame-modal-btn" data-action="applyframemodal" data-testid="apply-frame-modal-btn">${baseOwner ? '应用' : '应用到创建草稿'}</button>
         </div>
       </div>
     </div>`;
@@ -1338,12 +1239,7 @@ export function initElsewhereApp(): void {
           ? `<div class="frame-staging-preview-box" data-testid="terminal-frame-staging-box">
               <div class="frame-preview-stage" style="margin:0">
                 <div class="frame-preview-avatar-wrap frame-checkerboard">
-                  <span class="avatar large has-avatar-frame frame-live-preview">
-                    <span class="avatar-fallback">预</span>
-                    <img class="avatar-frame" src="${esc(
-                      stagedTerminalFramePreviewUrl
-                    )}" alt="待入库头像框预览" style="--frame-size:1.25;--frame-x:0px;--frame-y:0px">
-                  </span>
+                  ${avatarView({name:'预',frameLayoutVersion:1},'role','avatar large frame-live-preview',{framePreviewUrl:stagedTerminalFramePreviewUrl})}
                 </div>
                 <div class="frame-preview-info" style="flex:1">
                   <b>待确认素材预览 · 尚未写入图库</b>
@@ -2290,6 +2186,7 @@ export function initElsewhereApp(): void {
       frameScale: stagedFrame.frameScale,
       frameX: stagedFrame.frameX,
       frameY: stagedFrame.frameY,
+      frameLayoutVersion: stagedFrame.frameLayoutVersion,
     };
     const fv = draftUserFormValues || {
       name: u.name || '',
@@ -2376,6 +2273,7 @@ export function initElsewhereApp(): void {
           frameScale: stagedFrame.frameScale,
           frameX: stagedFrame.frameX,
           frameY: stagedFrame.frameY,
+          frameLayoutVersion: stagedFrame.frameLayoutVersion,
         } as RoleData)
       : ({
           id: 'new_role_preview',
@@ -2386,6 +2284,7 @@ export function initElsewhereApp(): void {
           frameScale: stagedFrame.frameScale,
           frameX: stagedFrame.frameX,
           frameY: stagedFrame.frameY,
+          frameLayoutVersion: stagedFrame.frameLayoutVersion,
         } as RoleData);
     const fv = draftRoleFormValues || {
       name: r?.name || '',
@@ -4346,8 +4245,6 @@ export function initElsewhereApp(): void {
     if (!wallpaper) return;
     const mediaId=role()?.wallpaperMediaId||'';
     if ((wallpaper.querySelector<HTMLElement>('.wallpaper-image')?.dataset.mediaId||'')===mediaId) return;
-    if (wallpaperURL) URL.revokeObjectURL(wallpaperURL);
-    wallpaperURL='';
     wallpaper.replaceChildren();
     wallpaper.classList.toggle('has-custom-wallpaper',Boolean(mediaId));
     if (mediaId) {
@@ -4358,14 +4255,19 @@ export function initElsewhereApp(): void {
       wallpaper.append(image);
       void hydrateMedia(wallpaper);
     }
+    clearMediaURLs();
   }
 
   function clearMediaURLs(): void {
-    for (const url of mediaURLs) URL.revokeObjectURL(url);
-    mediaURLs = [];
+    const active=new Set([...avatarLoadingIds,data.user.avatarMediaId,role()?.avatarMediaId,data.user.frameMediaId,role()?.frameMediaId].filter((id):id is string=>Boolean(id)));
+    document.querySelectorAll<HTMLElement>('[data-media-id]').forEach(el=>{active.add(el.dataset.mediaId!);if(el.dataset.hydratedKey)active.add(el.dataset.hydratedKey);});
+    mediaSources.prune(active);
+    const previewSources=new Set([draftUserAvatarPreviewUrl,draftRoleAvatarPreviewUrl,...[...document.querySelectorAll<HTMLImageElement>('.avatar-img[src]')].map(img=>img.src)]);
+    for(const [url,pending]of avatarPreviewURLs)if(!pending&&!previewSources.has(url)){URL.revokeObjectURL(url);avatarPreviewURLs.delete(url);}
   }
 
   async function hydrateMedia(rootEl: ParentNode = document): Promise<void> {
+    clearMediaURLs();
     const pinnedPanes=new Map<HTMLElement,number>();
     // Attach graceful fallback handlers for remote preset avatar frames & thumbnails
     rootEl
@@ -4396,8 +4298,11 @@ export function initElsewhereApp(): void {
         item.classList.contains('avatar-frame') ||
         item.classList.contains('frame-thumb-img');
       try {
-        const blob = await mediaGet(key);
-        if (!blob) {
+        const url = await (isAvatarImg ? mediaSources.getDecoded(key) : mediaSources.get(key));
+        if (!item.isConnected || item.dataset.mediaId !== key) continue;
+        if (item.dataset.hydratedKey===key && item.getAttribute('src')===url) continue;
+        if (!url) {
+          if(isAvatarImg&&item instanceof HTMLImageElement&&item.naturalWidth>0)continue;
           if (isAvatarImg) {
             const box = item.closest('.has-avatar-img');
             box?.classList.remove('has-avatar-img', 'avatar-loaded');
@@ -4409,12 +4314,6 @@ export function initElsewhereApp(): void {
           }
           continue;
         }
-        if (!item.isConnected) continue;
-        const url = URL.createObjectURL(blob);
-        if (item.classList.contains('wallpaper-image')) {
-          if (wallpaperURL) URL.revokeObjectURL(wallpaperURL);
-          wallpaperURL = url;
-        } else mediaURLs.push(url);
         item.dataset.hydratedKey = key;
         const pane=item.closest<HTMLElement>('#scroll-area');
         if(item instanceof HTMLImageElement&&pane){
@@ -4427,12 +4326,13 @@ export function initElsewhereApp(): void {
             }else pinnedPanes.delete(pane);
           },{once:true});
         }
-        item.src = url;
+        if(item.getAttribute('src')!==url)item.src = url;
         if (isAvatarImg) {
           item.closest('.has-avatar-img')?.classList.add('avatar-loaded');
         }
       } catch {
-        if (item.isConnected) {
+        if (item.isConnected && item.dataset.mediaId === key) {
+          if(isAvatarImg&&item instanceof HTMLImageElement&&item.naturalWidth>0)continue;
           if (isAvatarImg) {
             const box = item.closest('.has-avatar-img');
             box?.classList.remove('has-avatar-img', 'avatar-loaded');
@@ -4445,6 +4345,7 @@ export function initElsewhereApp(): void {
         }
       }
     }
+    clearMediaURLs();
   }
 
   /**
@@ -4468,8 +4369,8 @@ export function initElsewhereApp(): void {
           const wasAtBottom =
             sc.scrollHeight - sc.scrollTop - sc.clientHeight < 60;
           const readingTop=sc.scrollTop;
+          renderWithAvatars(sc,renderChatMessagesHtml(r));
           clearMediaURLs();
-          sc.innerHTML = renderChatMessagesHtml(r);
           hydrateMedia();
           sc.scrollTop = wasAtBottom ? sc.scrollHeight : readingTop;
         }
@@ -4570,14 +4471,12 @@ export function initElsewhereApp(): void {
     const sameView = view === lastRenderedView;
     lastRenderedView = view;
 
-    clearMediaURLs();
-    if (wallpaperURL) URL.revokeObjectURL(wallpaperURL);
-    wallpaperURL = '';
     fruitManager.detach();
     terminalApi.detach();
     terminalAppearance.detach();
     homePager.detach();
-    app.innerHTML = markup;
+    renderWithAvatars(app,markup);
+    clearMediaURLs();
     novelDisplay.mount(app);
     if(view==='terminal'){terminalApi.mount(document.getElementById('terminal-api-root'));terminalAppearance.mount(document.querySelector('.terminal-page'));}
     if(view==='presets')fruitManager.mount(document.getElementById('fruit-preset-root'));
@@ -5454,6 +5353,8 @@ export function initElsewhereApp(): void {
           throw new Error('不是 Elsewhere 备份');
         }
         await restoreMediaFromBackup(d._media);
+        mediaSources.clear();
+        document.querySelectorAll<HTMLElement>('[data-hydrated-key]').forEach(el=>delete el.dataset.hydratedKey);
         delete d._media;
         data = normalizeAndMigrateData(d);
         token = readDeviceApiKey(localStorage,data.settings.endpoint);
@@ -6079,8 +5980,8 @@ export function initElsewhereApp(): void {
       }
       if (ownerType === 'role') draftRoleFormValues = captureFormValues('role-form');
       else draftUserFormValues = captureFormValues('user-profile-form');
-      applyFrameModalInPlace(ownerType);
-      notify('已更新头像框草稿，请点击页面底部「保存」正式生效');
+      const existing=Boolean(getModalBaseOwnerAndDisplayName(ownerType).baseOwner);
+      if(applyFrameModalInPlace(ownerType)) notify(existing ? '头像框已保存并应用' : '已更新头像框草稿，创建角色后保存');
       return;
     }
     if (act === 'toggleframeadjust') {
@@ -6101,9 +6002,10 @@ export function initElsewhereApp(): void {
         ownerType,
         formMode === 'edit' ? data.roles.find((x) => x.id === editingRoleId) : r
       );
-      staged.frameScale = 1.25;
+      staged.frameScale = DEFAULT_FRAME_SCALE;
       staged.frameX = 0;
       staged.frameY = 0;
+      staged.frameLayoutVersion = 1;
       patchFrameModalAdjustDrawerInPlace(ownerType);
       patchFrameModalSelectionInPlace(ownerType);
       notify('已恢复默认缩放与位置');
@@ -6153,19 +6055,9 @@ export function initElsewhereApp(): void {
       );
       syncModalAdjustInputsToStaged(ownerType, staged);
       const frameId = b.dataset.frameId || 'none';
-      if (frameId === 'none') {
-        staged.frameId = 'none';
-        staged.frameData = '';
-        staged.frameMediaId = '';
-        patchFrameModalSelectionInPlace(ownerType);
-        return;
-      }
       const presetItem = PRESET_AVATAR_FRAMES.find((x) => x.id === frameId);
-      if (!presetItem) return;
-      staged.frameId = presetItem.id;
-      staged.frameData = presetItem.url;
-      staged.frameMediaId = '';
-      if (!staged.frameScale) staged.frameScale = 1.25;
+      if(frameId !== 'none' && !presetItem) return;
+      selectModalFrame(staged, {frameId,frameData:presetItem?.url||'',frameMediaId:''});
       patchFrameModalSelectionInPlace(ownerType);
       return;
     }
@@ -6179,10 +6071,7 @@ export function initElsewhereApp(): void {
       const customId = b.dataset.customId || '';
       const cf = (data.customFrames || []).find((x) => x.id === customId);
       if (!cf) return;
-      staged.frameId = cf.id;
-      staged.frameMediaId = cf.mediaId || '';
-      staged.frameData = cf.dataUrl || '';
-      if (!staged.frameScale) staged.frameScale = 1.25;
+      selectModalFrame(staged, {frameId:cf.id,frameMediaId:cf.mediaId||'',frameData:cf.sourceUrl||cf.dataUrl||''});
       patchFrameModalSelectionInPlace(ownerType);
       return;
     }
@@ -6231,33 +6120,20 @@ export function initElsewhereApp(): void {
       const list = data.customFrames || [];
       const idx = list.findIndex((x) => x.id === customId);
       if (idx < 0) return;
-      const [removed] = list.splice(idx, 1);
-      if (removed.mediaId) {
-        if (data.user.frameMediaId === removed.mediaId) {
-          data.user.frameMediaId = '';
-          data.user.frameId = 'none';
-        }
-        if (draftUserFrame?.frameMediaId === removed.mediaId) {
-          draftUserFrame.frameMediaId = '';
-          draftUserFrame.frameId = 'none';
-        }
-        for (const roleItem of data.roles) {
-          if (roleItem.frameMediaId === removed.mediaId) {
-            roleItem.frameMediaId = '';
-            roleItem.frameId = 'none';
-          }
-        }
-        if (draftRoleFrame?.frameMediaId === removed.mediaId) {
-          draftRoleFrame.frameMediaId = '';
-          draftRoleFrame.frameId = 'none';
-        }
-        if (modalFrameDraft?.frameMediaId === removed.mediaId) {
-          modalFrameDraft.frameMediaId = '';
-          modalFrameDraft.frameId = 'none';
-        }
-        mediaDelete(removed.mediaId).catch(() => {});
+      const removed=list[idx];
+      const usesAsset=(owner:AvatarFrameFields)=>owner.frameId===removed.id || Boolean(removed.mediaId&&owner.frameMediaId===removed.mediaId) || Boolean(removed.dataUrl&&owner.frameData===removed.dataUrl);
+      const affected=[data.user,...data.roles,draftUserFrame,draftRoleFrame,modalFrameDraft].filter((owner):owner is RoleData|UserProfileData|StagedFrameState=>Boolean(owner)&&usesAsset(owner!));
+      const snapshots=affected.map(owner=>({owner,frameId:owner.frameId,frameMediaId:owner.frameMediaId,frameData:owner.frameData}));
+      list.splice(idx,1);
+      for(const owner of affected) Object.assign(owner,{frameId:'none',frameMediaId:'',frameData:''});
+      if(!save()){
+        list.splice(idx,0,removed);
+        for(const {owner,...fields}of snapshots)Object.assign(owner,fields);
+        notify('删除未保存，原素材和设置已保留');
+        return;
       }
-      save();
+      for(const [key,choice]of modalFrameChoices)if(usesAsset(choice))modalFrameChoices.delete(key);
+      if(removed.mediaId)void mediaDelete(removed.mediaId).catch(()=>{});
       if (frameModalOwner && document.querySelector('[data-testid="avatar-frame-modal"]')) {
         patchFrameModalBodyAndTabsInPlace(frameModalOwner);
       } else {
@@ -6275,6 +6151,7 @@ export function initElsewhereApp(): void {
       syncModalAdjustInputsToStaged(ownerType, staged);
       const remoteUrl = staged?.frameData || '';
       if (!staged || !/^https:\/\//i.test(remoteUrl)) return;
+      const selectionId=staged.frameId;
       void (async () => {
         try {
           const resp = await fetch(remoteUrl, { mode: 'cors' });
@@ -6282,19 +6159,21 @@ export function initElsewhereApp(): void {
           const blob = await resp.blob();
           const mediaId = makeUid('frm_cache');
           await mediaPut(mediaId, blob);
-          staged.frameMediaId = mediaId;
           if (!Array.isArray(data.customFrames)) data.customFrames = [];
           const presetInfo = findPresetFrameByIdOrUrl(
-            staged.frameId || remoteUrl
+            selectionId || remoteUrl
           );
-          data.customFrames.unshift({
+          const cachedFrame:CustomAvatarFrame={
             id: makeUid('cf'),
             name: presetInfo ? `离线缓存 · ${presetInfo.label}` : '离线缓存头像框',
             mediaId,
             sourceUrl: remoteUrl,
             createdAt: now(),
-          });
-          save();
+          };
+          data.customFrames.unshift(cachedFrame);
+          if(!save()){data.customFrames=data.customFrames.filter(item=>item!==cachedFrame);await mediaDelete(mediaId).catch(()=>{});notify('缓存记录保存失败，原头像框保持不变');return;}
+          if(frameModalOwner!==ownerType || modalFrameDraft!==staged || staged.frameId!==selectionId || staged.frameData!==remoteUrl){notify('素材已缓存，当前新选择保持不变');return;}
+          staged.frameMediaId=mediaId;
           if (frameModalOwner && document.querySelector('[data-testid="avatar-frame-modal"]')) {
             patchFrameModalBodyAndTabsInPlace(ownerType);
           } else {
@@ -6316,9 +6195,7 @@ export function initElsewhereApp(): void {
     }
     if (act === 'removeuseravatar') {
       draftUserFormValues = captureFormValues('user-profile-form');
-      if (draftUserAvatarPreviewUrl) {
-        URL.revokeObjectURL(draftUserAvatarPreviewUrl);
-      }
+      userAvatarUploadVersion++;
       draftUserAvatarBlob = null;
       draftUserAvatarPreviewUrl = '';
       draftUserAvatarRemove = true;
@@ -6328,9 +6205,7 @@ export function initElsewhereApp(): void {
     }
     if (act === 'removeroleavatar') {
       draftRoleFormValues = captureFormValues('role-form');
-      if (draftRoleAvatarPreviewUrl) {
-        URL.revokeObjectURL(draftRoleAvatarPreviewUrl);
-      }
+      roleAvatarUploadVersion++;
       draftRoleAvatarBlob = null;
       draftRoleAvatarPreviewUrl = '';
       draftRoleAvatarRemove = true;
@@ -6418,16 +6293,11 @@ export function initElsewhereApp(): void {
         data.user.frameScale = draftUserFrame.frameScale;
         data.user.frameX = draftUserFrame.frameX;
         data.user.frameY = draftUserFrame.frameY;
+        data.user.frameLayoutVersion = draftUserFrame.frameLayoutVersion;
       }
       try {
         if (draftUserAvatarBlob) {
-          const oldId = data.user.avatarMediaId;
-          const nextId = makeUid('ava_u');
-          await mediaPut(nextId, draftUserAvatarBlob);
-          data.user.avatarMediaId = nextId;
-          if (oldId && oldId !== nextId) {
-            await mediaDelete(oldId).catch(() => {});
-          }
+          await saveAvatarPhoto(data.user,draftUserAvatarBlob);
         } else if (draftUserAvatarRemove) {
           const oldId = data.user.avatarMediaId;
           data.user.avatarMediaId = '';
@@ -6496,16 +6366,11 @@ export function initElsewhereApp(): void {
         r.frameScale = draftRoleFrame.frameScale;
         r.frameX = draftRoleFrame.frameX;
         r.frameY = draftRoleFrame.frameY;
+        r.frameLayoutVersion = draftRoleFrame.frameLayoutVersion;
       }
       try {
         if (draftRoleAvatarBlob) {
-          const oldId = r.avatarMediaId;
-          const nextId = makeUid('ava_r');
-          await mediaPut(nextId, draftRoleAvatarBlob);
-          r.avatarMediaId = nextId;
-          if (oldId && oldId !== nextId) {
-            await mediaDelete(oldId).catch(() => {});
-          }
+          await saveAvatarPhoto(r,draftRoleAvatarBlob);
         } else if (draftRoleAvatarRemove) {
           const oldId = r.avatarMediaId;
           r.avatarMediaId = '';
@@ -6705,7 +6570,7 @@ export function initElsewhereApp(): void {
     }
   });
 
-  appRoot.addEventListener('change', (e) => {
+  appRoot.addEventListener('change', async (e) => {
     const el = e.target as HTMLInputElement;
     if(el.matches('[data-log-date]')){systemLogDate=el.value===toLocalDateKey(now())?null:el.value;refreshSystemLogs();return;}
     if (el.id === 'focus-minutes-slider') {
@@ -6732,12 +6597,14 @@ export function initElsewhereApp(): void {
         notify('请选择 8MB 以内的图片文件（PNG / JPG / WebP / GIF）');
         return;
       }
+      const version=++userAvatarUploadVersion;
+      let preview:string;
+      try{preview=await makeAvatarPreview(f);}catch{notify('图片无法解码，请选择有效的头像图片');return;}
+      if(version!==userAvatarUploadVersion||view!=='userprofile'){avatarPreviewURLs.set(preview,false);clearMediaURLs();return;}
       draftUserFormValues = captureFormValues('user-profile-form');
-      if (draftUserAvatarPreviewUrl) {
-        URL.revokeObjectURL(draftUserAvatarPreviewUrl);
-      }
       draftUserAvatarBlob = f;
-      draftUserAvatarPreviewUrl = URL.createObjectURL(f);
+      draftUserAvatarPreviewUrl = preview;
+      avatarPreviewURLs.set(preview,false);
       draftUserAvatarRemove = false;
       render(false);
       notify('已预览新个人头像，点击「保存我的资料」后生效');
@@ -6749,12 +6616,15 @@ export function initElsewhereApp(): void {
         notify('请选择 8MB 以内的图片文件（PNG / JPG / WebP / GIF）');
         return;
       }
+      const version=++roleAvatarUploadVersion;
+      const targetRole=editingRoleId;
+      let preview:string;
+      try{preview=await makeAvatarPreview(f);}catch{notify('图片无法解码，请选择有效的头像图片');return;}
+      if(version!==roleAvatarUploadVersion||view!=='roleform'||editingRoleId!==targetRole){avatarPreviewURLs.set(preview,false);clearMediaURLs();return;}
       draftRoleFormValues = captureFormValues('role-form');
-      if (draftRoleAvatarPreviewUrl) {
-        URL.revokeObjectURL(draftRoleAvatarPreviewUrl);
-      }
       draftRoleAvatarBlob = f;
-      draftRoleAvatarPreviewUrl = URL.createObjectURL(f);
+      draftRoleAvatarPreviewUrl = preview;
+      avatarPreviewURLs.set(preview,false);
       draftRoleAvatarRemove = false;
       render(false);
       notify('已预览新角色头像，点击下方保存按钮后生效');
@@ -6803,6 +6673,7 @@ export function initElsewhereApp(): void {
         formMode === 'edit' ? data.roles.find((x) => x.id === editingRoleId) : role()
       );
       syncModalAdjustInputsToStaged(ownerType, staged);
+      const selectionId=staged.frameId;
 
       void (async () => {
         try {
@@ -6817,18 +6688,15 @@ export function initElsewhereApp(): void {
             mediaId,
             createdAt: now(),
           });
-          staged.frameId = customId;
-          staged.frameMediaId = mediaId;
-          staged.frameData = '';
-          if (!staged.frameScale) staged.frameScale = 1.25;
-          syslog('ui', `上传自定义头像框素材并加入预览：${cleanName}`);
-          save();
+          if(!save()){data.customFrames=data.customFrames.filter(item=>item.id!==customId);await mediaDelete(mediaId).catch(()=>{});notify('素材记录保存失败，原头像框保持不变');return;}
+          if(frameModalOwner!==ownerType || modalFrameDraft!==staged || staged.frameId!==selectionId){notify('素材已加入图库，当前新选择保持不变');return;}
+          selectModalFrame(staged,{frameId:customId,frameMediaId:mediaId,frameData:''});
           if (frameModalOwner && document.querySelector('[data-testid="avatar-frame-modal"]')) {
             patchFrameModalBodyAndTabsInPlace(ownerType);
           } else {
             render(false);
           }
-          notify(`已上传「${cleanName}」并放入当前弹窗预览（点击「应用」后写入编辑草稿）`);
+          notify(`已上传「${cleanName}」并放入当前弹窗预览（点击「应用」确认）`);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           notify('上传自定义头像框失败：' + msg);
@@ -6906,9 +6774,9 @@ export function initElsewhereApp(): void {
       document
         .querySelectorAll<HTMLElement>('.frame-live-preview .avatar-frame')
         .forEach((imgEl) => {
-          imgEl.style.setProperty('--frame-size', String(staged.frameScale));
-          imgEl.style.setProperty('--frame-x', `${staged.frameX}px`);
-          imgEl.style.setProperty('--frame-y', `${staged.frameY}px`);
+          imgEl.style.cssText = frameStyle(staged);
+          const box=imgEl.closest<HTMLElement>('[data-avatar-box]');
+          if(box) delete box.dataset.avatarRenderKey;
         });
       return;
     }

@@ -368,6 +368,7 @@ export interface RoleData {
   frameScale?: number;
   frameX?: number;
   frameY?: number;
+  frameLayoutVersion?: 1;
   preset: PresetData | null;
   chats: ChatMessage[];
   diaries: DiaryEntry[];
@@ -404,6 +405,7 @@ export interface UserProfileData {
   frameScale?: number;
   frameX?: number;
   frameY?: number;
+  frameLayoutVersion?: 1;
 }
 
 export interface FocusMoment {

@@ -16,6 +16,8 @@ import {uiIcon,plainUiLabel} from './uiIcons';
 import {chatTiming,setChatFocused,enqueueChat,prepareChatDue,claimChatBatch,chatBatchValid,chatRevisionKey,completeChatBatch,failChatBatch,recoverChatTiming,retryChatTiming,reviseChatTiming,sourceStillValid} from './core/chatScheduler';
 import {compileChatBatchPrompt,buildPhoneRegeneration,readChatResponse} from './core/chatBatchPrompt';
 import {describeChatVoice,chatVoiceSummary} from './core/chatVoice';
+import {preparePersonalReply,splitPersonalReply,applyPersonalReply,personalTicketValid} from './core/roleLife';
+import {claimProactive,proactiveTaskValid,finishProactive,recordProactiveDelivery,recoverProactive,proactiveInstruction,parseProactiveReply,type ProactiveTask} from './core/proactiveChat';
 import {createChatVoiceDialog} from './chatVoiceView';
 import {createHomeTasks} from './homeTasksView';
 import {createHomePager} from './homePager';
@@ -1533,7 +1535,10 @@ export function initElsewhereApp(): void {
       if(!r.scene&&!r.play&&compiled.value){const at=now(),context=buildNativeContext(data,r,'chat','',{nowTs:at,currentInputs:batch.sources});prepared=await prepareSceneReply(r,data.user,createSceneObservation(r,context),compiled.value,{requestId:batch.id,now:at});}
       if(!data.roles.includes(r)||!chatBatchValid(r,batch))return;
       if(prepared)includeScenePromptTrace(r);
-      const extracted=splitSceneReply(await requestPhoneReply(r,prepared?.messages||messages,controller.signal)),text=extracted.text;
+      const usedIds=new Set(compiled.value?.messages.flatMap(m=>m.sourceIds||[])||[]);
+      const personal=preparePersonalReply(r,prepared?.messages||messages,now(),batch.id,'',r.chats.filter(m=>usedIds.has(m.id)));
+      const privateReply=splitPersonalReply(await requestPhoneReply(r,personal.messages,controller.signal));
+      const extracted=splitSceneReply(privateReply.text),text=extracted.text;
       if(!data.roles.includes(r)||!chatBatchValid(r,batch)){
         if(r.chatTiming?.inFlight?.id===batch.id){reviseChatTiming(r,now());save();}
         return;
@@ -1543,7 +1548,7 @@ export function initElsewhereApp(): void {
       const timingBefore=structuredClone(r.chatTiming),outboxBefore=r.pendingReplies;
       if(!completeChatBatch(r,batch))return;
       const turnId=makeUid('turn'),base=now();
-      r.pendingReplies=[...(r.pendingReplies||[]),...bubbles.map((bubble,i)=>({id:uid(),replyTo:batch.sources.at(-1)!.id,replyTurnId:turnId,bubbles:[bubble],dueAt:base+i*240,sources:batch.sources,chatBatchId:batch.id,...(prepared&&extracted.payload&&i===bubbles.length-1?{sceneReply:{...prepared.ticket,payload:extracted.payload}}:{})}))];
+      r.pendingReplies=[...(r.pendingReplies||[]),...bubbles.map((bubble,i)=>({id:uid(),replyTo:batch.sources.at(-1)!.id,replyTurnId:turnId,bubbles:[bubble],dueAt:base+i*240,sources:batch.sources,chatBatchId:batch.id,...(i===bubbles.length-1&&privateReply.payload?{personalReply:{ticket:personal.ticket,payload:privateReply.payload}}:{}),...(prepared&&extracted.payload&&i===bubbles.length-1?{sceneReply:{...prepared.ticket,payload:extracted.payload}}:{})}))];
       if(!save()){r.chatTiming=timingBefore;r.pendingReplies=outboxBefore;throw new Error('回复未能保存，请重试');}
       deliverPending(r);
     }catch(error){
@@ -1575,11 +1580,58 @@ export function initElsewhereApp(): void {
     }
   }
 
+  let proactiveBusy=false;
+  async function runProactive(r:RoleData,task:ProactiveTask):Promise<void> {
+    const controller=new AbortController();activeChatRequests.set(r.id,controller);
+    const valid=()=>data.roles.includes(r)&&proactiveTaskValid(r,task);
+    try{
+      const messages=await compileRequest(r,'chat',options=>compileNativeConversation(data,r,'chat','',{...options,nowTs:now(),openingTask:proactiveInstruction(task)}),valid);
+      if(!valid())return;
+      const personal=preparePersonalReply(r,messages,now(),task.id);
+      const response=parseProactiveReply(await requestPhoneReply(r,personal.messages,controller.signal),task);
+      if(!valid())return;
+      if(!response.send){
+        const previous=structuredClone(r.proactive),privateBefore=r.personalThreads;
+        if(response.payload)applyPersonalReply(r,personal.ticket,response.payload,now());
+        finishProactive(r,task,'skipped');
+        if(!save()){r.proactive=previous;r.personalThreads=privateBefore;throw new Error('私人关注未能保存');}
+        return;
+      }
+      const bubbles=splitChatBubbles(response.text,r);if(!bubbles.length)throw new Error('主动联系没有有效正文');
+      const outbox=r.pendingReplies,previous=structuredClone(r.proactive),base=now();
+      r.pendingReplies=[...(outbox||[]),...bubbles.map((bubble,i)=>({id:uid(),replyTo:'',replyTurnId:task.id,proactiveId:task.id,bubbles:[bubble],dueAt:base+i*240,...(i===bubbles.length-1&&response.payload?{personalReply:{ticket:personal.ticket,payload:response.payload}}:{})}))];
+      finishProactive(r,task,'queued');
+      if(!save()){r.pendingReplies=outbox;r.proactive=previous;throw new Error('主动消息未能保存');}
+      deliverPending(r);
+      syslog('chat-contact','角色自主联系已入队',{roleId:r.id,source:task.id});
+    }catch(error){
+      finishProactive(r,task,'failed',error instanceof Error?error.message:'联系失败');save();
+      syslog('chat-contact','主动联系未发送；保留冷却，不自动重试',{roleId:r.id,code:'contact-failed'});
+    }finally{
+      const saved=r.proactive?.attempts.find(t=>t.id===task.id);
+      if(saved?.status==='attempted'){finishProactive(r,task,'cancelled');save();}
+      if(activeChatRequests.get(r.id)===controller){activeChatRequests.delete(r.id);chatTyping.delete(r.id);}
+      proactiveBusy=false;
+      if(view==='chat'&&role()?.id===r.id)patchDynamicRegionsOnTick();
+    }
+  }
+  function pumpProactive():void {
+    if(document.hidden||proactiveBusy||busy||diaryQueueBusy||activeChatRequests.size||!token.trim()||!canUseRealModel(data.settings))return;
+    for(const r of data.roles){
+      if(isRoleInActiveFocus(r))continue;
+      const previous=r.proactive?structuredClone(r.proactive):undefined,task=claimProactive(data.roles,r,now(),true);
+      if(!task)continue;
+      if(!save()){r.proactive=previous;return;}
+      proactiveBusy=true;void runProactive(r,task);return;
+    }
+  }
+
   function acceptPhoneMessage(r:RoleData,item:ChatMessage):boolean {
     const timingBefore=r.chatTiming?structuredClone(r.chatTiming):undefined;
     const chatsBefore=r.chats.length,eventsBefore=r.events.length,planBefore=r.meetingPlan;
     r.chats.push(item);eMemory(r,item.text,'me','chat',item.at,item.id);enqueueChat(r,item.id,item.at);r.meetingPlan=meetingPlan(r,item.at);
     if(!save()){r.chats.length=chatsBefore;r.events.length=eventsBefore;r.chatTiming=timingBefore;r.meetingPlan=planBefore;return false;}
+    if(r.proactive?.attempts.some(t=>t.status==='attempted'))activeChatRequests.get(r.id)?.abort();
     if(role()?.id===r.id)quotingMessage=null;
     // Accepted sends reveal the new bubble after the caller restores its draft/focus.
     queueMicrotask(()=>{
@@ -1973,23 +2025,28 @@ export function initElsewhereApp(): void {
 
   function deliverPending(r?:RoleData):boolean {
     if(!r?.pendingReplies?.length||!data.roles.includes(r))return false;
-    const before=r.pendingReplies,chats=r.chats.length,events=r.events.length,firstMessage=r.firstMessageState,planBefore=r.meetingPlan;
+    const before=r.pendingReplies,chats=r.chats.length,events=r.events.length,firstMessage=r.firstMessageState,planBefore=r.meetingPlan,privateBefore=r.personalThreads,proactiveBefore=r.proactive?structuredClone(r.proactive):undefined;
     const remaining=[];let changed=false;
     for(const job of before){
+      const contact=job.proactiveId?r.proactive?.attempts.find(t=>t.id===job.proactiveId):undefined;
+      if(job.proactiveId&&(!contact||!proactiveTaskValid(r,contact))){if(contact)finishProactive(r,contact,'cancelled');changed=true;continue;}
       if(job.sources&&((r.scene||r.play)||!job.sources.every(source=>sourceStillValid(r,source)))){changed=true;continue;}
       if(job.dueAt>now()){remaining.push(job);continue;}
       const turnId=job.replyTurnId||job.id;
       for(const [index,bubble] of job.bubbles.entries()){
-        const at=now()+index,item:ChatMessage={id:uid(),speaker:'char',text:bubble,at,kind:'chat',replyTo:job.replyTo,replyTurnId:turnId,status:'active',...(job.sources?{replySourceIds:job.sources.map(m=>m.id)}:{})};
+        const at=now()+index,item:ChatMessage={id:uid(),speaker:'char',text:bubble,at,kind:'chat',replyTo:job.replyTo,replyTurnId:turnId,status:'active',...(job.proactiveId?{proactive:true}:{}),...(job.sources?{replySourceIds:job.sources.map(m=>m.id)}:{})};
         if(job.sceneReply&&index===job.bubbles.length-1)item.sceneReply=job.sceneReply;
         r.chats.push(item);eMemory(r,bubble,'char','chat',at,item.id);
         if(r.firstMessageState?.status!=='ready')r.firstMessageState={status:'ready',updatedAt:at};
       }
+      if(contact)recordProactiveDelivery(r,contact);
+      if(job.personalReply)applyPersonalReply(r,job.personalReply.ticket,job.personalReply.payload,now(),r.chats.filter(m=>m.replyTurnId===turnId));
+      if(contact&&before.filter(other=>other.proactiveId===contact.id).at(-1)===job)finishProactive(r,contact,'sent');
       changed=true;
     }
     r.pendingReplies=remaining;
     if(changed)r.meetingPlan=meetingPlan(r,now());
-    if(changed&&!save()){r.pendingReplies=before;r.chats.length=chats;r.events.length=events;r.firstMessageState=firstMessage;r.meetingPlan=planBefore;return false;}
+    if(changed&&!save()){r.pendingReplies=before;r.chats.length=chats;r.events.length=events;r.firstMessageState=firstMessage;r.meetingPlan=planBefore;r.personalThreads=privateBefore;r.proactive=proactiveBefore;return false;}
     if(changed&&!remaining.length)resumeLocalSceneReplies(r);
     return changed;
   }
@@ -4631,13 +4688,15 @@ export function initElsewhereApp(): void {
     render();
     try {
       const prompt=await compileRequest(r,'chat',options=>compileOpeningPrompt(data,r,now(),options),()=>data.roles.includes(r)&&chatRevisionKey(r)===revision&&r.scene===scene&&r.play===play);
-      const rawText=await requestPhoneReply(r,prompt,controller.signal,'first-message');
+      const personal=preparePersonalReply(r,prompt,now(),makeUid('opening-private'));
+      const raw=splitPersonalReply(await requestPhoneReply(r,personal.messages,controller.signal,'first-message')),rawText=raw.text;
       if(!data.roles.includes(r)||chatRevisionKey(r)!==revision||r.scene!==scene||r.play!==play)throw new Error('聊天状态已变化，首条消息未写入');
       const bubbles = splitChatBubbles(rawText,r);
       if(!bubbles.length)throw new Error('模型未返回有效的手机消息');
-      const chatsBefore=r.chats.length,eventsBefore=r.events.length,firstBefore=r.firstMessageState;
-      applyGeneratedFirstMessage(r, bubbles, now());
-      if(!save()){r.chats.length=chatsBefore;r.events.length=eventsBefore;r.firstMessageState=firstBefore;throw new Error('首条消息未能保存，请重试');}
+      const chatsBefore=r.chats.length,eventsBefore=r.events.length,firstBefore=r.firstMessageState,privateBefore=r.personalThreads;
+      const created=applyGeneratedFirstMessage(r, bubbles, now());
+      if(raw.payload)applyPersonalReply(r,personal.ticket,raw.payload,now(),created);
+      if(!save()){r.chats.length=chatsBefore;r.events.length=eventsBefore;r.firstMessageState=firstBefore;r.personalThreads=privateBefore;throw new Error('首条消息未能保存，请重试');}
       syslog('role', `${r.name} 已生成首条开场消息`);
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
@@ -4679,11 +4738,13 @@ export function initElsewhereApp(): void {
     dateKey: string,
     manualTrigger = false
   ): Promise<boolean> {
+    if(dateKey>=toLocalDateKey(now())){if(manualTrigger)notify('这一天尚未结束，跨日后再归档。');return false;}
     syncRoleDiaryTasks(r, data.settings, now());
-    if (!manualTrigger && hasCharacterDiaryForDate(r, dateKey)) {
+    if (hasCharacterDiaryForDate(r, dateKey)) {
+      if(manualTrigger)notify('这一天已有归档日记，原文保留。');
       return false;
     }
-    if (!canUseRealModel(data.settings)) {
+    if (!token.trim()||!canUseRealModel(data.settings)) {
       const task = (r.diaryTasks || []).find((t) => t.dateKey === dateKey);
       if (task) {
         task.status = 'awaiting_api';
@@ -4726,12 +4787,13 @@ export function initElsewhereApp(): void {
     try {
       const s = data.settings;
       const url = s.endpoint.trim().replace(/\/+$/, '');
-      const { messages: prompt, facts } = buildCharacterDiaryPrompt(
+      const { messages: prompt, facts,personal } = buildCharacterDiaryPrompt(
         r,
         data.user,
-        dateKey,
-        userTasksSummary(data)
+        dateKey
       );
+      const sourcesBefore=JSON.stringify(collectDailyDiaryFacts(r,dateKey,true));
+      const userBefore=JSON.stringify(data.user);
       syslog('diary', `请求生成角色每日日记 · ${r.name} · ${dateKey}`, {
         model: s.model,
         dateKey,
@@ -4756,17 +4818,16 @@ export function initElsewhereApp(): void {
           ...completionLimit(s,'diary'),
         }),
       });
-      if (!res.ok) {
-        throw new Error(
-          `接口返回 ${res.status}: ${(await res.text()).slice(0, 120)}`
-        );
-      }
-      const json = await res.json();
-      const rawText = json.choices?.[0]?.message?.content?.trim() || '';
-      const applied = applyGeneratedCharacterDiary(r, dateKey, rawText, now());
+      const raw=splitPersonalReply(await readChatResponse(res));
+      if(!data.roles.includes(r)||userBefore!==JSON.stringify(data.user)||!personalTicketValid(r,personal)||sourcesBefore!==JSON.stringify(collectDailyDiaryFacts(r,dateKey,true)))throw new Error('日记来源已变化，未归档；可重新生成');
+      const before={diaries:structuredClone(r.diaries),diaryTasks:structuredClone(r.diaryTasks),diaryDay:r.diaryDay,personalThreads:r.personalThreads};
+      const applied = applyGeneratedCharacterDiary(r, dateKey, raw.text, now());
       if (!applied.ok) {
         throw new Error(applied.reason || '模型返回日记内容为空');
       }
+      if(applied.diary)applied.diary.continuitySources=personal.sources;
+      if(raw.payload&&applied.diary)applyPersonalReply(r,personal,raw.payload,facts.endMs,[applied.diary]);
+      if(!save()){Object.assign(r,before);throw new Error('日记未能保存，原记录保留');}
       syslog(
         'diary',
         `已归档 ${r.name} 的每日日记 (${dateKey}) · ${
@@ -4778,7 +4839,6 @@ export function initElsewhereApp(): void {
           wordCount: applied.diary?.wordCount,
         }
       );
-      save();
       safeRenderWhenNotTyping();
       if (manualTrigger) {
         notify(`已生成并归档 ${r.name} 在 ${dateKey} 的私人日记`);
@@ -4802,7 +4862,7 @@ export function initElsewhereApp(): void {
     for (const roleItem of data.roles) {
       syncRoleDiaryTasks(roleItem, data.settings, now());
     }
-    if (!canUseRealModel(data.settings)) {
+    if (!token.trim()||!canUseRealModel(data.settings)) {
       save();
       return;
     }
@@ -5185,7 +5245,7 @@ export function initElsewhereApp(): void {
     try{
       const promptMessages=await compileRequest(r,'chat',options=>{regenerated.plan=buildPhoneRegeneration(data,r,id,now(),options);if(!regenerated.plan)throw new Error('有效来源不完整，原记录已保留');return regenerated.plan.compilation;},()=>data.roles.includes(r)&&chatRevisionKey(r)===revision&&r.scene===scene&&r.play===play);
       const plan=regenerated.plan;if(!plan)throw new Error('有效来源不完整');
-      const text=await requestPhoneReply(r,promptMessages,controller.signal);
+      const text=splitPersonalReply(await requestPhoneReply(r,promptMessages,controller.signal)).text;
       if(!data.roles.includes(r)||chatRevisionKey(r)!==revision||r.scene!==scene||r.play!==play||!getActiveMessages(r.chats).some(m=>m.id===id))return;
       const bubbles=splitChatBubbles(text,r);
       if(!bubbles.length)throw new Error('回复中没有有效的手机消息');
@@ -6820,6 +6880,7 @@ export function initElsewhereApp(): void {
 
   for (const roleItem of data.roles) {
     recoverChatTiming(roleItem);
+    recoverProactive(roleItem);
     syncRoleDiaryTasks(roleItem, data.settings, now(), { resetGenerating: true });
   }
   save();
@@ -6828,14 +6889,15 @@ export function initElsewhereApp(): void {
     void processDiaryQueue();
   }
 
-  document.addEventListener('visibilitychange',()=>{captureMeetingDraft();if(!document.hidden){pumpChatSchedules();if(view==='home')homeTasks.refresh();}});
-  window.addEventListener('pageshow',()=>{pumpChatSchedules();if(view==='home')homeTasks.refresh();});
+  document.addEventListener('visibilitychange',()=>{captureMeetingDraft();if(!document.hidden){pumpChatSchedules();pumpProactive();if(view==='home')homeTasks.refresh();}});
+  window.addEventListener('pageshow',()=>{pumpChatSchedules();pumpProactive();if(view==='home')homeTasks.refresh();});
 
   if (typeof setInterval === 'function') {
     setInterval(() => {
       refreshSystemLogs();
       if(view==='home')homeTasks.refresh();
       pumpChatSchedules();
+      pumpProactive();
       let chatDelivered=false;for(const item of data.roles){if(deliverPending(item)&&item.id===data.selected)chatDelivered=true;}
       let update = syncFocusMoments() || chatDelivered;
       update = completeFocusIfDue() || update;

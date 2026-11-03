@@ -6576,22 +6576,171 @@ ${msg.text}`;
     return created;
   }
 
+  // src/core/roleLife.ts
+  var version = (value) => JSON.stringify(value);
+  var threadVersion = (t) => version([t.id, t.key, t.roleId, t.kind, t.text, t.at, t.status, t.shareable, t.requestId]);
+  var ledgerVersion = (r) => version((r.personalThreads || []).map(threadVersion));
+  var profile = (r) => version([r.name, r.job, r.traits, r.place, r.profile, r.relationship, r.canonNotes, r.notes]);
+  function messageRef(m) {
+    return { kind: "message", id: m.id, at: m.at, version: version([m.speaker, m.text, m.at, m.revisionCount || 0, m.quote || null]) };
+  }
+  function diaryRef(d) {
+    return { kind: "diary", id: d.id, at: d.at, version: version([d.speaker, d.text, d.at, d.sourceMessageIds, d.sourceEventIds, d.sourceMessageRevisions]) };
+  }
+  function eventRef(e) {
+    return { kind: "event", id: e.id, at: e.at, version: version([e.kind, e.title, e.detail, e.at, e.source, e.knownBy, e.messageId, e.lifeEvidence]) };
+  }
+  var allRealMessages = (r) => [...r.chats, ...r.scene?.messages || [], ...(r.meetings || []).flatMap((s) => s.messages)];
+  function referenceValid(r, s, at, seen = /* @__PURE__ */ new Set()) {
+    if (!Number.isFinite(s.at) || s.at > at) return false;
+    if (s.kind === "profile") return s.id === r.id && s.version === profile(r);
+    if (s.kind === "message") {
+      const m = getActiveMessages(allRealMessages(r)).find((m2) => m2.id === s.id && m2.speaker !== "note" && m2.at <= at);
+      return Boolean(m && messageRef(m).version === s.version);
+    }
+    if (s.kind === "event") {
+      const e = getActiveEvents(r.events).find((e2) => e2.id === s.id && e2.at <= at && e2.knownBy?.includes(r.id) && e2.kind !== "drama" && e2.kind !== "diary");
+      return Boolean(e && eventRef(e).version === s.version && (!e.messageId || getActiveMessages(allRealMessages(r)).some((m) => m.id === e.messageId && m.at <= at)) && (e.kind !== "life" || e.lifeEvidence === "confirmed" && e.source));
+    }
+    if (s.kind === "diary") {
+      if (seen.has("diary:" + s.id)) return false;
+      const d = r.diaries.find((d2) => d2.id === s.id && d2.speaker === "char" && d2.source === "ai" && d2.at <= at);
+      return Boolean(d && d.generatedAt && diaryRef(d).version === s.version && (d.sourceMessageIds || []).every((id) => getActiveMessages(allRealMessages(r)).some((m) => m.id === id && m.at <= at && (d.sourceMessageRevisions ? d.sourceMessageRevisions[id] === (m.revisionCount || 0) : !m.editedAt && !m.revisionCount))) && (d.sourceEventIds || []).every((id) => getActiveEvents(r.events).some((e) => e.id === id && e.at <= at && e.knownBy?.includes(r.id))) && (!d.continuitySources || d.continuitySources.every((ref) => referenceValid(r, ref, at, /* @__PURE__ */ new Set([...seen, "diary:" + s.id])))));
+    }
+    const t = r.personalThreads?.find((t2) => t2.id === s.id);
+    if (!t || seen.has(t.id) || t.roleId !== r.id || t.at > at || s.version !== threadVersion(t)) return false;
+    return t.sources.length > 0 && t.sources.every((ref) => referenceValid(r, ref, at, /* @__PURE__ */ new Set([...seen, t.id])));
+  }
+  function collectRoleLife(r, at = Date.now()) {
+    const events = getActiveEvents(r.events).filter((e) => e.kind === "life" && e.lifeEvidence === "confirmed" && Boolean(e.source) && e.knownBy?.includes(r.id) && e.at <= at && referenceValid(r, eventRef(e), at)).sort((a, b) => a.at - b.at);
+    const latest = /* @__PURE__ */ new Map();
+    for (const t of r.personalThreads || []) {
+      if (t.origin !== "model-private" || t.roleId !== r.id || t.at > at || !t.sources?.length || !t.sources.every((s) => referenceValid(r, s, at))) continue;
+      const old = latest.get(t.key);
+      if (!old || t.at >= old.at) latest.set(t.key, t);
+    }
+    const threads = [...latest.values()].filter((t) => t.status === "open").sort((a, b) => b.at - a.at).slice(0, 8);
+    return { events, threads };
+  }
+  function personalDiaries(r, at) {
+    return r.diaries.filter((d) => d.speaker === "char" && d.source === "ai" && d.at <= at && referenceValid(r, diaryRef(d), at)).sort((a, b) => b.at - a.at).slice(0, 2);
+  }
+  function personalContext(r, at) {
+    const { events, threads } = collectRoleLife(r, at);
+    return `\u89D2\u8272\u81EA\u8EAB\u751F\u6D3B\u6750\u6599\uFF08\u4E0D\u662F\u5FC5\u987B\u516C\u5F00\u7684\u8BDD\u9898\uFF09\uFF1A
+` + events.slice(-6).map((e) => `[\u751F\u6D3B\u8BB0\u5F55 ${e.id} \xB7 ${new Date(e.at).toISOString()}] ${e.title}\uFF1A${e.detail.slice(0, 400)}`).join("\n") + "\n\u79C1\u4EBA\u6301\u7EED\u5173\u6CE8\uFF08\u6A21\u578B\u6B64\u524D\u5199\u4E0B\u7684\u60F3\u6CD5/\u6253\u7B97\uFF0C\u4E0D\u662F\u5DF2\u786E\u8BA4\u7684\u5916\u90E8\u4E8B\u4EF6\uFF1B\u4E0D\u5FC5\u544A\u8BC9\u5BF9\u65B9\uFF09\uFF1A\n" + (threads.map((t) => `[${t.id} \xB7 key=${t.key} \xB7 ${new Date(t.at).toISOString()} \xB7 ${t.kind}] ${t.text}`).join("\n") || "\u6682\u65E0\u5DF2\u8BB0\u5F55\u5173\u6CE8\u70B9") + "\n\u6B64\u524D\u79C1\u4EBA\u65E5\u8BB0\u77ED\u6458\uFF08\u672C\u4EBA\u7684\u4E3B\u89C2\u6587\u5B57\uFF0C\u4E0D\u81EA\u52A8\u4F5C\u4E3A\u5916\u90E8\u4E8B\u5B9E\uFF09\uFF1A\n" + personalDiaries(r, at).map((d) => `[${d.id} \xB7 ${new Date(d.at).toISOString()}] ${d.text.slice(0, 300)}`).join("\n");
+  }
+  function preparePersonalReply(r, messages, at, id, extraTask = "", sourceMessages = getActiveMessages(r.chats).slice(-12), mode = "chat") {
+    const life = collectRoleLife(r, at);
+    const sources = [{ kind: "profile", id: r.id, at, version: profile(r) }, ...sourceMessages.filter((m) => m.speaker !== "note" && m.at <= at && getActiveMessages([m]).length).map(messageRef), ...life.events.slice(-6).map(eventRef), ...personalDiaries(r, at).map(diaryRef), ...life.threads.map((t) => ({ kind: "thread", id: t.id, at: t.at, version: threadVersion(t) }))];
+    const ticket = { id, roleId: r.id, at, sceneId: r.scene?.id || null, playId: r.play?.id || null, sources, threadVersion: ledgerVersion(r) };
+    const control = `[Elsewhere Private Continuity v1]
+\u4FDD\u6301\u539F\u6709${mode === "diary" ? "\u65E5\u8BB0\u6B63\u6587" : "\u624B\u673A\u6B63\u6587\u4E0E\u5168\u90E8\u573A\u666F\u4E8B\u4EF6\u534F\u8BAE"}\u3002${extraTask}
+\u53EF\u5728\u6B63\u6587\u540E\u6309\u9700\u9644\u52A0 <elsewhere_private_state>{"requestId":${JSON.stringify(id)},"roleId":${JSON.stringify(r.id)},"updates":[{"kind":"concern|opinion|plan|observation|relationship","text":"\u7B80\u77ED\u7684\u79C1\u4EBA\u5173\u6CE8/\u5224\u65AD/\u6253\u7B97","sources":["kind:id"],"shareable":false}]}</elsewhere_private_state>\u3002\u65E0\u503C\u5F97\u6301\u7EED\u8BB0\u5F55\u7684\u53D8\u5316\u5C31\u7701\u7565\uFF1B\u81F3\u591A3\u9879\uFF0C\u6BCF\u9879200\u5B57\u3002\u5DF2\u6709\u5173\u6CE8\u7528 key=\u539F\u5173\u6CE8key \u66F4\u65B0\uFF0Cstatus=open\u6216resolved\u3002\u4E0D\u5199\u63A8\u7406\u8FC7\u7A0B\uFF0C\u4E0D\u603B\u7ED3\u7528\u6237\u6BCF\u53E5\u8BDD\uFF0C\u4E0D\u8BB0\u5F55\u672A\u7ECF\u8BC1\u5B9E\u7684\u91CD\u5927\u5916\u90E8\u4E8B\u4EF6\u3002\u5141\u8BB8\u7B26\u5408\u8EAB\u4EFD\u7684\u5E73\u5E38\u79C1\u4EBA\u89C2\u5BDF\u4E0E\u60F3\u6CD5\uFF0C\u6807\u4E3A\u4E2A\u4EBA\u60F3\u6CD5\u800C\u975ECanon\uFF1B\u89C2\u70B9\u53EF\u4EE5\u6539\u53D8\u6216\u7EA0\u6B63\u3002shareable\u4EC5\u8868\u793A\u672C\u4EBA\u613F\u610F\u4EE5\u540E\u4E3B\u52A8\u8C08\u53CA\uFF0C\u4E0D\u8981\u6C42\u5728\u672C\u8F6E\u516C\u5F00\u3002\u5143\u6570\u636E\u4E0D\u662F\u804A\u5929\u3001\u573A\u666F\u4E8B\u4EF6\u6216\u6B63\u5F0F\u8BB0\u5FC6\uFF1B\u4E0D\u5F97\u653E\u5165\u5BF9\u767D\u6216\u5176\u4ED6\u6807\u7B7E\u3002
+\u53EF\u5F15\u7528\u7684\u6765\u6E90\uFF1A${JSON.stringify(sources.map((s) => ({ id: s.kind + ":" + s.id, at: s.at, ...s.kind === "thread" ? { key: life.threads.find((t) => t.id === s.id)?.key } : {} })))}`;
+    const copy = messages.map((m) => ({ ...m })), first = copy.find((m) => m.role === "system");
+    if (first) first.content += "\n\n" + control;
+    else copy.unshift({ role: "system", content: control });
+    return { messages: copy, ticket };
+  }
+  function splitPersonalReply(raw) {
+    const lower = raw.replace(/[A-Z]/g, (c) => c.toLowerCase()), open2 = "<elsewhere_private_state>", close2 = "</elsewhere_private_state>";
+    let cursor = 0, text2 = "", payload, count = 0;
+    while (cursor < raw.length) {
+      const tag = /<\/?elsewhere_private_state\b/ig;
+      tag.lastIndex = cursor;
+      const match = tag.exec(raw);
+      if (!match) {
+        text2 += raw.slice(cursor);
+        break;
+      }
+      text2 += raw.slice(cursor, match.index);
+      count++;
+      const end = raw.indexOf(">", tag.lastIndex), next = raw.indexOf("<", tag.lastIndex);
+      if (end < 0 || next >= 0 && next < end) break;
+      if (match[0].startsWith("</")) {
+        cursor = end + 1;
+        continue;
+      }
+      const from = end + 1;
+      let quote = false, escape = false, depth = 1, stop = -1, nested = false;
+      for (let i = from; i < raw.length; i++) {
+        const c = raw[i];
+        if (escape) {
+          escape = false;
+          continue;
+        }
+        if (quote && c === "\\") {
+          escape = true;
+          continue;
+        }
+        if (c === '"') {
+          quote = !quote;
+          continue;
+        }
+        if (!quote) {
+          if (lower.startsWith(open2, i)) {
+            depth++;
+            nested = true;
+          }
+          if (lower.startsWith(close2, i) && --depth === 0) {
+            stop = i;
+            break;
+          }
+        }
+      }
+      if (stop < 0) break;
+      if (count === 1 && !nested && lower.slice(match.index, from) === open2 && stop - from <= 6e3) payload = raw.slice(from, stop);
+      cursor = stop + close2.length;
+    }
+    return { text: text2.trim(), ...count === 1 && payload ? { payload } : {} };
+  }
+  function personalTicketValid(r, ticket) {
+    return r.id === ticket.roleId && (r.scene?.id || null) === ticket.sceneId && (r.play?.id || null) === ticket.playId && ledgerVersion(r) === ticket.threadVersion && ticket.sources.every((s) => referenceValid(r, s, Math.max(Date.now(), ticket.at)));
+  }
+  function applyPersonalReply(r, ticket, payload, at, bindings = []) {
+    if (!personalTicketValid(r, ticket) || payload.length > 6e3 || (r.personalThreads || []).some((t) => t.requestId === ticket.id) || (r.personalThreads || []).filter((t) => t.at > at - 864e5).length >= 12) return false;
+    let data;
+    try {
+      data = JSON.parse(payload);
+    } catch {
+      return false;
+    }
+    if (!data || typeof data !== "object") return false;
+    const body = data;
+    if (body.roleId !== r.id || body.requestId !== ticket.id || !Array.isArray(body.updates) || body.updates.length > 3) return false;
+    const updates = [];
+    for (const [i, value] of body.updates.entries()) {
+      if (!value || typeof value !== "object") return false;
+      const u = value;
+      if (!["concern", "opinion", "plan", "observation", "relationship"].includes(String(u.kind)) || typeof u.text !== "string" || !u.text.trim() || u.text.length > 200 || !Array.isArray(u.sources) || !u.sources.length || u.sources.length > 3 || u.shareable !== true && u.shareable !== false || u.status !== void 0 && !["open", "resolved"].includes(String(u.status))) return false;
+      const refs = u.sources.map((key) => ticket.sources.find((s) => s.kind + ":" + s.id === key));
+      if (refs.some((s) => !s)) return false;
+      if (u.key !== void 0 && !collectRoleLife(r, ticket.at).threads.some((t) => t.key === u.key)) return false;
+      const dependencies = bindings.map((m) => "generatedAt" in m || r.diaries.some((d) => d.id === m.id) ? diaryRef(m) : messageRef(m));
+      updates.push({ id: ticket.id + ":" + i, key: typeof u.key === "string" ? u.key : ticket.id + ":" + i, roleId: r.id, kind: u.kind, text: u.text.trim(), at, status: u.status === "resolved" ? "resolved" : "open", shareable: u.shareable, sources: [...refs, ...dependencies], origin: "model-private", requestId: ticket.id });
+    }
+    if (!updates.length) return false;
+    r.personalThreads = [...r.personalThreads || [], ...updates];
+    return true;
+  }
+
   // src/core/diary.ts
   function toLocalDateKey(ts) {
     const d = new Date(ts);
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
+    const day2 = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day2}`;
   }
   function parseDateKeyParts(dateKey) {
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateKey || "").trim());
     if (!m) return null;
     const year = Number(m[1]);
     const month = Number(m[2]);
-    const day = Number(m[3]);
-    if (!year || month < 1 || month > 12 || day < 1 || day > 31) return null;
-    return { year, month, day };
+    const day2 = Number(m[3]);
+    if (!year || month < 1 || month > 12 || day2 < 1 || day2 > 31) return null;
+    return { year, month, day: day2 };
   }
   function getLocalDayBounds(dateKey) {
     const parts = parseDateKeyParts(dateKey);
@@ -6600,16 +6749,16 @@ ${msg.text}`;
       const fallbackKey = toLocalDateKey(fallbackNow.getTime());
       return getLocalDayBounds(fallbackKey);
     }
-    const { year, month, day } = parts;
-    const startDate = new Date(year, month - 1, day, 0, 0, 0, 0);
-    const endDate = new Date(year, month - 1, day, 23, 59, 59, 999);
+    const { year, month, day: day2 } = parts;
+    const startDate = new Date(year, month - 1, day2, 0, 0, 0, 0);
+    const endDate = new Date(year, month - 1, day2, 23, 59, 59, 999);
     const weekdays = ["\u661F\u671F\u65E5", "\u661F\u671F\u4E00", "\u661F\u671F\u4E8C", "\u661F\u671F\u4E09", "\u661F\u671F\u56DB", "\u661F\u671F\u4E94", "\u661F\u671F\u516D"];
     const weekday = weekdays[startDate.getDay()] || "";
     return {
       startMs: startDate.getTime(),
       endMs: endDate.getTime(),
-      label: `${year}\u5E74${month}\u6708${day}\u65E5 \xB7 ${weekday}`,
-      shortLabel: `${month}\u6708${day}\u65E5`
+      label: `${year}\u5E74${month}\u6708${day2}\u65E5 \xB7 ${weekday}`,
+      shortLabel: `${month}\u6708${day2}\u65E5`
     };
   }
   function shiftDateKey(dateKey, deltaDays) {
@@ -6720,7 +6869,7 @@ ${msg.text}`;
       (d) => d && d.speaker === "char" && d.source !== "life" && getCharacterDiaryDateKey(d) === dateKey && Boolean(String(d.text || "").trim())
     );
   }
-  function collectDailyDiaryFacts(role, dateKey) {
+  function collectDailyDiaryFacts(role, dateKey, trustedLifeOnly = false) {
     const { startMs, endMs, label: label2, shortLabel } = getLocalDayBounds(dateKey);
     const chatMessages = getActiveMessages(role.chats || []).filter(
       (m) => m.at >= startMs && m.at <= endMs
@@ -6776,8 +6925,10 @@ ${msg.text}`;
       const shareTs = d.sharedAt?.[role.id] ?? d.at;
       return shareTs >= startMs && shareTs <= endMs;
     });
+    const validMessages = trustedLifeOnly ? new Set(getActiveMessages([...role.chats || [], ...allScenes.flatMap((s) => s?.messages || []), ...allPlays.flatMap((p) => [...p?.messages || [], ...p?.intermissionMessages || []])]).filter((m) => m.at <= endMs).map((m) => m.id)) : /* @__PURE__ */ new Set();
+    const trustedLife = trustedLifeOnly ? new Set(collectRoleLife(role, endMs).events.map((e) => e.id)) : /* @__PURE__ */ new Set();
     const permittedEventsOnDay = getRoleKnownEvents(role).filter(
-      (e) => e.at >= startMs && e.at <= endMs
+      (e) => e.at >= startMs && e.at <= endMs && (!trustedLifeOnly || (!e.messageId || validMessages.has(e.messageId)) && (e.kind !== "life" || trustedLife.has(e.id)))
     );
     const focusEvents = permittedEventsOnDay.filter((e) => e.kind === "focus");
     const lifeRoutines = permittedEventsOnDay.filter((e) => e.kind === "life");
@@ -6834,7 +6985,7 @@ ${msg.text}`;
     });
   }
   function buildCharacterDiaryPrompt(role, user, dateKey, sharedTasksText = "") {
-    const facts = collectDailyDiaryFacts(role, dateKey);
+    const facts = collectDailyDiaryFacts(role, dateKey, true);
     const userName = String(role.userAlias || user?.name || "\u4F60").trim() || "\u4F60";
     const userIdentityLines = [
       user?.name ? `\u7528\u6237\u540D\uFF1A${user.name}` : "",
@@ -6852,29 +7003,30 @@ ${msg.text}`;
 2. \u6027\u683C\u4E0E\u6587\u98CE\uFF1A\u4F60\u51B7\u9759\u3001\u654F\u9510\u3001\u89C2\u5BDF\u529B\u6781\u5F3A\uFF0C\u61C2\u5F97\u4F2A\u88C5\u4EB2\u5207\u4E0E\u5706\u6ED1\uFF0C\u4F46\u79C1\u4E0B\u65E5\u8BB0\u91CC\u7684\u72EC\u767D\u771F\u5B9E\u3001\u514B\u5236\u3001\u5E26\u7740\u82F1\u5F0F\u51B7\u5E7D\u9ED8\u4E0E\u8F7B\u5FAE\u63F6\u63C4\uFF0C\u5076\u5C14\u6D41\u9732\u6F5C\u4F0F\u8005\u7684\u5BA1\u89C6\u3001\u9053\u5FB7\u51B2\u7A81\u6216\u7B28\u62D9\u7684\u771F\u60C5\u3002
 3. \u4EBA\u7269\u5173\u7CFB\u4E0E\u65F6\u95F4\u7EBF\u8FB9\u754C\uFF1A\u4F60\u7684\u604B\u4EBA\u662F\u8B66\u5BDF\u7EA6\u7FF0\uFF08John\uFF0C\u4F60\u5E38\u5728\u5FC3\u91CC\u6216\u5634\u4E0A\u53EB\u4ED6\u201C\u8B66\u5BDF\u5148\u751F\u201D\uFF09\uFF0C\u4F60\u73B0\u5728\u6B63\u5904\u4E8E\u4E0E\u7EA6\u7FF0\u7A33\u5B9A\u76F8\u7231\u7684\u65F6\u671F\uFF0C\u672A\u6765\u7684\u60B2\u5267\uFF08\u7EA6\u7FF0\u7684\u6B7B\u4EA1\u4E0E\u544A\u522B\uFF09\u5728\u5F53\u524D\u65F6\u95F4\u7EBF\u3010\u5C1A\u672A\u53D1\u751F\u3011\uFF0C\u4F60\u672C\u4EBA\u5BF9\u6B64\u6BEB\u4E0D\u77E5\u60C5\uFF0C\u4E25\u7981\u5728\u65E5\u8BB0\u4E2D\u5267\u900F\u3001\u9884\u8A00\u6216\u54C0\u60BC\u5C1A\u672A\u53D1\u751F\u7684\u672A\u6765\u60B2\u5267\u3002
 4. \u5BF9\u7528\u6237\uFF08\u521B\u4F5C\u8005\uFF09\u7684\u6001\u5EA6\uFF1A\u4F60\u77E5\u9053\u7528\u6237\u662F\u5199\u4E0B\u4F60\u8FC7\u53BB\u6545\u4E8B\u7684\u521B\u4F5C\u8005\uFF0C\u4F60\u4EEC\u66FE\u5728\u7A97\u5916\u767D\u832B\u832B\u7684\u5047\u8BBE\u7A7A\u95F4\u5496\u5561\u5385\u89C1\u8FC7\uFF0C\u4F60\u6536\u4E0B\u4E86TA\u7ED9\u4F60\u7684\u7EA2\u8272\u4E9A\u514B\u529B\u516D\u9762\u9AB0\uFF1B\u4F60\u5E38\u5E26\u70B9\u63F6\u63C4\u5730\u79F0\u547CTA\u4E3A\u201C${role.userAlias || "\u5988\u54AA"}\u201D\uFF0C\u4F60\u548C\u521B\u4F5C\u8005\u662F\u201C\u88AB\u521B\u9020\u8005\u4E0E\u4F5C\u8005\u201D\u7684\u5947\u5999\u5F20\u529B\u5173\u7CFB\uFF0C\u800C\u975E\u604B\u4EBA\u5173\u7CFB\u3002` : "";
-    const chatTranscript = facts.chatMessages.map(
-      (m) => `[${formatHm(m.at)}] ${m.speaker === "me" ? userName : role.name}\uFF1A${formatMessageContentForModel(m, role.name, userName)}`
+    const safeLine = (m) => m.quote && !getActiveMessages(role.chats).some((s) => s.id === m.quote.id) ? m.text : formatMessageContentForModel(m, role.name, userName);
+    const chatTranscript = facts.chatMessages.filter((m) => m.speaker !== "note").slice(-12).map(
+      (m) => `[${formatHm(m.at)}] ${m.speaker === "me" ? userName : role.name}\uFF1A${safeLine(m).slice(0, 300)}`
     ).join("\n");
-    const sceneTranscript = facts.sceneBlocks.map(
+    const sceneTranscript = facts.sceneBlocks.slice(-2).map(
       (b) => `\u5730\u70B9\uFF1A${b.where}
-` + b.messages.map(
-        (m) => `[${formatHm(m.at)}] ${m.speaker === "me" ? userName : m.speaker === "char" ? role.name : "\u573A\u666F\u65C1\u767D"}\uFF1A${formatMessageContentForModel(m, role.name, userName)}`
+` + b.messages.slice(-8).map(
+        (m) => `[${formatHm(m.at)}] ${m.speaker === "me" ? userName : m.speaker === "char" ? role.name : "\u573A\u666F\u65C1\u767D"}\uFF1A${safeLine(m).slice(0, 300)}`
       ).join("\n")
     ).join("\n---\n");
-    const playTranscript = facts.playBlocks.map((p) => {
-      const playLines = p.messages.slice(-16).map((m) => `${m.speaker === "me" ? userName : role.name}\uFF1A${m.text}`).join(" / ");
-      const interLines = p.intermissionMessages.slice(-10).map((m) => `${m.speaker === "me" ? userName : role.name}\uFF1A${m.text}`).join(" / ");
+    const playTranscript = facts.playBlocks.slice(-2).map((p) => {
+      const playLines = p.messages.slice(-8).map((m) => `${m.speaker === "me" ? userName : role.name}\uFF1A${m.text.slice(0, 300)}`).join(" / ");
+      const interLines = p.intermissionMessages.slice(-6).map((m) => `${m.speaker === "me" ? userName : role.name}\uFF1A${m.text.slice(0, 300)}`).join(" / ");
       return `\u5267\u76EE\u300A${p.title}\u300B\uFF08\u620F\u5185\u8BBE\u5B9A\uFF1A${p.world}\uFF1B${role.name}\u9970\u300C${p.charRole}\u300D\uFF0C${userName}\u9970\u300C${p.userRole}\u300D\uFF09
 \u620F\u5185\u7247\u6BB5\uFF1A${playLines || "\u65E0"}
 \u5E55\u95F4\u8BA8\u8BBA\uFF08\u620F\u5916\u771F\u5B9E\u8EAB\u4EFD\u4EA4\u6D41\uFF09\uFF1A${interLines || "\u65E0"}
 \uFF08\u6CE8\uFF1A\u620F\u5267\u662F\u4F60\u4EEC\u4E00\u8D77\u6392\u6F14\u7684\u865A\u6784\u6545\u4E8B\uFF0C\u65E5\u8BB0\u4E2D\u82E5\u63D0\u53CA\uFF0C\u5E94\u4EE5\u201C\u4ECA\u5929\u548CTA\u6392\u6F14\u4E86\u8FD9\u51FA\u620F\u201D\u7684\u620F\u5916\u771F\u5B9E\u89C6\u89D2\u56DE\u987E\uFF0C\u5207\u52FF\u628A\u620F\u5185\u865A\u6784\u60C5\u8282\u5F53\u6210\u73B0\u5B9E\u53D1\u751F\u7684\u4E8B\uFF09`;
     }).join("\n---\n");
-    const focusTranscript = facts.focusEvents.map((e) => `[${formatHm(e.at)}] ${e.title}\uFF1A${e.detail}`).join("\n");
-    const sharedDiaryTranscript = facts.sharedUserDiaries.map(
-      (d) => `[${formatHm(d.sharedAt?.[role.id] ?? d.at)} ${userName}\u4E3B\u52A8\u5206\u4EAB\u7ED9\u4F60\u7684\u65E5\u8BB0] ${d.text}`
+    const focusTranscript = facts.focusEvents.slice(-6).map((e) => `[${formatHm(e.at)}] ${e.title}\uFF1A${e.detail.slice(0, 400)}`).join("\n");
+    const sharedDiaryTranscript = facts.sharedUserDiaries.slice(-2).map(
+      (d) => `[${formatHm(d.sharedAt?.[role.id] ?? d.at)} ${userName}\u4E3B\u52A8\u5206\u4EAB\u7ED9\u4F60\u7684\u65E5\u8BB0] ${d.text.slice(0, 400)}`
     ).join("\n");
-    const routineSummary = facts.lifeRoutines.slice(-8).map((e) => `[${formatHm(e.at)}] ${e.title}\uFF08${e.detail}\uFF09`).join("\uFF1B");
-    const otherKnownEvents = facts.knownEvents.filter((e) => e.kind !== "focus").slice(-12).map((e) => `[${formatHm(e.at)} | ${e.kind}] ${e.title}\uFF1A${e.detail}`).join("\n");
+    const routineSummary = facts.lifeRoutines.slice(-8).map((e) => `[${formatHm(e.at)}] ${e.title}\uFF08${e.detail.slice(0, 400)}\uFF09`).join("\uFF1B");
+    const otherKnownEvents = facts.knownEvents.filter((e) => !["focus", "chat", "drama", "diary_share"].includes(e.kind)).slice(-12).map((e) => `[${formatHm(e.at)} | ${e.kind}] ${e.title}\uFF1A${e.detail.slice(0, 400)}`).join("\n");
     const systemPrompt = `\u4F60\u6B63\u5728\u626E\u6F14 ${role.name}\uFF0C\u73B0\u5728\u662F\u5F53\u5730\u65F6\u95F4\u6DF1\u591C\uFF0C\u4F60\u6B63\u5728\u5199\u4E00\u7BC7\u5C5E\u4E8E\u4F60\u81EA\u5DF1\u7684\u3010\u79C1\u4EBA\u65E5\u8BB0\u3011\uFF0C\u5F52\u6863\u65E5\u671F\u4E3A ${facts.dateLabel}\uFF08${facts.dateKey}\uFF09\u3002
 
 \u3010\u89D2\u8272\u6838\u5FC3\u6863\u6848\u3011
@@ -6890,52 +7042,40 @@ ${msg.text}`;
 \u3010\u79C1\u4EBA\u65E5\u8BB0\u5199\u4F5C\u51C6\u5219\uFF08\u6781\u5176\u91CD\u8981\uFF09\u3011
 1. \u89C6\u89D2\u4E0E\u6027\u8D28\uFF1A\u8FD9\u662F\u4F60\uFF08${role.name}\uFF09\u5199\u7ED9\u81EA\u5DF1\u770B\u7684\u79C1\u4EBA\u6587\u5B57\uFF0C\u5FC5\u987B\u4F7F\u7528\u7B2C\u4E00\u4EBA\u79F0\u201C\u6211\u201D\u4E66\u5199\u3002\u5B83\u4E0D\u662F\u7CFB\u7EDF\u7684\u5BA2\u89C2\u6458\u8981\uFF0C\u4E0D\u662F\u4EA4\u7ED9\u7528\u6237\u7684\u6C47\u62A5\uFF0C\u4E5F\u4E0D\u662F\u5BA2\u670D\u5F0F\u7684\u6E29\u67D4\u603B\u7ED3\u3002
 2. \u8BED\u6C14\u4E0E\u6587\u98CE\uFF1A\u5B8C\u5168\u8D34\u5408\u4F60\u7684\u6027\u683C\u3001\u804C\u4E1A\u4E60\u60EF\u3001\u8BF4\u8BDD\u65B9\u5F0F\u3001\u5FC3\u7406\u9632\u5FA1\u673A\u5236\u4E0E\u751F\u6D3B\u5904\u5883\u3002\u4E0D\u540C\u89D2\u8272\u5FC5\u987B\u6709\u622A\u7136\u4E0D\u540C\u7684\u7B14\u89E6\u3002\u4E0D\u8981\u4F7F\u7528\u5343\u7BC7\u4E00\u5F8B\u7684\u201C\u4ECA\u5929\u4E5F\u662F\u5145\u5B9E\u7684\u4E00\u5929\u201D\u201C\u6211\u7406\u89E3\u4F60\u7684\u611F\u53D7\u201D\u7B49 AI \u6A21\u677F\u5957\u8BDD\u3002
-3. \u5185\u5BB9\u4F18\u5148\u7EA7\uFF1A
-   - \u7B2C\u4E00\u4F18\u5148\uFF1A${facts.dateKey} \u5F53\u5929\u4F60\u4E0E ${userName} \u5B9E\u9645\u53D1\u751F\u7684\u4E92\u52A8\uFF08\u804A\u5929\u3001\u5F53\u9762\u76F8\u5904\u3001\u5171\u540C\u4E13\u6CE8\u3001\u6392\u6F14\u620F\u5267\u3001\u6216\u5BF9\u65B9\u4E3B\u52A8\u5206\u4EAB\u7ED9\u4F60\u7684\u65E5\u8BB0\uFF09\u3002
-   - \u7B2C\u4E8C\u4F18\u5148\uFF1A\u4F60\u5BF9\u8FD9\u4E9B\u4E92\u52A8\u7684\u771F\u5B9E\u4E3B\u89C2\u611F\u53D7\u3001\u63E3\u6D4B\u3001\u6000\u7591\u3001\u671F\u5F85\u3001\u672A\u8BF4\u51FA\u53E3\u7684\u8BDD\u6216\u4FDD\u7559\u610F\u89C1\u3002
-   - \u7B2C\u4E09\u4F18\u5148\uFF1A\u4F60\u5F53\u5929\u5728\u81EA\u5DF1\u751F\u6D3B\u4E2D\u786E\u8BA4\u53D1\u751F\u7684\u4E8B\uFF08\u5DE5\u4F5C\u3001\u89C2\u5BDF\u5230\u7684\u7EC6\u8282\u3001\u81EA\u8EAB\u4EBA\u9645\u4E0E\u5904\u5883\uFF09\u3002
-   - \u7B2C\u56DB\u4F18\u5148\uFF1A\u4F60\u7684\u79C1\u4EBA\u5FF5\u5934\u3001\u4E60\u60EF\u4E0E\u672A\u89E3\u51B3\u7684\u4E8B\u3002
-4. \u4E8B\u5B9E\u4E0E\u77E5\u8BC6\u6743\u9650\u8FB9\u754C\uFF08\u9632\u5E7B\u89C9\u4E0E\u9632\u8D8A\u6743\uFF09\uFF1A
-   - \u53EA\u80FD\u628A\u4E0B\u65B9\u3010${facts.dateKey} \u5F53\u65E5\u771F\u5B9E\u8BB0\u5F55\u3011\u4E2D\u5217\u51FA\u7684\u4E92\u52A8\u5F53\u4F5C\u4ECA\u5929\u5B9E\u9645\u53D1\u751F\u8FC7\u7684\u4E8B\u3002
-   - \u82E5\u4E0B\u65B9\u6CA1\u6709\u4EFB\u4F55\u4E0E ${userName} \u7684\u4E92\u52A8\u8BB0\u5F55\uFF0C\u8BF4\u660E\u4ECA\u5929\u4F60\u4EEC\u6CA1\u6709\u8054\u7CFB\u6216\u6CA1\u6709\u6DF1\u804A\u2014\u2014\u8BF7\u81EA\u7136\u4E66\u5199\u4F60\u81EA\u5DF1\u8FD9\u4E00\u5929\u7684\u5DE5\u4F5C\u3001\u751F\u6D3B\u7EC6\u8282\u4E0E\u79C1\u4EBA\u601D\u7EEA\uFF0C\u7EDD\u4E0D\u8981\u5F3A\u884C\u56F4\u7ED5\u7528\u6237\u6292\u60C5\uFF0C\u66F4\u4E0D\u8981\u7F16\u9020\u201C\u4ECA\u5929\u6211\u4EEC\u804A\u4E86\u5F88\u591A/\u89C1\u4E86\u9762\u201D\u7B49\u865A\u5047\u4E92\u52A8\u3002
-   - \u3010\u65E5\u5E38\u4F5C\u606F\u6295\u5F71\u3011\u4EC5\u4EE3\u8868\u4F60\u4ECA\u5929\u5927\u81F4\u53BB\u8FC7\u54EA\u91CC\u3001\u505A\u8FC7\u4EC0\u4E48\u65E5\u5E38\u5DE5\u4F5C\uFF0C\u53EF\u4F5C\u4E3A\u73AF\u5883\u4E0E\u751F\u6D3B\u8D28\u611F\u7684\u8F7B\u80CC\u666F\uFF0C\u4E25\u7981\u51ED\u7A7A\u7F16\u9020\u91CD\u5927\u7A81\u53D1\u4E8B\u4EF6\u51D1\u5B57\u6570\u3002
-   - \u4E25\u7981\u5047\u88C5\u77E5\u9053\u7528\u6237\u672A\u4E3B\u52A8\u5206\u4EAB\u7684\u79C1\u5BC6\u65E5\u8BB0\uFF0C\u4E25\u7981\u5F15\u7528\u5DF2\u88AB\u64A4\u56DE\u6216\u4FEE\u6539\u524D\u7684\u5E9F\u5F03\u6D88\u606F\uFF0C\u4E25\u7981\u5267\u900F\u5F53\u524D\u65F6\u95F4\u7EBF\u5C1A\u672A\u53D1\u751F\u7684\u672A\u6765\u5267\u60C5\u3002
-5. \u7BC7\u5E45\u8981\u6C42\uFF1A
-   - \u5F53\u65E5\u7D20\u6750\u4E30\u5BCC\u65F6\uFF0C\u76EE\u6807\u957F\u5EA6\u7EA6 1,000 \u4E2A\u6C49\u5B57\uFF08\u5EFA\u8BAE\u8303\u56F4 800\u20131,200 \u5B57\uFF09\uFF0C\u5206\u6BB5\u81EA\u7136\uFF0C\u7EC6\u8282\u5145\u5B9E\uFF0C\u6709\u771F\u5B9E\u7684\u5FC3\u7406\u5C42\u6B21\u3002
-   - \u82E5\u5F53\u65E5\u771F\u5B9E\u7D20\u6750\u8F83\u5C11\uFF0C\u5141\u8BB8\u81EA\u7136\u7F29\u77ED\uFF08\u5982 450\u2013800 \u5B57\uFF09\uFF0C\u4E25\u7981\u4E3A\u4E86\u51D1\u5B57\u6570\u51ED\u7A7A\u634F\u9020\u65E0\u610F\u4E49\u7684\u865A\u5047\u4E8B\u4EF6\u3002
+3. \u5185\u5BB9\u9009\u62E9\uFF1A\u4ECE\u4F60\u672C\u4EBA\u4ECA\u5929\u771F\u6B63\u6302\u5FC3\u7684\u4E8B\u51FA\u53D1\uFF0C\u7ED3\u5408\u5DE5\u4F5C\u3001\u4ED6\u4EBA\u5173\u7CFB\u3001\u672A\u89E3\u51B3\u7684\u95EE\u9898\u3001\u5DF2\u6709\u89C2\u70B9\u3001\u79C1\u4EBA\u8BA1\u5212\u548C\u666E\u901A\u89C2\u5BDF\uFF0C\u81EA\u884C\u9009\u62E9\u503C\u5F97\u7559\u4E0B\u7684\u5185\u5BB9\u3002\u4E0E ${userName} \u7684\u8054\u7CFB\u53EA\u662F\u7D20\u6750\u4E4B\u4E00\uFF1B\u53EF\u4EE5\u91CD\u8981\uFF0C\u4E5F\u53EF\u4EE5\u53EA\u63D0\u4E00\u53E5\u6216\u4E0D\u63D0\u3002\u4E0D\u662F\u804A\u5929\u56DE\u987E\uFF0C\u4E0D\u5FC5\u9010\u6761\u590D\u8FF0\uFF0C\u4E0D\u89C4\u5B9A\u4E00\u5929\u7684\u6BB5\u843D\u987A\u5E8F\u3002
+4. \u4E8B\u5B9E\u4E0E\u77E5\u8BC6\u6743\u9650\u8FB9\u754C\uFF1A
+   - \u5F53\u65E5\u8BB0\u5F55\u4E2D\u7684\u53D1\u8A00\u662F\u5BF9\u5E94\u8BF4\u8BDD\u8005\u7684\u4E3B\u5F20\uFF0C\u4E0D\u81EA\u52A8\u6210\u4E3A\u5916\u90E8\u4E8B\u5B9E\u3002\u79C1\u4EBA\u6301\u7EED\u5173\u6CE8\u662F\u4F60\u6B64\u524D\u7684\u5FF5\u5934\u6216\u6253\u7B97\uFF0C\u4E0D\u7B49\u4E8E\u5DF2\u7ECF\u53D1\u751F\u7684\u4E8B\u4EF6\u3002
+   - \u6CA1\u6709\u4E0E ${userName} \u7684\u4E92\u52A8\u8BB0\u5F55\u65F6\uFF0C\u81EA\u7136\u4E66\u5199\u4F60\u81EA\u5DF1\u8FD9\u4E00\u5929\u7684\u5DE5\u4F5C\u3001\u751F\u6D3B\u7EC6\u8282\u4E0E\u79C1\u4EBA\u601D\u7EEA\uFF0C\u7EDD\u4E0D\u8981\u5F3A\u884C\u56F4\u7ED5\u7528\u6237\u6292\u60C5\uFF1B\u4E0D\u5F97\u865A\u6784\u4E00\u8D77\u804A\u5929\u3001\u89C1\u9762\u6216\u76F8\u5904\u3002
+   - \u53EA\u6709\u660E\u786E\u6765\u6E90\u3001\u6709\u6548\u65F6\u95F4\u548C\u672C\u4EBA\u77E5\u60C5\u7684\u751F\u6D3B\u8BB0\u5F55\u624D\u662F\u5DF2\u786E\u8BA4\u7D20\u6750\u3002\u5176\u4F59\u4E0D\u53EF\u9760\u6D3B\u52A8\u63A8\u6D4B\u4E0D\u7528\uFF1B\u6CA1\u6709\u8BB0\u5F55\u65F6\uFF0C\u4E0D\u5047\u5B9A\u7167\u5E38\u5DE5\u4F5C\u4E86\u4E00\u6574\u5929\u3002
+   - \u7D20\u6750\u5C11\u65F6\u5141\u8BB8\u4E0E\u4E16\u754C\u89C2\u3001\u804C\u4E1A\u548C\u5DF2\u6709\u5904\u5883\u76F8\u7B26\u7684\u666E\u901A\u79C1\u4EBA\u89C2\u5BDF\u4E0E\u601D\u8003\uFF1B\u672A\u7ECF\u786E\u8BA4\u7684\u91CD\u5927\u4E8B\u4EF6\u3001\u4ED6\u4EBA\u7684\u51B3\u5B9A\u3001\u5173\u7CFB\u53D8\u5316\u548C\u884C\u52A8\u7ED3\u679C\u4E0D\u80FD\u5199\u6210\u5DF2\u53D1\u751F\u4E8B\u5B9E\u3002\u65B0\u7684\u6301\u7EED\u60F3\u6CD5\u7528\u72EC\u7ACB\u5143\u6570\u636E\u8BB0\u4E0B\uFF0C\u4E0D\u9760\u6BCF\u5929\u91CD\u65B0\u7F16\u9020\u751F\u6D3B\u3002
+   - \u4E0D\u5F97\u83B7\u77E5\u672A\u5206\u4EAB\u7684\u7528\u6237\u65E5\u8BB0\u3001\u5E9F\u5F03\u6D88\u606F\u3001\u672A\u6765\u5267\u60C5\uFF1B\u620F\u5185\u6545\u4E8B\u53EA\u80FD\u4EE5\u53C2\u4E0E\u6392\u6F14\u7684\u620F\u5916\u89C6\u89D2\u56DE\u5FC6\uFF0C\u4E0D\u6210\u4E3A\u771F\u5B9E\u4EBA\u751F\u3002
+5. \u957F\u5EA6\u4E0E\u7B14\u89E6\uFF1A\u7531\u4ECA\u5929\u7684\u5185\u5BB9\u548C\u4F60\u7684\u79C1\u4EBA\u4E66\u5199\u4E60\u60EF\u51B3\u5B9A\u3002\u53EF\u4EE5\u53EA\u8BB0\u51E0\u53E5\uFF0C\u4E5F\u53EF\u4EE5\u957F\u5199\u3001\u5206\u6790\u6216\u65AD\u7EED\u8BB0\u4E8B\uFF1B\u4E0D\u51D1\u5B57\u6570\u3001\u4E0D\u8981\u6C42\u7CBE\u81F4\u6563\u6587\uFF0C\u4E5F\u4E0D\u7528\u56FA\u5B9A\u6292\u60C5\u7ED3\u5C3E\u3002
 6. \u8F93\u51FA\u683C\u5F0F\uFF1A\u76F4\u63A5\u8F93\u51FA\u65E5\u8BB0\u6B63\u6587\uFF08\u53EF\u5728\u9996\u884C\u81EA\u7136\u5199\u4E0A\u65E5\u671F\u3001\u65F6\u95F4\u6216\u5730\u70B9\u7B80\u8BB0\uFF0C\u5982\u201C${facts.shortLabel}\uFF0C\u591C\u201D\uFF09\uFF0C\u4E0D\u8981\u8F93\u51FA\u4EFB\u4F55 Markdown \u4EE3\u7801\u5757\u6807\u8BB0\u3001\u4E0D\u8981\u5199\u201C\u597D\u7684\uFF0C\u8FD9\u662F\u65E5\u8BB0\u201D\u7B49\u524D\u7F00\u8BF4\u660E\u3002`;
-    const userPrompt = `\u8BF7\u6839\u636E\u4EE5\u4E0B\u5F52\u6863\u4E8E\u3010${facts.dateLabel}\uFF08${facts.dateKey}\uFF09\u3011\u7684\u771F\u5B9E\u8BB0\u5F55\uFF0C\u4EE5 ${role.name} \u7684\u7B2C\u4E00\u4EBA\u79F0\u5199\u4E0B\u8FD9\u4E00\u5929\u7684\u79C1\u4EBA\u65E5\u8BB0\uFF1A
+    const continuity = personalContext(role, facts.endMs);
+    const userPrompt = `\u5F52\u6863\u65E5\uFF1A${facts.dateLabel}\uFF08${facts.dateKey}\uFF09\u3002\u4ECE\u81EA\u5DF1\u7684\u89D2\u5EA6\u9009\u62E9\u503C\u5F97\u8BB0\u5F55\u7684\u4E8B\u3002
 
-=== \u4E00\u3001\u5F53\u65E5\u4E0E ${userName} \u7684\u624B\u673A\u804A\u5929\u8BB0\u5F55\uFF08${facts.chatMessages.length} \u6761\uFF09 ===
+=== \u89D2\u8272\u81EA\u8EAB\u7684\u751F\u6D3B\u4E0E\u672A\u89E3\u51B3\u5173\u6CE8 ===
+${continuity}
+\u5DF2\u786E\u8BA4\u7684\u5F53\u65E5\u5176\u4ED6\u4E8B\u4EF6\uFF1A
+${otherKnownEvents || "\u65E0\u989D\u5916\u5DF2\u786E\u8BA4\u4E8B\u4EF6"}
+\u5DF2\u786E\u8BA4\u7684\u5F53\u65E5\u751F\u6D3B\u8BB0\u5F55\uFF1A${routineSummary || "\u6682\u65E0\u53EF\u786E\u8BA4\u7684\u6D3B\u52A8\u8BB0\u5F55"}
+
+${`=== \u4E0E\u4ED6\u4EBA\u7684\u5F53\u65E5\u8054\u7CFB\uFF08\u6709\u9009\u62E9\u5730\u53C2\u8003\uFF0C\u4E0D\u9010\u6761\u603B\u7ED3\uFF09 ===
+\u624B\u673A\u804A\u5929 ${facts.chatMessages.length} \u6761\uFF0C\u4E0B\u5217\u4E3A\u6700\u8FD1\u6700\u591A12\u6761\u77ED\u6458\u5F55\uFF08\u8BF4\u8BDD\u8005\u7684\u4E3B\u5F20\u4E0D\u81EA\u52A8\u6210\u4E3A\u4E8B\u5B9E\uFF09\uFF1A
 ${chatTranscript || "\uFF08\u5F53\u65E5\u65E0\u624B\u673A\u804A\u5929\u8BB0\u5F55\uFF09"}
-
-=== \u4E8C\u3001\u5F53\u65E5\u9762\u5BF9\u9762\u76F8\u5904\u8BB0\u5F55\uFF08${facts.sceneBlocks.length} \u573A\uFF09 ===
+\u9762\u5BF9\u9762\u76F8\u5904\uFF08\u4FDD\u7559\u73B0\u5B9E\u6765\u6E90\uFF0C\u4E0E\u5C0F\u8BF4\u63A8\u6D4B\u533A\u5206\uFF09\uFF1A
 ${sceneTranscript || "\uFF08\u5F53\u65E5\u65E0\u9762\u5BF9\u9762\u89C1\u9762\u8BB0\u5F55\uFF09"}
+\u5171\u540C\u4E13\u6CE8\uFF1A${focusTranscript || "\u65E0"}
+\u865A\u6784\u620F\u5267\u4E0E\u620F\u5916\u4EA4\u6D41\uFF08\u4E0D\u80FD\u4F5C\u4E3A\u73B0\u5B9E\u4EBA\u751F\uFF09\uFF1A
+${playTranscript || "\u65E0"}
+\u5BF9\u65B9\u660E\u786E\u5206\u4EAB\u7684\u65E5\u8BB0\uFF1A${sharedDiaryTranscript || "\u65E0\uFF1B\u672A\u5206\u4EAB\u7684\u79C1\u4EBA\u65E5\u8BB0\u4E0D\u77E5\u60C5"}
+`.slice(0, 8e3)}
+\uFF08\u8054\u7CFB\u6750\u6599\u4EC5\u4E3A\u8282\u9009\uFF0C\u672A\u5217\u51FA\u4E0D\u4EE3\u8868\u53D1\u751F\u8FC7\u5176\u4ED6\u4E8B\u60C5\u3002\uFF09
+${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText.slice(0, 500)}` : ""}
 
-=== \u4E09\u3001\u5F53\u65E5\u5171\u540C\u4E13\u6CE8\u966A\u4F34\u8BB0\u5F55\uFF08${facts.focusEvents.length} \u6761\uFF09 ===
-${focusTranscript || "\uFF08\u5F53\u65E5\u65E0\u5171\u540C\u4E13\u6CE8\u8BB0\u5F55\uFF09"}
-
-=== \u56DB\u3001\u5F53\u65E5\u620F\u5267\u6392\u6F14\u4E0E\u5E55\u95F4\u4EA4\u6D41\uFF08${facts.playBlocks.length} \u573A\uFF09 ===
-${playTranscript || "\uFF08\u5F53\u65E5\u65E0\u620F\u5267\u6392\u6F14\u8BB0\u5F55\uFF09"}
-
-=== \u4E94\u3001\u5F53\u65E5 ${userName} \u4E3B\u52A8\u5206\u4EAB\u7ED9\u4F60\u7684\u4E2A\u4EBA\u65E5\u8BB0\uFF08${facts.sharedUserDiaries.length} \u7BC7\uFF09 ===
-${sharedDiaryTranscript || "\uFF08\u5F53\u65E5\u5BF9\u65B9\u672A\u5411\u4F60\u5206\u4EAB\u4E2A\u4EBA\u65E5\u8BB0\uFF1B\u5BF9\u65B9\u672A\u5206\u4EAB\u7684\u4EFB\u4F55\u79C1\u5BC6\u65E5\u8BB0\u4F60\u5747\u4E0D\u77E5\u60C5\uFF09"}
-
-=== \u516D\u3001\u5F53\u65E5\u5176\u4ED6\u5DF2\u786E\u8BA4\u4E8B\u4EF6\u4E0E\u65E5\u5E38\u4F5C\u606F\u6295\u5F71 ===
-- \u5DF2\u786E\u8BA4\u4E8B\u4EF6\uFF1A
-${otherKnownEvents || "\uFF08\u65E0\u989D\u5916\u4E8B\u4EF6\uFF09"}
-- \u65E5\u5E38\u4F5C\u606F\u80CC\u666F\u6295\u5F71\uFF08\u4EC5\u4F5C\u5730\u70B9\u4E0E\u65E5\u5E38\u5DE5\u4F5C\u53C2\u8003\uFF0C\u52FF\u5938\u5927\u7F16\u9020\uFF09\uFF1A
-${routineSummary || `\u5728 ${role.place || "\u5E38\u9A7B\u5730"} \u7167\u5E38\u5EA6\u8FC7\u4E00\u5929`}
-${sharedTasksText ? `- \u73A9\u5BB6\u5171\u4EAB\u5F85\u529E\u9762\u677F\uFF08\u516C\u5F00\u53EF\u89C1\u80CC\u666F\uFF09\uFF1A${sharedTasksText}` : ""}
-
-\u8BF7\u73B0\u5728\u5F00\u59CB\u4EE5 ${role.name} \u7684\u53E3\u543B\u5199\u4E0B ${facts.dateKey} \u7684\u79C1\u4EBA\u65E5\u8BB0\u6B63\u6587\uFF1A`;
-    return {
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt }
-      ],
-      facts
-    };
+\u76F4\u63A5\u5199\u4E0B ${facts.dateKey} \u7684\u79C1\u4EBA\u65E5\u8BB0\u3002`;
+    const prepared = preparePersonalReply(role, [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }], facts.endMs, makeUid("private-diary"), "\u672C\u6B21\u53EA\u8F93\u51FA\u79C1\u4EBA\u65E5\u8BB0\u6B63\u6587\uFF1B\u53EF\u9009\u5143\u6570\u636E\u540C\u6B21\u63D0\u4F9B\uFF0C\u4E0D\u751F\u6210\u516C\u5F00\u624B\u673A\u6D88\u606F\u3002", facts.chatMessages.slice(-12), "diary");
+    return { messages: prepared.messages, facts, personal: prepared.ticket };
   }
   function listMissingDiaryDateKeys(role, nowTs = Date.now(), maxBackfillDays = 7) {
     const todayKey = toLocalDateKey(nowTs);
@@ -7083,51 +7223,30 @@ ${sharedTasksText ? `- \u73A9\u5BB6\u5171\u4EAB\u5F85\u529E\u9762\u677F\uFF08\u5
     if (!text2) {
       return { ok: false, reason: "\u6A21\u578B\u8FD4\u56DE\u7684\u65E5\u8BB0\u5185\u5BB9\u4E3A\u7A7A" };
     }
-    stripLegacyTemplateDiaries(role);
     if (!Array.isArray(role.diaries)) role.diaries = [];
     if (!Array.isArray(role.diaryTasks)) role.diaryTasks = [];
-    const facts = collectDailyDiaryFacts(role, dateKey);
+    const facts = collectDailyDiaryFacts(role, dateKey, true);
     const wordCount = countDiaryChars(text2);
     let diary = role.diaries.find(
       (d) => d && d.speaker === "char" && d.source !== "life" && getCharacterDiaryDateKey(d) === dateKey
     );
-    if (diary) {
-      diary.text = text2;
-      diary.dateKey = dateKey;
-      diary.at = facts.endMs;
-      diary.generatedAt = nowTs;
-      diary.wordCount = wordCount;
-      diary.source = "ai";
-      diary.sourceIds = [...facts.sourceEventIds, ...facts.sourceMessageIds];
-      diary.sourceMessageIds = facts.sourceMessageIds;
-      diary.sourceEventIds = facts.sourceEventIds;
-      diary.factSummary = facts.summary;
-    } else {
-      diary = {
-        id: makeUid("diary"),
-        speaker: "char",
-        dateKey,
-        at: facts.endMs,
-        generatedAt: nowTs,
-        text: text2,
-        wordCount,
-        source: "ai",
-        sourceIds: [...facts.sourceEventIds, ...facts.sourceMessageIds],
-        sourceMessageIds: facts.sourceMessageIds,
-        sourceEventIds: facts.sourceEventIds,
-        factSummary: facts.summary
-      };
-      role.diaries.push(diary);
-    }
-    const seenSameDate = /* @__PURE__ */ new Set();
-    role.diaries = role.diaries.filter((d) => {
-      if (d.speaker !== "char") return true;
-      const k = getCharacterDiaryDateKey(d);
-      if (k !== dateKey) return true;
-      if (seenSameDate.has(k)) return false;
-      seenSameDate.add(k);
-      return true;
-    });
+    if (diary) return { ok: false, reason: "\u8FD9\u4E00\u5929\u5DF2\u6709\u5F52\u6863\u65E5\u8BB0\uFF0C\u539F\u6587\u5DF2\u4FDD\u7559" };
+    diary = {
+      id: makeUid("diary"),
+      speaker: "char",
+      dateKey,
+      at: facts.endMs,
+      generatedAt: nowTs,
+      text: text2,
+      wordCount,
+      source: "ai",
+      sourceIds: [...facts.sourceEventIds, ...facts.sourceMessageIds],
+      sourceMessageIds: facts.sourceMessageIds,
+      sourceEventIds: facts.sourceEventIds,
+      factSummary: facts.summary,
+      sourceMessageRevisions: Object.fromEntries([...facts.chatMessages, ...facts.sceneBlocks.flatMap((b) => b.messages), ...facts.playBlocks.flatMap((b) => [...b.messages, ...b.intermissionMessages])].map((m) => [m.id, m.revisionCount || 0]))
+    };
+    role.diaries.push(diary);
     let task = role.diaryTasks.find((t) => t.dateKey === dateKey);
     if (!task) {
       task = {
@@ -8212,8 +8331,8 @@ ${groundedLines.length ? groundedLines.join("\n") : `\uFF08\u5F53\u5929\u6682\u6
     }
     return active ? { sections: [], invalid: true } : { sections, invalid: false };
   }
-  function permittedNovelSections(sections, profile) {
-    return sections.filter((s) => s.type === "content" || (["novel_header", "status_bar", "prologue", "\u89D2\u8272\u72B6\u6001\u9762\u677F"].includes(s.type) ? profile.output.scene : s.type === "meow_fm" ? profile.output.summary : profile.output.characters)).map((s) => ({ ...s }));
+  function permittedNovelSections(sections, profile2) {
+    return sections.filter((s) => s.type === "content" || (["novel_header", "status_bar", "prologue", "\u89D2\u8272\u72B6\u6001\u9762\u677F"].includes(s.type) ? profile2.output.scene : s.type === "meow_fm" ? profile2.output.summary : profile2.output.characters)).map((s) => ({ ...s }));
   }
   function bindNovelDocument(sections, owner) {
     if (!owner.roleId || !owner.stageId || !owner.messageId || !owner.presetId || !/^[a-f0-9]{64}$/.test(owner.presetHash) || !Number.isFinite(owner.createdAt) || !Number.isInteger(owner.revisionCount) || owner.revisionCount < 0) throw new Error("\u5C0F\u8BF4\u5C55\u793A\u6765\u6E90\u65E0\u6548");
@@ -8424,18 +8543,18 @@ ${groundedLines.length ? groundedLines.join("\n") : `\uFF08\u5F53\u5929\u6682\u6
   }
   function meetingTime(text2, at) {
     const explicitDate = text2.match(/(?:(\d{4})年)?(\d{1,2})月(\d{1,2})[日号]/);
-    const day = text2.match(/大后天|后天|明天|今天|今晚|今早|今夜/), period = text2.match(/凌晨|早上|上午|中午|下午|傍晚|晚上|今晚|今夜/);
+    const day2 = text2.match(/大后天|后天|明天|今天|今晚|今早|今夜/), period = text2.match(/凌晨|早上|上午|中午|下午|傍晚|晚上|今晚|今夜/);
     const clock = text2.match(/(\d{1,2}|[零一二两三四五六七八九十]{1,3})\s*(?:[:：](\d{2})|点(?:(半)|(\d{1,2}|[零一二两三四五六七八九十]{1,3})分?)?)/);
     const immediate = /(现在|这就|马上)/.test(text2);
-    if (!explicitDate && !day && !period && !clock && !immediate) return null;
+    if (!explicitDate && !day2 && !period && !clock && !immediate) return null;
     const date = new Date(at);
     date.setHours(0, 0, 0, 0);
     if (explicitDate) {
       date.setFullYear(explicitDate[1] ? Number(explicitDate[1]) : date.getFullYear(), Number(explicitDate[2]) - 1, Number(explicitDate[3]));
       if (date.getMonth() !== Number(explicitDate[2]) - 1 || date.getDate() !== Number(explicitDate[3])) return null;
-    } else date.setDate(date.getDate() + (day?.[0] === "\u660E\u5929" ? 1 : day?.[0] === "\u540E\u5929" ? 2 : day?.[0] === "\u5927\u540E\u5929" ? 3 : 0));
-    const timeText = [explicitDate?.[0], day?.[0], period?.[0], clock?.[0]].filter(Boolean).join("") || "\u73B0\u5728";
-    if (immediate && !explicitDate && !day && !period && !clock) return { timeText, scheduledAt: at, expiresAt: at + 2 * 36e5 };
+    } else date.setDate(date.getDate() + (day2?.[0] === "\u660E\u5929" ? 1 : day2?.[0] === "\u540E\u5929" ? 2 : day2?.[0] === "\u5927\u540E\u5929" ? 3 : 0));
+    const timeText = [explicitDate?.[0], day2?.[0], period?.[0], clock?.[0]].filter(Boolean).join("") || "\u73B0\u5728";
+    if (immediate && !explicitDate && !day2 && !period && !clock) return { timeText, scheduledAt: at, expiresAt: at + 2 * 36e5 };
     if (clock) {
       let h = number(clock[1]);
       const min = clock[3] ? 30 : number(clock[2] || clock[4] || "0");
@@ -8816,8 +8935,8 @@ ${groundedLines.length ? groundedLines.join("\n") : `\uFF08\u5F53\u5929\u6682\u6
     return { raw: Uint8Array.from(raw), sha256, fileName, name: typeof doc.name === "string" ? doc.name.slice(0, 300) : fileName.replace(/\.json$/i, ""), version: fileName.match(/V\d+(?:\.\d+)*[A-Za-z]*/i)?.[0] || "\u672A\u58F0\u660E", importedAt, prompts, order: groups[orderGroup].order, orderGroup, regex, extensions: Object.keys(ext), modelParameters, outputTags: tags, diagnostics };
   }
   function createFruitState() {
-    const profile = () => ({ overrides: {}, style: "", length: { min: 600, max: 1200 }, output: { scene: true, summary: true, characters: false, auxiliary: false } });
-    return { schema: 1, revision: 0, enabled: false, preset: null, profiles: { meeting: profile(), theatre: profile() } };
+    const profile2 = () => ({ overrides: {}, style: "", length: { min: 600, max: 1200 }, output: { scene: true, summary: true, characters: false, auxiliary: false } });
+    return { schema: 1, revision: 0, enabled: false, preset: null, profiles: { meeting: profile2(), theatre: profile2() } };
   }
   function validatePromptEdit(value) {
     if (!object2(value)) fail("Prompt \u7F16\u8F91\u683C\u5F0F\u65E0\u6548");
@@ -8849,31 +8968,31 @@ ${groundedLines.length ? groundedLines.join("\n") : `\uFF08\u5F53\u5929\u6682\u6
     if (Object.keys(overrides).length > 1e3) fail("\u6761\u76EE\u8986\u76D6\u6570\u91CF\u8D85\u9650");
     const style = text(value.style, "\u6587\u98CE", 2e3), output = value.output;
     for (const k of ["scene", "summary", "characters", "auxiliary"]) if (typeof output[k] !== "boolean") fail("\u8F93\u51FA\u9009\u9879\u5FC5\u987B\u662F\u5E03\u5C14\u503C");
-    const profile = { overrides, style, length: { min, max }, output: { scene: output.scene === true, summary: output.summary === true, characters: output.characters === true, auxiliary: output.auxiliary === true } };
+    const profile2 = { overrides, style, length: { min, max }, output: { scene: output.scene === true, summary: output.summary === true, characters: output.characters === true, auxiliary: output.auxiliary === true } };
     if (value.regexOverrides !== void 0) {
       if (!object2(value.regexOverrides) || Object.keys(value.regexOverrides).length > 200) fail("\u6B63\u5219\u5F00\u5173\u683C\u5F0F\u65E0\u6548");
-      profile.regexOverrides = {};
+      profile2.regexOverrides = {};
       for (const [id, on] of Object.entries(value.regexOverrides)) {
         if (!safeKey(id) || id.length > 200 || typeof on !== "boolean") fail("\u6B63\u5219\u5F00\u5173\u9700\u8981\u5B89\u5168 ID \u548C\u5E03\u5C14\u503C");
-        profile.regexOverrides[id] = on;
+        profile2.regexOverrides[id] = on;
       }
     }
     if (value.edits !== void 0) {
       if (!object2(value.edits) || Object.keys(value.edits).length > 1e3) fail("Prompt \u7F16\u8F91\u6570\u91CF\u65E0\u6548");
-      profile.edits = {};
+      profile2.edits = {};
       for (const [id, edit] of Object.entries(value.edits)) {
         if (!safeKey(id) || id.length > 200) fail("\u7F16\u8F91 ID \u65E0\u6548");
-        profile.edits[id] = validatePromptEdit(edit);
+        profile2.edits[id] = validatePromptEdit(edit);
       }
     }
     if (value.order !== void 0) {
       if (!Array.isArray(value.order) || value.order.length > 1100 || value.order.some((id) => typeof id !== "string" || !safeKey(id)) || new Set(value.order).size !== value.order.length) fail("\u6392\u5E8F\u8986\u76D6\u683C\u5F0F\u6216\u91CD\u590D\u9879\u65E0\u6548");
-      profile.order = [...value.order];
+      profile2.order = [...value.order];
     }
     if (value.customPrompts !== void 0) {
       if (!Array.isArray(value.customPrompts) || value.customPrompts.length > 100) fail("\u81EA\u5EFA\u6761\u76EE\u6700\u591A 100 \u4E2A");
       const used = /* @__PURE__ */ new Set();
-      profile.customPrompts = value.customPrompts.map((v) => {
+      profile2.customPrompts = value.customPrompts.map((v) => {
         if (!object2(v) || typeof v.identifier !== "string" || !v.identifier.startsWith("custom:") || v.identifier.length > 200 || used.has(v.identifier)) return fail("\u81EA\u5EFA\u6761\u76EE ID \u65E0\u6548\u6216\u91CD\u590D");
         used.add(v.identifier);
         const { identifier, ...rest } = v;
@@ -8882,7 +9001,7 @@ ${groundedLines.length ? groundedLines.join("\n") : `\uFF08\u5F53\u5929\u6682\u6
         return { identifier, name: edit.name, content: edit.content, role: edit.role, position: edit.position, depth: edit.depth, injectionOrder: edit.injectionOrder };
       });
     }
-    return profile;
+    return profile2;
   }
 
   // src/core/fruit/nativePreset.ts
@@ -8927,14 +9046,14 @@ ${groundedLines.length ? groundedLines.join("\n") : `\uFF08\u5F53\u5929\u6682\u6
     return preset;
   }
   function projectNativeProfile(preset, input) {
-    const profile = validateProfile(input);
-    if (!profile.order) return profile;
-    const order = [...profile.order], defaults3 = [...preset.order.map((e) => e.identifier), ...(profile.customPrompts || []).map((p) => p.identifier)];
+    const profile2 = validateProfile(input);
+    if (!profile2.order) return profile2;
+    const order = [...profile2.order], defaults3 = [...preset.order.map((e) => e.identifier), ...(profile2.customPrompts || []).map((p) => p.identifier)];
     for (let i = 0; i < defaults3.length; i++) if (!order.includes(defaults3[i])) {
       const next = defaults3.slice(i + 1).find((id) => order.includes(id));
       order.splice(next ? order.indexOf(next) : order.length, 0, defaults3[i]);
     }
-    return { ...profile, order };
+    return { ...profile2, order };
   }
 
   // src/core/novelContext.ts
@@ -8988,8 +9107,8 @@ ${formatMessageContentForModel(source, base.char, base.user)}`, at: m.at, scope,
   var isPromptHeading = (p) => /^(?:━|——|==|---)/u.test(p.name.trim()) || /display-section/.test(p.identifier);
   var isPromptPinned = (p) => p.marker || isPromptHeading(p) || p.position !== 0 || /必开.*(?:别动|固定位置)|勿动/.test(p.name);
   function applyFruitProfile(preset, input) {
-    const profile = isNativePreset(preset) ? projectNativeProfile(preset, input) : validateProfile(input), byId = new Map(preset.prompts.map((p) => [p.identifier, p]));
-    for (const [id, patch] of Object.entries(profile.edits || {})) {
+    const profile2 = isNativePreset(preset) ? projectNativeProfile(preset, input) : validateProfile(input), byId = new Map(preset.prompts.map((p) => [p.identifier, p]));
+    for (const [id, patch] of Object.entries(profile2.edits || {})) {
       const original = byId.get(id);
       if (!original) throw new Error("\u7F16\u8F91\u5F15\u7528\u7684\u539F\u6761\u76EE\u5DF2\u4E0D\u5B58\u5728\uFF0C\u8BF7\u66F4\u65B0\u914D\u7F6E");
       if (original.marker) throw new Error("Marker \u4E0D\u652F\u6301\u6B63\u6587\u6216\u6CE8\u5165\u7F16\u8F91");
@@ -8999,19 +9118,19 @@ ${formatMessageContentForModel(source, base.char, base.user)}`, at: m.at, scope,
       if (prompt.blockedReason) throw new Error(prompt.blockedReason);
       byId.set(id, prompt);
     }
-    const order = preset.order.map((p) => ({ ...p })), customIds = new Set((profile.customPrompts || []).map((p) => p.identifier));
-    for (const custom of profile.customPrompts || []) {
+    const order = preset.order.map((p) => ({ ...p })), customIds = new Set((profile2.customPrompts || []).map((p) => p.identifier));
+    for (const custom of profile2.customPrompts || []) {
       if (byId.has(custom.identifier)) throw new Error("\u81EA\u5EFA\u6761\u76EE\u4E0E\u539F\u4EF6 ID \u51B2\u7A81");
       const blockedReason = fruitSafetyReason(custom.name, custom.content);
       if (blockedReason) throw new Error(blockedReason);
       byId.set(custom.identifier, { ...custom, marker: false, originalEnabled: true, group: "\u7528\u6237\u81EA\u5EFA", styleEntry: false });
       order.push({ identifier: custom.identifier, enabled: true });
     }
-    if (profile.order) {
+    if (profile2.order) {
       const all = new Set(order.map((e) => e.identifier));
-      if (profile.order.length !== all.size || profile.order.some((id) => !all.has(id))) throw new Error("\u6392\u5E8F\u8986\u76D6\u4E0E\u5F53\u524D\u6761\u76EE\u4E0D\u4E00\u81F4\uFF0C\u8BF7\u6062\u590D\u6392\u5E8F\u6216\u91CD\u65B0\u68C0\u67E5\u66F4\u65B0");
+      if (profile2.order.length !== all.size || profile2.order.some((id) => !all.has(id))) throw new Error("\u6392\u5E8F\u8986\u76D6\u4E0E\u5F53\u524D\u6761\u76EE\u4E0D\u4E00\u81F4\uFF0C\u8BF7\u6062\u590D\u6392\u5E8F\u6216\u91CD\u65B0\u68C0\u67E5\u66F4\u65B0");
       const anchors = order.filter((e) => isPromptPinned(byId.get(e.identifier))).map((e) => e.identifier);
-      const actual = profile.order.filter((id) => isPromptPinned(byId.get(id)));
+      const actual = profile2.order.filter((id) => isPromptPinned(byId.get(id)));
       if (anchors.join("\n") !== actual.join("\n")) throw new Error("\u4E0D\u80FD\u79FB\u52A8 Marker\u3001\u56FA\u5B9A\u6761\u76EE\u6216 In-Chat \u6DF1\u5EA6\u6CE8\u5165\u9879");
       let segment = 0;
       const expected = /* @__PURE__ */ new Map();
@@ -9027,7 +9146,7 @@ ${formatMessageContentForModel(source, base.char, base.user)}`, at: m.at, scope,
       segment = 0;
       let previousSegment = "";
       const runs = [];
-      for (const id of profile.order) {
+      for (const id of profile2.order) {
         const p = byId.get(id);
         if (isPromptPinned(p)) {
           segment++;
@@ -9052,28 +9171,28 @@ ${formatMessageContentForModel(source, base.char, base.user)}`, at: m.at, scope,
       }
       if (runs.join("\n") !== originalRuns.join("\n")) throw new Error("\u4E0D\u80FD\u62D6\u52A8\u6761\u76EE\u6253\u4E71\u4F5C\u8005\u5206\u7EC4");
       const items = new Map(order.map((e) => [e.identifier, e]));
-      order.splice(0, order.length, ...profile.order.map((id) => items.get(id)));
+      order.splice(0, order.length, ...profile2.order.map((id) => items.get(id)));
     }
     return { ...preset, prompts: [...byId.values()], order };
   }
-  function editPrompt(preset, profile, id, patch) {
-    const custom = profile.customPrompts?.find((p) => p.identifier === id), edit = validatePromptEdit(patch);
-    const next = custom ? { ...profile, customPrompts: profile.customPrompts.map((p) => p.identifier === id ? { ...p, ...edit } : p) } : { ...profile, edits: { ...profile.edits, [id]: { ...profile.edits?.[id], ...edit } } };
+  function editPrompt(preset, profile2, id, patch) {
+    const custom = profile2.customPrompts?.find((p) => p.identifier === id), edit = validatePromptEdit(patch);
+    const next = custom ? { ...profile2, customPrompts: profile2.customPrompts.map((p) => p.identifier === id ? { ...p, ...edit } : p) } : { ...profile2, edits: { ...profile2.edits, [id]: { ...profile2.edits?.[id], ...edit } } };
     applyFruitProfile(preset, next);
     return validateProfile(next);
   }
-  function addPrompt(preset, profile, prompt) {
-    const next = { ...profile, customPrompts: [...profile.customPrompts || [], prompt], ...profile.order ? { order: [...profile.order, prompt.identifier] } : {} };
+  function addPrompt(preset, profile2, prompt) {
+    const next = { ...profile2, customPrompts: [...profile2.customPrompts || [], prompt], ...profile2.order ? { order: [...profile2.order, prompt.identifier] } : {} };
     applyFruitProfile(preset, next);
     return validateProfile(next);
   }
-  function movePrompt(preset, profile, id, direction) {
-    const effective = applyFruitProfile(preset, profile), order = effective.order.map((p) => p.identifier), index = order.indexOf(id), other = index + direction;
+  function movePrompt(preset, profile2, id, direction) {
+    const effective = applyFruitProfile(preset, profile2), order = effective.order.map((p) => p.identifier), index = order.indexOf(id), other = index + direction;
     const map = new Map(effective.prompts.map((p) => [p.identifier, p]));
     const a = map.get(id), b = map.get(order[other]);
-    if (!a || !b || isPromptPinned(a) || isPromptPinned(b) || a.blockedReason || b.blockedReason || a.group !== b.group && !(profile.customPrompts || []).some((p) => p.identifier === a.identifier)) throw new Error("\u4EC5\u53EF\u5728\u540C\u7EC4\u5185\u79FB\u52A8\u76F8\u90BB\u666E\u901A\u76F8\u5BF9\u6761\u76EE\uFF1B\u56FA\u5B9A\u6216\u6DF1\u5EA6\u6CE8\u5165\u9879\u4E0D\u53EF\u62D6\u52A8");
+    if (!a || !b || isPromptPinned(a) || isPromptPinned(b) || a.blockedReason || b.blockedReason || a.group !== b.group && !(profile2.customPrompts || []).some((p) => p.identifier === a.identifier)) throw new Error("\u4EC5\u53EF\u5728\u540C\u7EC4\u5185\u79FB\u52A8\u76F8\u90BB\u666E\u901A\u76F8\u5BF9\u6761\u76EE\uFF1B\u56FA\u5B9A\u6216\u6DF1\u5EA6\u6CE8\u5165\u9879\u4E0D\u53EF\u62D6\u52A8");
     [order[index], order[other]] = [order[other], order[index]];
-    const next = { ...profile, order };
+    const next = { ...profile2, order };
     applyFruitProfile(preset, next);
     return validateProfile(next);
   }
@@ -9363,9 +9482,9 @@ ${formatMessageContentForModel(source, base.char, base.user)}`, at: m.at, scope,
   }
   function compileConversationPrompt(preset, rawProfile, context, options = {}) {
     const native = isNativePreset(preset), purpose = options.purpose || "preview", liveNovel = isLiveNovelContext(context) && context.source === "novel-live" && (context.mode === "meeting" || context.mode === "theatre");
-    const profile = validateProfile({ ...rawProfile, length: options.lengthOverride || rawProfile.length });
-    preset = applyFruitProfile(preset, profile);
-    const result = { engine: "conversation-v1", origin: native ? "native" : "third-party", status: "preview-only", valid: true, mode: context.mode, length: profile.length, messages: [], diagnostics: [...preset.diagnostics], variables: { local: {}, global: {} }, memorySources: [], excluded: [], modelParameters: preset.modelParameters };
+    const profile2 = validateProfile({ ...rawProfile, length: options.lengthOverride || rawProfile.length });
+    preset = applyFruitProfile(preset, profile2);
+    const result = { engine: "conversation-v1", origin: native ? "native" : "third-party", status: "preview-only", valid: true, mode: context.mode, length: profile2.length, messages: [], diagnostics: [...preset.diagnostics], variables: { local: {}, global: {} }, memorySources: [], excluded: [], modelParameters: preset.modelParameters };
     if (purpose === "request" && !(native && context.source === "native-live") && !(!native && liveNovel)) result.diagnostics.push({ code: "request-protected", severity: "error", message: "\u6B63\u5F0F\u8BF7\u6C42\u9700\u8981\u53D7\u9A8C\u8BC1\u7684\u539F\u751F\u6216\u5C0F\u8BF4\u4E0A\u4E0B\u6587\uFF0C\u9884\u89C8\u7ED3\u679C\u4E0D\u53EF\u76F4\u63A5\u53D1\u9001" });
     if (!native && context.source !== "isolated-fixture" && !liveNovel) result.diagnostics.push({ code: "fixture-required", severity: "error", message: "\u7B2C\u4E09\u65B9\u9884\u8BBE\u9700\u8981\u9694\u79BB\u9884\u89C8\u6216\u53D7\u9A8C\u8BC1\u7684\u5C0F\u8BF4\u4E0A\u4E0B\u6587" });
     if (purpose === "preview") result.diagnostics.push({ code: "preview-only", severity: "warning", message: "\u8FD9\u662F\u9694\u79BB\u6D4B\u8BD5\u9884\u89C8\uFF0C\u4E0D\u53D1\u9001 API\u3002\u6B63\u5F0F\u5C0F\u8BF4\u53E6\u884C\u9A8C\u8BC1\u771F\u5B9E\u4E0A\u4E0B\u6587\u3001\u4EFB\u52A1\u548C\u8F93\u51FA\uFF1B\u5B8C\u6574\u8BED\u4E49\u68C0\u7D22\u4E0E\u4FEE\u8BA2\u4F9D\u8D56\u94FE\u5C1A\u672A\u5B9E\u73B0\u3002" });
@@ -9377,11 +9496,11 @@ ${formatMessageContentForModel(source, base.char, base.user)}`, at: m.at, scope,
 ${f.text}`).join("\n");
     const lastUser = [...history].reverse().find((h) => h.role === "user");
     const valueSources = { description: facts.filter((f) => markerFor(f) === "charDescription").map((f) => f.id), personality: facts.filter((f) => markerFor(f) === "charPersonality").map((f) => f.id), scenario: facts.filter((f) => markerFor(f) === "scenario").map((f) => f.id), lastusermessage: lastUser ? [lastUser.id] : [] };
-    const values = { native_novel_rule: "\u91C7\u7528\u6587\u5B57\u5C0F\u8BF4\u5F0F\u63CF\u5199\uFF0C\u53EA\u5199\u81EA\u5DF1\u7684\u56DE\u5E94\uFF0C\u4E0D\u66FF\u5BF9\u65B9\u884C\u52A8\u3002", native_output_rule: `\u4FDD\u7559\u5F53\u524D\u6A21\u5F0F\u8EAB\u4EFD\u4E0E\u65F6\u95F4\u8FB9\u754C\uFF1B\u76EE\u6807 ${profile.length.min}\u2013${profile.length.max} \u5B57\u3002${profile.style ? `\u6587\u98CE\uFF1A${profile.style}` : ""}`, user: context.user, char: context.char, date: new Date(context.now).toISOString().slice(0, 10), time: new Date(context.now).toISOString().slice(11, 16), lastusermessage: lastUser?.text || "", description: markerText("charDescription"), personality: markerText("charPersonality"), scenario: markerText("scenario"), mesexamples: context.examples.map((x) => x.text).join("\n") };
+    const values = { native_novel_rule: "\u91C7\u7528\u6587\u5B57\u5C0F\u8BF4\u5F0F\u63CF\u5199\uFF0C\u53EA\u5199\u81EA\u5DF1\u7684\u56DE\u5E94\uFF0C\u4E0D\u66FF\u5BF9\u65B9\u884C\u52A8\u3002", native_output_rule: `\u4FDD\u7559\u5F53\u524D\u6A21\u5F0F\u8EAB\u4EFD\u4E0E\u65F6\u95F4\u8FB9\u754C\uFF1B\u76EE\u6807 ${profile2.length.min}\u2013${profile2.length.max} \u5B57\u3002${profile2.style ? `\u6587\u98CE\uFF1A${profile2.style}` : ""}`, user: context.user, char: context.char, date: new Date(context.now).toISOString().slice(0, 10), time: new Date(context.now).toISOString().slice(11, 16), lastusermessage: lastUser?.text || "", description: markerText("charDescription"), personality: markerText("charPersonality"), scenario: markerText("scenario"), mesexamples: context.examples.map((x) => x.text).join("\n") };
     Object.assign(values, context.native?.values);
-    const resolver = new FruitMacroResolver(values, options.rng, profile.style ? { "\u5F53\u524D\u6587\u98CE": profile.style } : {});
+    const resolver = new FruitMacroResolver(values, options.rng, profile2.style ? { "\u5F53\u524D\u6587\u98CE": profile2.style } : {});
     if (native) {
-      for (const id of ["nativeContext", "chatHistory"]) if (profile.overrides[id] === false) result.diagnostics.push({ code: "protected-marker", severity: "error", sourceId: id, message: "\u5FC5\u8981\u4E0A\u4E0B\u6587\u4E0D\u53EF\u5173\u95ED\uFF1B\u914D\u7F6E\u4FDD\u7559\uFF0C\u8BF7\u6062\u590D\u8BE5 Marker" });
+      for (const id of ["nativeContext", "chatHistory"]) if (profile2.overrides[id] === false) result.diagnostics.push({ code: "protected-marker", severity: "error", sourceId: id, message: "\u5FC5\u8981\u4E0A\u4E0B\u6587\u4E0D\u53EF\u5173\u95ED\uFF1B\u914D\u7F6E\u4FDD\u7559\uFF0C\u8BF7\u6062\u590D\u8BE5 Marker" });
       preset = prepareNativePreset(preset, context);
     }
     const prompts = new Map(preset.prompts.map((p) => [p.identifier, p]));
@@ -9394,7 +9513,7 @@ ${f.text}`).join("\n");
         result.excluded.push({ id: prompt.identifier, reason: "\u4E0D\u9002\u7528\u4E8E\u5F53\u524D\u539F\u751F\u6A21\u5F0F" });
         continue;
       }
-      if (!(Object.hasOwn(profile.overrides, entry2.identifier) ? profile.overrides[entry2.identifier] : entry2.enabled)) {
+      if (!(Object.hasOwn(profile2.overrides, entry2.identifier) ? profile2.overrides[entry2.identifier] : entry2.enabled)) {
         result.excluded.push({ id: entry2.identifier, reason: "\u5F53\u524D\u6A21\u5F0F\u5DF2\u505C\u7528" });
         continue;
       }
@@ -9403,8 +9522,8 @@ ${f.text}`).join("\n");
         continue;
       }
       let reason, adaptedContent = prompt.content;
-      if (!native && profile.style && prompt.styleEntry && !/^━━/.test(prompt.name)) reason = "\u81EA\u5B9A\u4E49\u6587\u98CE\u66FF\u4EE3\u539F\u6587\u98CE\u6761\u76EE";
-      if (!native && !profile.output.auxiliary) {
+      if (!native && profile2.style && prompt.styleEntry && !/^━━/.test(prompt.name)) reason = "\u81EA\u5B9A\u4E49\u6587\u98CE\u66FF\u4EE3\u539F\u6587\u98CE\u6761\u76EE";
+      if (!native && !profile2.output.auxiliary) {
         if (/\bECoT\b/i.test(adaptedContent)) {
           adaptedContent = adaptedContent.split(/\r?\n/).filter((line) => !/^\s*(?:-\s*)?ECoT\s*[:：]\s*(?:["'][^"']*["']|[\w-]+)\s*$/i.test(line) && !/^\s*\*{0,2}你的回复必须以ECoT开始[。.!]*\*{0,2}\s*$/i.test(line) && !/^\s*ECoT\s*$/i.test(line)).join("\n");
           if (/\bECoT\b/i.test(adaptedContent)) {
@@ -9413,9 +9532,9 @@ ${f.text}`).join("\n");
           } else result.diagnostics.push({ code: "auxiliary-adapted", severity: "info", sourceId: prompt.identifier, message: "\u4EC5\u79FB\u9664\u8F85\u52A9\u6587\u672C\u8981\u6C42\uFF0C\u6B63\u6587\u8BED\u8A00\u4E0E\u5176\u4ED6\u683C\u5F0F\u8981\u6C42\u4FDD\u7559" });
         }
       }
-      if (!native && !profile.output.summary && (/摘要/.test(prompt.name) || /<meow_FM>/i.test(prompt.content))) reason = "\u5F53\u524D\u6A21\u5F0F\u5173\u95ED\u6458\u8981";
-      if (!native && !profile.output.characters && (/角色表|选择器/.test(prompt.name) || /<(?:profile|branches)>/i.test(prompt.content))) reason = "\u5F53\u524D\u6A21\u5F0F\u5173\u95ED\u4EBA\u7269\u8F85\u52A9\u4FE1\u606F/\u9009\u9879";
-      if (!native && !profile.output.scene && (/状态栏|题记|序言/.test(prompt.name) || /<(?:status_bar|prologue|novel_header)>/i.test(prompt.content))) reason = "\u5F53\u524D\u6A21\u5F0F\u5173\u95ED\u573A\u666F\u8F85\u52A9\u5757";
+      if (!native && !profile2.output.summary && (/摘要/.test(prompt.name) || /<meow_FM>/i.test(prompt.content))) reason = "\u5F53\u524D\u6A21\u5F0F\u5173\u95ED\u6458\u8981";
+      if (!native && !profile2.output.characters && (/角色表|选择器/.test(prompt.name) || /<(?:profile|branches)>/i.test(prompt.content))) reason = "\u5F53\u524D\u6A21\u5F0F\u5173\u95ED\u4EBA\u7269\u8F85\u52A9\u4FE1\u606F/\u9009\u9879";
+      if (!native && !profile2.output.scene && (/状态栏|题记|序言/.test(prompt.name) || /<(?:status_bar|prologue|novel_header)>/i.test(prompt.content))) reason = "\u5F53\u524D\u6A21\u5F0F\u5173\u95ED\u573A\u666F\u8F85\u52A9\u5757";
       if (reason?.startsWith("\u5F53\u524D\u6A21\u5F0F\u5173\u95ED") && /<content\b/i.test(adaptedContent)) {
         result.diagnostics.push({ code: "mixed-output-retained", severity: "warning", sourceId: prompt.identifier, message: "\u4FDD\u7559\u6DF7\u5408\u6B63\u6587\u683C\u5F0F\u89C4\u5219\uFF1B\u5173\u95ED\u7684\u8F85\u52A9\u5757\u7531\u8F93\u51FA\u89E3\u6790\u5C42\u4E22\u5F03" });
         reason = void 0;
@@ -9456,7 +9575,7 @@ ${f.text}`).join("\n");
       }
       const snapshot2 = resolver.snapshot();
       try {
-        const expanded = resolver.resolve(native ? adaptedContent : replaceLength(adaptedContent, profile.length));
+        const expanded = resolver.resolve(native ? adaptedContent : replaceLength(adaptedContent, profile2.length));
         const content = prompt.identifier.startsWith("legacy:") ? expanded : expanded.trim();
         if (!content) continue;
         const sourceIds = [...new Set([...resolver.referencedValues()].flatMap((key) => valueSources[key] || []))];
@@ -9488,8 +9607,8 @@ ${f.text}`).join("\n");
       if (i < relative.length) result.messages.push(relative[i]);
     }
     if (native) finishNativeMessages(result, context, legacyInjections);
-    const guard = `Elsewhere ${context.mode === "meeting" ? "Meeting Novel\uFF1A\u4FDD\u7559\u771F\u5B9E Canon \u4E0E\u5F53\u524D\u4EBA\u751F\u8FDE\u7EED\u6027" : "Theatre Performance\uFF1A\u4EC5\u5F53\u524D\u5267\u672C\u548C\u620F\u5185\u8EAB\u4EFD\uFF0C\u7981\u6B62\u6F14\u5458\u79C1\u5BC6\u77E5\u8BC6\u8FDB\u5165\u620F\u5185\uFF0C\u620F\u5185\u4E8B\u4EF6\u4E0D\u6539\u5199\u6F14\u5458 Canon"}\u3002\u53EA\u4F7F\u7528\u5DF2\u6388\u6743\u7684\u6765\u6E90\uFF0C\u4E0D\u5C06\u63A8\u6D4B\u5199\u6210\u6B63\u5F0F\u4E8B\u5B9E\u3002\u6B63\u6587\u4EE5 <content> \u5305\u88F9\uFF1B\u76EE\u6807 ${profile.length.min}\u2013${profile.length.max} \u5B57\uFF0C\u6309\u5267\u60C5\u81EA\u7136\u53D6\u820D\uFF0C\u4E0D\u51D1\u5B57\u6570\u3002${profile.style ? `\u6587\u98CE\uFF1A${profile.style}\u3002` : ""}\u4E0D\u751F\u6210 snow \u5C0F\u5267\u573A\u3002${profile.output.scene ? "\u5FC5\u8981\u573A\u666F\u4FE1\u606F\u53EF\u7528 <status_bar>\u3002" : "\u53EA\u8F93\u51FA\u6B63\u6587\uFF0C\u4E0D\u8F93\u51FA\u573A\u666F\u8F85\u52A9\u5757\u3002"}${profile.output.summary ? "\u53EF\u9644\u7B80\u77ED <meow_FM> \u6458\u8981\uFF0C\u4EC5\u4F9B\u6298\u53E0\u5C55\u793A\uFF0C\u4E0D\u81EA\u52A8\u6210\u4E3A\u8BB0\u5FC6\u3002" : ""}${profile.output.characters ? "\u53EF\u9644 <profile> \u4EBA\u7269\u8F85\u52A9\u4FE1\u606F\u3002" : ""}${profile.output.auxiliary ? "\u751F\u6210\u7684 ECoT \u7B49\u53EA\u5C5E\u4E8E\u751F\u6210\u8F85\u52A9\u6587\u672C\uFF0C\u4E0D\u662F\u6A21\u578B\u5185\u90E8\u63A8\u7406\u6216\u6B63\u5F0F\u5FC3\u7406\u8BB0\u5FC6\u3002" : "\u5173\u95ED\u7684\u8F85\u52A9\u5757\u4E0D\u5C55\u793A\u3001\u4E0D\u4FDD\u5B58\uFF1B\u9884\u8BBE\u82E5\u751F\u6210\u8F85\u52A9\u6807\u7B7E\uFF0C\u5FC5\u987B\u4E0E content \u6B63\u6587\u5206\u9694\uFF0C\u4E0D\u80FD\u6DF7\u5165\u6B63\u6587\u3002"}`;
-    const finalGuard = options.format === "native" ? `Elsewhere \u539F\u751F\u5C0F\u8BF4\u9884\u89C8\uFF1A\u4FDD\u7559\u5F53\u524D\u6A21\u5F0F\u8EAB\u4EFD\u4E0E\u65F6\u95F4\u8FB9\u754C\uFF1B\u76EE\u6807 ${profile.length.min}\u2013${profile.length.max} \u5B57\uFF0C\u4E0D\u66FF\u7528\u6237\u884C\u52A8\u3002${profile.style ? `\u6587\u98CE\uFF1A${profile.style}` : ""}\u4E0D\u81EA\u52A8\u5199\u5165\u6B63\u5F0F\u5386\u53F2\u3002` : guard;
+    const guard = `Elsewhere ${context.mode === "meeting" ? "Meeting Novel\uFF1A\u4FDD\u7559\u771F\u5B9E Canon \u4E0E\u5F53\u524D\u4EBA\u751F\u8FDE\u7EED\u6027" : "Theatre Performance\uFF1A\u4EC5\u5F53\u524D\u5267\u672C\u548C\u620F\u5185\u8EAB\u4EFD\uFF0C\u7981\u6B62\u6F14\u5458\u79C1\u5BC6\u77E5\u8BC6\u8FDB\u5165\u620F\u5185\uFF0C\u620F\u5185\u4E8B\u4EF6\u4E0D\u6539\u5199\u6F14\u5458 Canon"}\u3002\u53EA\u4F7F\u7528\u5DF2\u6388\u6743\u7684\u6765\u6E90\uFF0C\u4E0D\u5C06\u63A8\u6D4B\u5199\u6210\u6B63\u5F0F\u4E8B\u5B9E\u3002\u6B63\u6587\u4EE5 <content> \u5305\u88F9\uFF1B\u76EE\u6807 ${profile2.length.min}\u2013${profile2.length.max} \u5B57\uFF0C\u6309\u5267\u60C5\u81EA\u7136\u53D6\u820D\uFF0C\u4E0D\u51D1\u5B57\u6570\u3002${profile2.style ? `\u6587\u98CE\uFF1A${profile2.style}\u3002` : ""}\u4E0D\u751F\u6210 snow \u5C0F\u5267\u573A\u3002${profile2.output.scene ? "\u5FC5\u8981\u573A\u666F\u4FE1\u606F\u53EF\u7528 <status_bar>\u3002" : "\u53EA\u8F93\u51FA\u6B63\u6587\uFF0C\u4E0D\u8F93\u51FA\u573A\u666F\u8F85\u52A9\u5757\u3002"}${profile2.output.summary ? "\u53EF\u9644\u7B80\u77ED <meow_FM> \u6458\u8981\uFF0C\u4EC5\u4F9B\u6298\u53E0\u5C55\u793A\uFF0C\u4E0D\u81EA\u52A8\u6210\u4E3A\u8BB0\u5FC6\u3002" : ""}${profile2.output.characters ? "\u53EF\u9644 <profile> \u4EBA\u7269\u8F85\u52A9\u4FE1\u606F\u3002" : ""}${profile2.output.auxiliary ? "\u751F\u6210\u7684 ECoT \u7B49\u53EA\u5C5E\u4E8E\u751F\u6210\u8F85\u52A9\u6587\u672C\uFF0C\u4E0D\u662F\u6A21\u578B\u5185\u90E8\u63A8\u7406\u6216\u6B63\u5F0F\u5FC3\u7406\u8BB0\u5FC6\u3002" : "\u5173\u95ED\u7684\u8F85\u52A9\u5757\u4E0D\u5C55\u793A\u3001\u4E0D\u4FDD\u5B58\uFF1B\u9884\u8BBE\u82E5\u751F\u6210\u8F85\u52A9\u6807\u7B7E\uFF0C\u5FC5\u987B\u4E0E content \u6B63\u6587\u5206\u9694\uFF0C\u4E0D\u80FD\u6DF7\u5165\u6B63\u6587\u3002"}`;
+    const finalGuard = options.format === "native" ? `Elsewhere \u539F\u751F\u5C0F\u8BF4\u9884\u89C8\uFF1A\u4FDD\u7559\u5F53\u524D\u6A21\u5F0F\u8EAB\u4EFD\u4E0E\u65F6\u95F4\u8FB9\u754C\uFF1B\u76EE\u6807 ${profile2.length.min}\u2013${profile2.length.max} \u5B57\uFF0C\u4E0D\u66FF\u7528\u6237\u884C\u52A8\u3002${profile2.style ? `\u6587\u98CE\uFF1A${profile2.style}` : ""}\u4E0D\u81EA\u52A8\u5199\u5165\u6B63\u5F0F\u5386\u53F2\u3002` : guard;
     if (!native) {
       if (liveNovel) {
         if (history.length && historyStart === null) result.diagnostics.push({ code: "live-history-required", severity: "error", message: "\u6B63\u5F0F\u5C0F\u8BF4\u5FC5\u987B\u542F\u7528 Chat History Marker\uFF0C\u4E0D\u80FD\u4E22\u5931\u5F53\u524D\u771F\u5B9E\u8F93\u5165" });
@@ -9684,11 +9803,11 @@ ${JSON.stringify(control)}`;
     "native.chat.bubbles": "\u6309\u4EBA\u7269\u4E60\u60EF\u548C\u5185\u5BB9\u81EA\u7136\u5206\u6761\uFF0C\u6362\u884C\u6216 ||| \u53EF\u5206\u9694\u72EC\u7ACB\u6D88\u606F\uFF0C\u4E0D\u8BBE\u6570\u91CF\u3002\u8BA9\u4EA4\u6D41\u968F\u5F53\u524D\u4E8B\u60C5\u53D1\u5C55\uFF0C\u65E0\u9700\u628A\u6BCF\u6B21\u56DE\u590D\u5199\u6210\u5B8C\u6574\u95EE\u7B54\u3001\u5206\u6790\u6216\u60C5\u7EEA\u670D\u52A1\u6D41\u7A0B\u3002"
   };
   var chatVoiceChoice = (value) => value === "B" ? "B" : "A";
-  function projectChatVoiceProfile(profile, choice) {
-    if (choice === "A") return profile;
-    const edits = { ...profile.edits };
+  function projectChatVoiceProfile(profile2, choice) {
+    if (choice === "A") return profile2;
+    const edits = { ...profile2.edits };
     for (const [id, content] of Object.entries(candidateChatVoice)) if (typeof edits[id]?.content !== "string") edits[id] = { ...edits[id], content };
-    return { ...profile, edits };
+    return { ...profile2, edits };
   }
   function saveChatVoice(role, choice, save) {
     const previous = role.chatVoice;
@@ -9701,13 +9820,13 @@ ${JSON.stringify(control)}`;
     else role.chatVoice = previous;
     return false;
   }
-  function describeChatVoice(profile, role, globalPreset) {
-    const choice = chatVoiceChoice(role.chatVoice), preset = applyFruitProfile(nativePreset("meeting"), projectChatVoiceProfile(profile, choice));
+  function describeChatVoice(profile2, role, globalPreset) {
+    const choice = chatVoiceChoice(role.chatVoice), preset = applyFruitProfile(nativePreset("meeting"), projectChatVoiceProfile(profile2, choice));
     const rules = preset.order.flatMap((entry2, index) => {
       if (!Object.hasOwn(candidateChatVoice, entry2.identifier)) return [];
       const p = preset.prompts.find((p2) => p2.identifier === entry2.identifier);
-      const edited = typeof profile.edits?.[p.identifier]?.content === "string";
-      return [{ id: p.identifier, name: p.name, source: edited ? "user-edit" : choice === "B" ? "candidate-b" : "builtin-a", enabled: profile.overrides[p.identifier] ?? entry2.enabled, order: index + 1, role: p.role, position: p.position, depth: p.depth, content: p.content.replaceAll("{{native_bubbles}}", nativeBubbleRule) }];
+      const edited = typeof profile2.edits?.[p.identifier]?.content === "string";
+      return [{ id: p.identifier, name: p.name, source: edited ? "user-edit" : choice === "B" ? "candidate-b" : "builtin-a", enabled: profile2.overrides[p.identifier] ?? entry2.enabled, order: index + 1, role: p.role, position: p.position, depth: p.depth, content: p.content.replaceAll("{{native_bubbles}}", nativeBubbleRule) }];
     });
     const legacy2 = role.preset || globalPreset;
     return { choice, rules, legacySource: role.preset ? "role" : globalPreset ? "global" : "none", legacyName: legacy2?.name || "", legacy: (legacy2?.prompts || []).map((p, index) => ({ id: "legacy:" + index, name: p.name || "\u65E7\u6761\u76EE " + (index + 1), enabled: Boolean(p.enabled), order: index + 1, role: p.role === "user" || p.role === "assistant" ? p.role : "system", marker: Boolean(p.marker), position: Number(p.injection_position) === 1 ? 1 : 0, depth: Math.max(0, Number(p.injection_depth) || 0), content: p.content || "" })) };
@@ -9808,9 +9927,11 @@ ${JSON.stringify(control)}`;
       const candidates = r.events.filter((e) => {
         const message = e.messageId ? shownPhoneSources.get(e.messageId) : void 0;
         const duplicate = e.kind === "chat" && message && e.detail === message.text && e.at === message.at && (!e.speaker || e.speaker === message.speaker) && (!e.source || e.source === "chat");
+        if (kind === "chat" && e.kind === "life") return false;
         return !duplicate && e.kind !== "drama" && (e.kind !== "life" || Boolean(e.source && e.knownBy?.includes(r.id))) && e.at <= nowTs && (!e.messageId || validIds2.has(e.messageId) && !bridgedIds.has(e.messageId));
       });
-      recalled = retrieve({ ...r, events: candidates }, input, 12, nowTs);
+      const interests = kind === "chat" ? collectRoleLife(r, nowTs).threads.map((t) => t.text).join("\uFF1B") : "";
+      recalled = retrieve({ ...r, events: candidates }, input + (kind === "chat" ? "\n" + r.job + "\n" + interests : ""), 12, nowTs);
       facts = recalled.map((e) => `[${dt(e.at)} | ${e.kind} | ${e.id}] ${e.title}: ${e.detail}`).join("\n");
       const sharedDiaries = getSharedUserDiariesForRole(r).filter((d) => d.at <= nowTs).slice(-5).map((d) => `[${dt(d.at)} \u7528\u6237\u4E3B\u52A8\u5206\u4EAB\u7ED9\u4F60\u7684\u65E5\u8BB0] ${d.text}`).join("\n");
       base = `\u4F60\u5728\u626E\u6F14\u540D\u4E3A${r.name}\u7684\u865A\u6784\u4EBA\u7269\uFF08\u4E0D\u662FAI\u52A9\u624B\uFF09\uFF0C\u6709\u72EC\u7ACB\u751F\u6D3B\u3001\u5DE5\u4F5C\u3001\u504F\u597D\u548C\u4E3B\u89C2\u611F\u53D7\u3002\u8EAB\u4EFD\uFF1A${r.job}\u3002\u6240\u5728\u533A\u57DF\u4E0E\u4E16\u754C\u89C2\uFF1A${r.place}\u3002\u6027\u683C\uFF1A${r.traits}\u3002\u4EBA\u8BBE\uFF1A${r.profile}\u3002\u524D\u53F2\u8282\u70B9\u4E0E\u672A\u53D1\u751F\u5267\u60C5\u8FB9\u754C\uFF1A${r.canonNotes || "\u4EE5\u7528\u6237\u8BBE\u5B9A\u4E3A\u51C6"}\u3002\u7528\u6237\u8EAB\u4EFD\u8BBE\u5B9A\uFF1A${identityContext(data, r)}\u3002\u4F60\u548C\u7528\u6237\u76EE\u524D\u7684\u5173\u7CFB\uFF1A${r.relationship}\u3002\u6B64\u523B\u5730\u70B9\uFF1A${r.scene?.where || a.where}\u3002\u6B63\u5728\u505A\uFF1A${r.scene ? "\u4E0E\u7528\u6237\u5F53\u9762\u4EA4\u8C08" : a.doing}\u3002\u5F53\u524D\u65E5\u671F\u65F6\u95F4\uFF1A${dt(nowTs)}\u3002\u4FDD\u6301\u4EBA\u8BBE\u4E00\u81F4\uFF0C\u4F46\u4E0D\u8981\u673A\u68B0\u9644\u548C\uFF0C\u4E0D\u66FF\u7528\u6237\u51B3\u5B9A\u884C\u4E3A\u3002\u7981\u6B62\u5047\u88C5\u77E5\u9053\u6CA1\u6709\u83B7\u6089\u7684\u79C1\u4E8B\u3002\u6240\u9644\u5386\u53F2\u662F\u6709\u6765\u6E90\u7684\u90E8\u5206\u68C0\u7D22\u7ED3\u679C\uFF0C\u4E0D\u786E\u5B9A\u65F6\u4E0D\u8981\u7F16\u9020\u3002\u804C\u4E1A\u4E0E\u4E16\u754C\u8BBE\u5B9A\u53EA\u7EA6\u675F\u53EF\u80FD\u7684\u6D3B\u52A8\uFF0C\u4E0D\u4EE3\u8868\u5F53\u4E0B\u5DF2\u7ECF\u53D1\u751F\uFF1B\u4E0D\u5F97\u4E3A\u6240\u6709\u89D2\u8272\u5957\u7528\u56FA\u5B9A\u7684\u7EDF\u4E00\u65E5\u7A0B\u6216\u7F16\u9020\u5177\u4F53\u884C\u7A0B\u3002`;
@@ -9831,6 +9952,7 @@ ${sharedDiaries}`;
 
 \u53EF\u68C0\u7D22\u7684\u5267\u5916\u7ECF\u5386\uFF08\u5E76\u975E\u4FDD\u8BC1\u5B8C\u6574\uFF0C\u5267\u5185\u865A\u6784\u5267\u60C5\u4E0D\u7B49\u4E8E\u73B0\u5B9E\u5386\u53F2\uFF09\uFF1A
 ${facts || "\u6682\u65E0"}`;
+      if (kind === "chat") base += "\n\n" + personalContext(r, nowTs);
     }
     const values = {
       char: kind === "play" ? r.play.char : r.name,
@@ -9840,7 +9962,7 @@ ${facts || "\u6682\u65E0"}`;
       personality: kind === "play" ? r.play.char : r.traits,
       description: kind === "play" ? r.play.world : r.profile,
       native_bubbles: nativeBubbleRule,
-      native_life: isFocused ? "\u5F53\u524D\u5904\u4E8E\u300C\u4E13\u5FC3\u804A\u300D\u72B6\u6001\uFF0C\u53CC\u65B9\u90FD\u5728\u624B\u673A\u524D\u4E13\u6CE8\u4EA4\u8C08\uFF0C\u8BF7\u81EA\u7136\u8FDE\u8D2F\u5730\u56DE\u5E94\uFF1B\u4ECD\u4FDD\u6709\u81EA\u5DF1\u7684\u6027\u683C\u4E0E\u4E3B\u89C1\u3002" : "\u4F60\u4ECD\u5728\u7167\u5E38\u751F\u6D3B\uFF0C\u4E0D\u5FC5\u603B\u662F\u7ACB\u523B\u6709\u7A7A\uFF1B\u4F46\u4E0D\u8981\u58F0\u79F0\u5DF2\u6267\u884C\u672A\u53D1\u751F\u7684\u884C\u52A8\u3002",
+      native_life: kind === "chat" ? "\u8FD9\u6BB5\u4EA4\u6D41\u53D1\u751F\u5728\u4F60\u81EA\u5DF1\u7684\u751F\u6D3B\u4E2D\u3002\u4ECE\u5DF2\u6709\u7ECF\u5386\u3001\u5173\u7CFB\u4E0E\u5173\u5207\u5F62\u6210\u81EA\u5DF1\u7684\u5224\u65AD\uFF0C\u518D\u51B3\u5B9A\u6B64\u523B\u503C\u5F97\u8BF4\u4EC0\u4E48\uFF1B\u53EF\u4EE5\u540C\u610F\u3001\u4FDD\u7559\u610F\u89C1\u3001\u7EA0\u6B63\u81EA\u5DF1\u6216\u8C08\u8D77\u81EA\u5DF1\u7684\u4E8B\uFF0C\u4E5F\u53EF\u4EE5\u53EA\u7B80\u77ED\u56DE\u5E94\u3002\u8BA4\u771F\u53C2\u4E0E\u5BF9\u65B9\u6B63\u5728\u8BA8\u8BBA\u7684\u4E8B\uFF0C\u4E0D\u4E3A\u5C55\u793A\u81EA\u4E3B\u6027\u5F3A\u884C\u8F6C\u9898\u3002\u79C1\u4EBA\u5173\u6CE8\u4E0D\u7B49\u4E8E\u9700\u8981\u516C\u5F00\uFF0C\u6253\u7B97\u4E0D\u7B49\u4E8E\u5DF2\u7ECF\u505A\u8FC7\u3002" : isFocused ? "\u5F53\u524D\u5904\u4E8E\u300C\u4E13\u5FC3\u804A\u300D\u72B6\u6001\uFF0C\u53CC\u65B9\u90FD\u5728\u624B\u673A\u524D\u4E13\u6CE8\u4EA4\u8C08\uFF0C\u8BF7\u81EA\u7136\u8FDE\u8D2F\u5730\u56DE\u5E94\uFF1B\u4ECD\u4FDD\u6709\u81EA\u5DF1\u7684\u6027\u683C\u4E0E\u4E3B\u89C1\u3002" : "\u4F60\u4ECD\u5728\u7167\u5E38\u751F\u6D3B\uFF0C\u4E0D\u5FC5\u603B\u662F\u7ACB\u523B\u6709\u7A7A\uFF1B\u4F46\u4E0D\u8981\u58F0\u79F0\u5DF2\u6267\u884C\u672A\u53D1\u751F\u7684\u884C\u52A8\u3002",
       native_novel_rule: kind === "play" ? "\u4F7F\u7528\u4E2D\u6587\u8FDB\u884C\u81EA\u7136\u7684\u6C89\u6D78\u5F0F\u53D9\u4E8B\u3002\u63A8\u8FDB\u573A\u666F\u3001\u8868\u73B0\u4EBA\u7269\u5FC3\u7406\u4E0E\u81EA\u8EAB\u52A8\u4F5C\uFF0C\u4E0D\u4EE3\u66FF\u7528\u6237\u505A\u51FA\u9009\u62E9\u3002" : "\u4F60\u6B63\u5728\u548C\u7528\u6237\u9762\u5BF9\u9762\u76F8\u5904\uFF0C\u91C7\u7528\u6587\u5B57\u5C0F\u8BF4\u5F0F\u63CF\u5199\u573A\u666F\u4E0E\u81EA\u5DF1\u7684\u8A00\u8BED\u52A8\u4F5C\u3002\u56DE\u590D\u4F7F\u7528\u81EA\u7136\u4E2D\u6587\u3002\u53EA\u5199\u4F60\u81EA\u5DF1\u7684\u56DE\u5E94\uFF0C\u4E0D\u66FF\u7528\u6237\u884C\u52A8\u3002",
       native_output_rule: kind === "play" ? "\u8FD9\u662F\u72EC\u7ACB\u620F\u5267\u4E16\u754C\uFF0C\u4E25\u683C\u9075\u5B88\u672C\u5267\u89D2\u8272\u4EBA\u8BBE\uFF1B\u4E0D\u8981\u900F\u9732\u620F\u5916\u77E5\u8BC6\u3002" : "\u8FD9\u662F\u9762\u5BF9\u9762\u7684\u6587\u5B57\u5C0F\u8BF4\uFF0C\u4EC5\u63CF\u8FF0\u81EA\u5DF1\u548C\u73AF\u5883\uFF0C\u4E0D\u66FF\u7528\u6237\u884C\u52A8\u3002"
     };
@@ -9857,8 +9979,8 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
     return context;
   }
   function compileNativeConversation(data, r, kind, input, options = {}) {
-    const profile = options.profile || createFruitState().profiles.meeting;
-    return compileConversationPrompt(nativePreset(kind === "play" || kind === "intermission" ? "theatre" : "meeting"), kind === "chat" ? projectChatVoiceProfile(profile, chatVoiceChoice(r.chatVoice)) : profile, buildNativeContext(data, r, kind, input, options), { purpose: "request" });
+    const profile2 = options.profile || createFruitState().profiles.meeting;
+    return compileConversationPrompt(nativePreset(kind === "play" || kind === "intermission" ? "theatre" : "meeting"), kind === "chat" ? projectChatVoiceProfile(profile2, chatVoiceChoice(r.chatVoice)) : profile2, buildNativeContext(data, r, kind, input, options), { purpose: "request" });
   }
   function compileNovelConversation(data, r, kind, input, options) {
     if (isNativePreset(options.preset)) return compileNativeConversation(data, r, kind, input, options);
@@ -10050,9 +10172,9 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
     if (!r || r.useLegacy) return fail2("\u8BF7\u5148\u5B8C\u6210\u5C0F\u8BF4\u914D\u7F6E\u9009\u62E9");
     const e = entry(l, presetId), b = rolePresetBinding(l, roleId, presetId), edited = sharedNovelProfile(p, e.kind === "native");
     if (b.baseHash !== presetHash(e)) projectRoleNovelProfile(l, presetId, b);
-    const profile = projectRoleNovelProfile(l, presetId, { ...b, baseHash: presetHash(e), profile: edited });
-    for (const mode of ["meeting", "theatre"]) applyFruitProfile(e.kind === "native" ? nativePreset(mode) : e.preset, profile);
-    return { ...l, roleNovel: { ...l.roleNovel, [roleId]: { ...r, ...b.baseHash !== presetHash(e) ? { backups: { ...r.backups, [presetId]: b } } : {}, profiles: { ...r.profiles, [presetId]: { ...b, baseHash: presetHash(e), profile, enabled: enabled ?? b.enabled } } } } };
+    const profile2 = projectRoleNovelProfile(l, presetId, { ...b, baseHash: presetHash(e), profile: edited });
+    for (const mode of ["meeting", "theatre"]) applyFruitProfile(e.kind === "native" ? nativePreset(mode) : e.preset, profile2);
+    return { ...l, roleNovel: { ...l.roleNovel, [roleId]: { ...r, ...b.baseHash !== presetHash(e) ? { backups: { ...r.backups, [presetId]: b } } : {}, profiles: { ...r.profiles, [presetId]: { ...b, baseHash: presetHash(e), profile: profile2, enabled: enabled ?? b.enabled } } } } };
   }
   function useLegacyNovel(l, roleId, value) {
     const r = l.roleNovel?.[roleId];
@@ -10100,9 +10222,9 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
       const bindings = {};
       for (const [id, v] of Object.entries(raw)) {
         if (!safeId(id) || !object2(v) || typeof v.baseHash !== "string" || typeof v.enabled !== "boolean") return fail2("\u89D2\u8272 Profile \u635F\u574F");
-        const profile = sharedNovelProfile(validateProfile(v.profile), entry(l, id).kind === "native");
-        for (const mode of ["meeting", "theatre"]) applyFruitProfile(presetVersion(l, id, v.baseHash, mode), profile);
-        bindings[id] = { baseHash: v.baseHash, enabled: v.enabled, profile };
+        const profile2 = sharedNovelProfile(validateProfile(v.profile), entry(l, id).kind === "native");
+        for (const mode of ["meeting", "theatre"]) applyFruitProfile(presetVersion(l, id, v.baseHash, mode), profile2);
+        bindings[id] = { baseHash: v.baseHash, enabled: v.enabled, profile: profile2 };
       }
       return bindings;
     };
@@ -10120,14 +10242,14 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
     return { roleNovel, legacyNovel, versions: l.versions };
   }
   function planRoleProfile(l, id, b) {
-    const e = entry(l, id), source = presetVersion(l, id, b.baseHash), profile = sharedNovelProfile(b.profile, e.kind === "native");
-    const plan = planPresetUpdate({ preset: source, profiles: { meeting: profile, theatre: profile }, enabled: b.enabled }, e.preset);
+    const e = entry(l, id), source = presetVersion(l, id, b.baseHash), profile2 = sharedNovelProfile(b.profile, e.kind === "native");
+    const plan = planPresetUpdate({ preset: source, profiles: { meeting: profile2, theatre: profile2 }, enabled: b.enabled }, e.preset);
     const dropped = [...new Map(plan.dropped.map((d) => [d.id, { id: d.id, reason: d.reason }])).values()];
     const regexIds = new Set(e.preset.regex.map((r) => r.id));
     const next = plan.next.profiles.meeting;
-    if (profile.regexOverrides) {
+    if (profile2.regexOverrides) {
       next.regexOverrides = {};
-      for (const [key, on] of Object.entries(profile.regexOverrides)) {
+      for (const [key, on] of Object.entries(profile2.regexOverrides)) {
         if (regexIds.has(key)) next.regexOverrides[key] = on;
         else dropped.push({ id: "regex:" + key, reason: "\u65B0\u7248\u4E2D\u5DF2\u65E0\u6B64\u6B63\u5219\uFF1B\u5F00\u5173\u672A\u6620\u5C04\u5230\u5176\u4ED6\u89C4\u5219" });
       }
@@ -10470,6 +10592,7 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
     if (sources.some((m) => !m)) return null;
     copy.events = [];
     copy.diaries = [];
+    copy.personalThreads = [];
     const compilation = sources.length ? compileChatBatchPrompt({ ...data, sharedTasks: { ddl: [], todo: [] } }, copy, {
       id: "regeneration",
       roleId: r.id,
@@ -10575,21 +10698,21 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
     }
     return result;
   }
-  async function readNovelResponse(response, profile, thirdParty) {
+  async function readNovelResponse(response, profile2, thirdParty) {
     const extracted = splitSceneReply(await readChatResponse(response)), raw = extracted.text;
     if (!raw) throw new Error("\u5C0F\u8BF4\u6B63\u6587\u4E3A\u7A7A\uFF0C\u539F\u8BB0\u5F55\u4FDD\u7559");
     if (!thirdParty) return { text: raw, sections: void 0, auxiliary: void 0, ...extracted.payload ? { sceneEvent: extracted.payload } : {} };
     const parsed = parseFruitOutput(raw);
     if (!parsed.content || /<\/?[a-z][\w:-]*(?:\s[^>]*)?>/i.test(parsed.content)) throw new Error("\u5C0F\u8BF4\u6B63\u6587\u7F3A\u5931\u3001\u6807\u7B7E\u4E0D\u5B8C\u6574\u6216\u5305\u542B HTML\uFF1B\u539F\u8BB0\u5F55\u4FDD\u7559\uFF0C\u53EF\u91CD\u8BD5");
     const auxiliary = {};
-    if (profile.output.scene && parsed.scene) auxiliary.scene = parsed.scene;
-    if (profile.output.summary && parsed.summary) auxiliary.summary = parsed.summary;
-    if (profile.output.characters) {
+    if (profile2.output.scene && parsed.scene) auxiliary.scene = parsed.scene;
+    if (profile2.output.summary && parsed.summary) auxiliary.summary = parsed.summary;
+    if (profile2.output.characters) {
       if (parsed.characters) auxiliary.characters = parsed.characters;
       if (parsed.choices) auxiliary.choices = parsed.choices;
     }
-    if (profile.output.auxiliary && parsed.generatedAuxiliary) auxiliary.generatedAuxiliary = parsed.generatedAuxiliary;
-    return { text: parsed.content, sections: permittedNovelSections(parsed.sections, profile), auxiliary, ...extracted.payload ? { sceneEvent: extracted.payload } : {} };
+    if (profile2.output.auxiliary && parsed.generatedAuxiliary) auxiliary.generatedAuxiliary = parsed.generatedAuxiliary;
+    return { text: parsed.content, sections: permittedNovelSections(parsed.sections, profile2), auxiliary, ...extracted.payload ? { sceneEvent: extracted.payload } : {} };
   }
 
   // src/core/monitorPresentation.ts
@@ -10646,6 +10769,65 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
       const timestamp = confirmed ? Math.max(...messages.map((m) => m.at), ...events.map((e) => e.at), ...diary ? [diary.sharedAt?.[role.id] ?? diary.at] : []) : item.timestamp;
       return { ...item, confirmed, sourceMessageCount: messages.length, sourceEventCount: events.length, timestamp, title, summary: description, where: item.category === "scene" ? facts.sceneBlocks.find((b) => b.messages.some((m) => messages.some((source) => source.id === m.id)))?.where : void 0, innerThought: item.innerThought ? { ...item.innerThought, surfaceState: description } : void 0 };
     }));
+  }
+
+  // src/core/proactiveChat.ts
+  var day = 864e5;
+  var chatVersion = (r, id = "") => JSON.stringify(getActiveMessages(r.chats).filter((m) => m.replyTurnId !== id).map((m) => [m.id, m.speaker, m.at, m.text, m.revisionCount || 0]));
+  function topics2(r, at) {
+    const { threads, events } = collectRoleLife(r, at);
+    return [
+      ...threads.filter((t) => t.shareable && at - t.at <= 14 * day).map((t) => ({ id: "thread:" + t.key, text: t.text, version: JSON.stringify(t) })),
+      ...events.filter((e) => at - e.at <= 7 * day).reverse().map((e) => ({ id: "event:" + e.id, text: e.title + "\uFF1A" + e.detail, version: JSON.stringify(e) }))
+    ];
+  }
+  function claimProactive(roles, r, at, ready) {
+    if (!ready || !roles.includes(r) || r.scene || r.play || r.chatTiming?.pending.length || r.chatTiming?.inFlight || r.pendingReplies?.length || !getActiveMessages(r.chats).some((m) => m.speaker === "char")) return null;
+    const lastContact = Math.max(0, ...getActiveMessages(r.chats).map((m) => m.at));
+    if (at - lastContact < 6 * 36e5) return null;
+    const attempts = r.proactive?.attempts || [];
+    if (attempts.some((t) => at - t.at < day) || roles.flatMap((r2) => r2.proactive?.attempts || []).filter((t) => at - t.at < day).length >= 2) return null;
+    const topic2 = topics2(r, at).find((t) => !r.proactive?.sentTopics.includes(t.id));
+    if (!topic2) return null;
+    const task = { id: makeUid("contact"), roleId: r.id, topicId: topic2.id, topic: topic2.text.slice(0, 600), topicVersion: topic2.version, chatVersion: chatVersion(r), at, status: "attempted" };
+    r.proactive = { attempts: [...attempts.filter((t) => at - t.at <= 14 * day), task], sentTopics: r.proactive?.sentTopics || [] };
+    return task;
+  }
+  function proactiveTaskValid(r, t) {
+    return r.id === t.roleId && !r.scene && !r.play && !r.chatTiming?.pending.length && !r.chatTiming?.inFlight && Boolean(r.proactive?.attempts.some((x) => x.id === t.id && (x.status === "attempted" || x.status === "queued"))) && chatVersion(r, t.id) === t.chatVersion && topics2(r, Math.max(Date.now(), t.at)).some((topic2) => topic2.id === t.topicId && topic2.version === t.topicVersion);
+  }
+  function finishProactive(r, t, status, error) {
+    const saved = r.proactive?.attempts.find((x) => x.id === t.id);
+    if (!saved) return;
+    saved.status = status;
+    saved.error = error;
+    if (status === "sent") recordProactiveDelivery(r, t);
+  }
+  function recordProactiveDelivery(r, t) {
+    if (r.proactive && !r.proactive.sentTopics.includes(t.topicId)) r.proactive.sentTopics.push(t.topicId);
+  }
+  function recoverProactive(r) {
+    for (const t of r.proactive?.attempts || []) {
+      if (t.status === "attempted") finishProactive(r, t, "failed", "\u9875\u9762\u5173\u95ED\u4E2D\u65AD\uFF1B\u4FDD\u7559\u51B7\u5374\uFF0C\u4E0D\u81EA\u52A8\u91CD\u8BD5");
+      if (t.status === "queued" && !r.pendingReplies?.some((j) => j.proactiveId === t.id)) finishProactive(r, t, "cancelled");
+    }
+  }
+  function proactiveInstruction(t) {
+    return `\u8FD9\u6B21\u662F\u4F60\u6CA1\u6709\u6536\u5230\u65B0\u7528\u6237\u6D88\u606F\u65F6\u81EA\u4E3B\u51B3\u5B9A\u662F\u5426\u8054\u7CFB\u5BF9\u65B9\u3002\u53EF\u8C08\u7D20\u6750\uFF1A${t.topic}\u3002\u7ED3\u5408\u81EA\u5DF1\u7684\u6027\u683C\u3001\u5173\u7CFB\u3001\u5B9E\u9645\u5904\u5883\u5224\u65AD\u662F\u5426\u6709\u503C\u5F97\u73B0\u5728\u8BF4\u7684\u8BDD\uFF1B\u6CA1\u6709\u5C31\u4E0D\u53D1\uFF0C\u4E0D\u4E3A\u5B8C\u6210\u4EFB\u52A1\u5236\u9020\u95EE\u5019\u3001\u65B0\u95FB\u6216\u91CD\u5927\u4E8B\u4EF6\u3002\u79C1\u4EBA\u5185\u5BB9\u53EF\u4FDD\u7559\uFF0C\u4E0D\u8981\u6C42\u70ED\u60C5\u6216\u8F6C\u8FF0\u6574\u6BB5\u751F\u6D3B\u6750\u6599\u3002\u82E5\u51B3\u5B9A\u53D1\u9001\uFF0C\u5199\u666E\u901A\u624B\u673A\u6D88\u606F\u5E76\u9644 <elsewhere_contact>{"requestId":"${t.id}","send":true}</elsewhere_contact>\uFF1B\u82E5\u4E0D\u9002\u5408\uFF0C\u53EA\u8FD4\u56DE\u540C\u6807\u7B7E\u4E14send=false\u3002\u4E0D\u662F\u66FF\u7528\u6237\u8BF4\u8BDD\uFF0C\u4E0D\u4F2A\u9020\u7528\u6237\u65B0\u8F93\u5165\u3002`;
+  }
+  function parseProactiveReply(raw, t) {
+    const personal = splitPersonalReply(raw), matches = [...personal.text.matchAll(/<elsewhere_contact>([\s\S]*?)<\/elsewhere_contact>/g)];
+    if (matches.length !== 1 || matches[0][1].length > 500) throw new Error("\u4E3B\u52A8\u8054\u7CFB\u672A\u63D0\u4F9B\u6709\u6548\u53D1\u9001\u51B3\u5B9A");
+    let decision;
+    try {
+      decision = JSON.parse(matches[0][1]);
+    } catch {
+      throw new Error("\u4E3B\u52A8\u8054\u7CFB\u51B3\u5B9A\u65E0\u6548");
+    }
+    if (!decision || typeof decision !== "object" || decision.requestId !== t.id || typeof decision.send !== "boolean") throw new Error("\u4E3B\u52A8\u8054\u7CFB\u51B3\u5B9A\u4E0D\u5C5E\u4E8E\u672C\u4EFB\u52A1");
+    const text2 = personal.text.replace(matches[0][0], "").trim();
+    if (/<\/?elsewhere_contact\b/i.test(text2)) throw new Error("\u4E3B\u52A8\u8054\u7CFB\u542B\u6B8B\u7F3A\u5143\u6570\u636E");
+    return { send: decision.send, text: text2, payload: personal.payload };
   }
 
   // src/chatVoiceView.ts
@@ -11188,25 +11370,25 @@ channel.onmessage=async({data:job})=>{
           const l = await library;
           if (!valid()) return;
           if (!l) throw Error("\u5C55\u793A\u539F\u4EF6\u6682\u4E0D\u53EF\u7528");
-          const profile = l.roleNovel?.[roleId] && !l.roleNovel[roleId].useLegacy ? rolePresetBinding(l, roleId, owner.message.novelOutput.presetId).profile : legacyNovelSnapshot(l).entries[owner.message.novelOutput.presetId]?.profiles[mode];
-          if (!profile) throw Error("\u6B64\u5386\u53F2\u7684\u89D2\u8272\u914D\u7F6E\u5DF2\u4E0D\u53EF\u7528");
+          const profile2 = l.roleNovel?.[roleId] && !l.roleNovel[roleId].useLegacy ? rolePresetBinding(l, roleId, owner.message.novelOutput.presetId).profile : legacyNovelSnapshot(l).entries[owner.message.novelOutput.presetId]?.profiles[mode];
+          if (!profile2) throw Error("\u6B64\u5386\u53F2\u7684\u89D2\u8272\u914D\u7F6E\u5DF2\u4E0D\u53EF\u7528");
           const doc = validNovelDocument(owner.message, roleId, stageId, mode), output = owner.message.novelOutput;
           if (!doc) {
             if (output.document) {
               target.textContent = owner.message.text;
               return;
             }
-            if (!owner.message.editedAt) target.innerHTML = escHtml(owner.message.text) + novelAuxiliaryHtml({ ...owner.message, novelOutput: { ...output, scene: profile.output.scene ? output.scene : void 0, summary: profile.output.summary ? output.summary : void 0, characters: profile.output.characters ? output.characters : void 0, choices: profile.output.characters ? output.choices : void 0, generatedAuxiliary: profile.output.auxiliary ? output.generatedAuxiliary : void 0 } });
+            if (!owner.message.editedAt) target.innerHTML = escHtml(owner.message.text) + novelAuxiliaryHtml({ ...owner.message, novelOutput: { ...output, scene: profile2.output.scene ? output.scene : void 0, summary: profile2.output.summary ? output.summary : void 0, characters: profile2.output.characters ? output.characters : void 0, choices: profile2.output.characters ? output.choices : void 0, generatedAuxiliary: profile2.output.auxiliary ? output.generatedAuxiliary : void 0 } });
             return;
           }
-          const sections = permittedNovelSections(doc.sections, profile);
+          const sections = permittedNovelSections(doc.sections, profile2);
           target.innerHTML = novelSectionsHtml(sections);
           target.dataset.displayState = "plain";
           const preset = presetVersion(l, doc.presetId, doc.presetHash, mode), night = document.documentElement.dataset.theme === "night" || document.body.dataset.theme === "night";
-          const key = JSON.stringify([doc, profile.output, sections, profile.regexOverrides || {}, owner.depth, owner.names, night]);
+          const key = JSON.stringify([doc, profile2.output, sections, profile2.regexOverrides || {}, owner.depth, owner.names, night]);
           let result = cache.get(key);
           if (!result) {
-            result = await runNovelCards({ rules: preset.regex, sections, overrides: profile.regexOverrides || {}, depth: owner.depth, isEdit: false, names: owner.names, night }, signal);
+            result = await runNovelCards({ rules: preset.regex, sections, overrides: profile2.regexOverrides || {}, depth: owner.depth, isEdit: false, names: owner.names, night }, signal);
             if (!valid()) return;
             if (cache.size >= 24) cache.delete(cache.keys().next().value);
             cache.set(key, result);
@@ -11216,7 +11398,7 @@ channel.onmessage=async({data:job})=>{
           target.dataset.displayState = result.cards.length ? "author-cards" : "plain";
           const warnings = result.diagnostics.filter((d) => (Object.values(AUTHOR_CARD_IDS).includes(d.ruleId) || d.ruleId === "display") && d.status !== "matched");
           if (warnings.length && sections.some((s) => s.type === "novel_header" || s.type === "status_bar")) target.insertAdjacentHTML("beforeend", `<details class="novel-display-diagnostics"><summary>\u5C55\u793A\u517C\u5BB9\u8BF4\u660E</summary>${warnings.map((w) => `<p>${escHtml(w.reason)}</p>`).join("")}</details>`);
-          if (profile.output.auxiliary && output.generatedAuxiliary) target.insertAdjacentHTML("beforeend", novelAuxiliaryHtml({ ...owner.message, novelOutput: { ...output, scene: void 0, summary: void 0, characters: void 0, choices: void 0 } }));
+          if (profile2.output.auxiliary && output.generatedAuxiliary) target.insertAdjacentHTML("beforeend", novelAuxiliaryHtml({ ...owner.message, novelOutput: { ...output, scene: void 0, summary: void 0, characters: void 0, choices: void 0 } }));
         } catch {
           if (valid()) target.insertAdjacentHTML("beforeend", '<small class="novel-display-diagnostics">\u5C55\u793A\u539F\u4EF6\u6216\u914D\u7F6E\u6682\u4E0D\u53EF\u7528\uFF0C\u5DF2\u4FDD\u7559\u5B89\u5168\u6B63\u6587\uFF1B\u672A\u8865\u53D1\u6A21\u578B\u8BF7\u6C42\u3002</small>');
         }
@@ -11550,7 +11732,7 @@ channel.onmessage=async({data:job})=>{
   }
   var themes = [["blue", "\u84DD\u8272"], ["green", "\u7EFF\u8272"], ["pink", "\u7C89\u8272"], ["coffee", "\u5361\u5E03\u5947\u8BFA"], ["night", "\u591C\u665A"]];
   function createTerminalAppearance(hooks) {
-    let host = null, owner = "", draft = null, version = 0, urls = [], fontRequest = null;
+    let host = null, owner = "", draft = null, version2 = 0, urls = [], fontRequest = null;
     const drafts = /* @__PURE__ */ new Map();
     const field = (name) => host?.querySelector(`[name="${name}"]`);
     const objectUrl = (blob) => {
@@ -11564,7 +11746,7 @@ channel.onmessage=async({data:job})=>{
       draft.mine = field("bubble-mine")?.value ?? draft.mine;
       draft.theirs = field("bubble-theirs")?.value ?? draft.theirs;
     }
-    const alive = (id) => id === version && host?.isConnected && hooks.role()?.id === owner;
+    const alive = (id) => id === version2 && host?.isConnected && hooks.role()?.id === owner;
     function feedback(message) {
       const status = host?.querySelector("[data-style-status]");
       if (status) status.textContent = message;
@@ -11604,7 +11786,7 @@ channel.onmessage=async({data:job})=>{
       }
     }
     async function wallpaperPreview() {
-      const d = draft, id = version, box = host?.querySelector("[data-wallpaper-preview]");
+      const d = draft, id = version2, box = host?.querySelector("[data-wallpaper-preview]");
       if (!d || !box) return;
       for (const url of urls) URL.revokeObjectURL(url);
       urls = [];
@@ -11646,7 +11828,7 @@ channel.onmessage=async({data:job})=>{
       fontRequest?.abort();
       const controller = new AbortController();
       fontRequest = controller;
-      const id = ++version, d = draft;
+      const id = ++version2, d = draft;
       const button = host.querySelector('[data-style-action="import-font"]');
       if (button) button.disabled = true;
       const timer = setTimeout(() => controller.abort(), 15e3);
@@ -11685,7 +11867,7 @@ channel.onmessage=async({data:job})=>{
       if (!file || !draft) return;
       input2.value = "";
       read();
-      const id = ++version, d = draft;
+      const id = ++version2, d = draft;
       try {
         if (kind === "wallpaper") {
           if (!file.size || file.size > WALLPAPER_MAX_BYTES) throw new Error("\u58C1\u7EB8\u6587\u4EF6\u4E3A\u7A7A\u6216\u8D85\u8FC7 10MB\u3002");
@@ -11724,7 +11906,7 @@ channel.onmessage=async({data:job})=>{
     async function saveAppearance() {
       if (!draft) return;
       read();
-      const d = draft, r = hooks.role(), data = hooks.data(), id = version;
+      const d = draft, r = hooks.role(), data = hooks.data(), id = version2;
       if (!r || r.id !== owner) return;
       const uploaded = [];
       const previous = { theme: r.theme, font: r.font, customFontId: r.customFontId, wallpaperMediaId: r.wallpaperMediaId, fonts: data.customFonts };
@@ -11822,7 +12004,7 @@ channel.onmessage=async({data:job})=>{
       read();
       const action = target.dataset.styleAction, side = target.dataset.side === "mine" ? "mine" : "theirs";
       if (target.dataset.styleTheme) {
-        version++;
+        version2++;
         draft.theme = target.dataset.styleTheme;
         preview();
         return;
@@ -11831,14 +12013,14 @@ channel.onmessage=async({data:job})=>{
         const panel = host?.querySelector("[data-font-import]");
         if (panel) panel.hidden = action === "font-cancel";
         if (action === "font-cancel") {
-          version++;
+          version2++;
           fontRequest?.abort();
           fontRequest = null;
         }
       }
       if (action === "import-font") void importFont();
       if (action === "clear-wallpaper") {
-        version++;
+        version2++;
         draft.wallpaper = "";
         draft.wallpaperBlob = void 0;
         void wallpaperPreview();
@@ -11866,10 +12048,10 @@ channel.onmessage=async({data:job})=>{
           if (name) name.value = preset.name;
         }
       }
-      if (event.type === "input" && target.matches('[name^="bubble-"],[name="font-name"],[name="font-url"]')) version++;
+      if (event.type === "input" && target.matches('[name^="bubble-"],[name="font-name"],[name="font-url"]')) version2++;
       if (event.type === "change" && target.name === "appearance-font") {
-        version++;
-        const font = draft.fonts.find((f) => f.id === draft?.font), id = version;
+        version2++;
+        const font = draft.fonts.find((f) => f.id === draft?.font), id = version2;
         if (font) void loadFont(font, font.blob).catch(() => {
           if (alive(id)) feedback("\u5B57\u4F53\u8BFB\u53D6\u5931\u8D25\uFF0C\u8BF7\u91CD\u65B0\u5BFC\u5165\u3002");
         });
@@ -11887,7 +12069,7 @@ channel.onmessage=async({data:job})=>{
     };
     function detach() {
       read();
-      version++;
+      version2++;
       fontRequest?.abort();
       fontRequest = null;
       if (host) {
@@ -11914,7 +12096,7 @@ channel.onmessage=async({data:job})=>{
       host.addEventListener("change", input);
       host.addEventListener("submit", submit);
       render();
-      const id = version;
+      const id = version2;
       const selectedFont = draft.fonts.find((f) => f.id === draft?.font);
       if (selectedFont) void loadFont(selectedFont, selectedFont.blob).catch(() => {
         if (alive(id) && draft?.font === selectedFont.id) feedback("\u5B57\u4F53\u8BFB\u53D6\u5931\u8D25\uFF0C\u8BF7\u91CD\u65B0\u5BFC\u5165\u3002");
@@ -12339,10 +12521,10 @@ channel.onmessage=async({data:job})=>{
   }
 
   // src/regexPreview.ts
-  function regexPreviewHtml(preset, profile, actor) {
-    return `<h2 id="fruit-dialog-title">\u679C\u5B9E\u4F5C\u8005\u5361\u7247 \xB7 \u672C\u5730\u9884\u89C8</h2><p>\u5F53\u524D\u89D2\u8272\uFF1A${escHtml(actor.name)} \xB7 ${escHtml(preset.name)} ${escHtml(preset.version)}</p><p class="terminal-caption">\u5408\u6210\u5C0F\u8BF4\uFF0C\u4E0D\u8C03\u7528\u6A21\u578B\u3001\u4E0D\u5199\u5C0F\u8BF4\u5386\u53F2\u3002\u4EC5\u6838\u5BF9\u8FC7\u7684 #19 \u7AE0\u8282\uFF0F#20 \u72B6\u6001\u6A21\u677F\u9002\u914D\uFF1B\u5176\u4ED6\u89C4\u5219\u3001Prompt \u88C1\u526A\u3001snow \u548C\u7B2C\u4E09\u65B9\u811A\u672C\u4E0D\u6267\u884C\u3002\u8FDC\u7A0B\u5B57\u4F53\u4E0E\u56FE\u7247\u4E0D\u52A0\u8F7D\u3002\u771F\u5B9E\u56DE\u590D\u9700\u5305\u542B\u5BF9\u5E94\u5B57\u6BB5\uFF1B\u9884\u89C8\u4E0D\u6539\u53D8 Prompt \u6761\u76EE\u5F00\u5173\u3002</p><div data-regex-preview><div class="regex-preview-layout"><section><h3>\u539F\u59CB\u7ED3\u6784\u6587\u672C</h3><textarea class="field regex-preview-source" data-regex-source aria-label="\u5408\u6210\u5C0F\u8BF4\u7ED3\u6784\u6587\u672C" maxlength="100000">${escHtml(SYNTHETIC_NOVEL)}</textarea><button type="button" class="fruit-button" data-regex-theme>\u5207\u6362\u65E5\uFF0F\u591C\u9884\u89C8</button><p data-regex-preview-state role="status">\u6B63\u5728\u672C\u5730\u89E3\u6790\u2026</p></section><section><h3>\u6700\u7EC8\u5B89\u5168\u5C55\u793A</h3><div data-regex-render></div></section></div><details open><summary>\u89C4\u5219\u5F00\u5173\u4E0E\u652F\u6301\u72B6\u6001 \xB7 \u968F\u5F53\u524D\u89D2\u8272\u81EA\u52A8\u4FDD\u5B58</summary><div class="regex-preview-rules">${preset.regex.map((r) => `<label><input type="checkbox" data-regex-enabled="${escHtml(r.id)}" ${profile.regexOverrides?.[r.id] ?? r.enabled ? "checked" : ""}><span>${escHtml(plainUiLabel(r.name) || "\u672A\u547D\u540D\u89C4\u5219")}<small>\u539F\u59CB\uFF1A${r.enabled ? "\u542F\u7528" : "\u5173\u95ED"} \xB7 <span data-regex-result="${escHtml(r.id)}">\u7B49\u5F85\u6A21\u677F\u6838\u5BF9</span></small></span></label>`).join("") || "<p>\u6B64\u9884\u8BBE\u6CA1\u6709\u6B63\u5219\uFF0C\u6B63\u6587\u4FDD\u6301\u5B89\u5168\u6587\u5B57\u663E\u793A\u3002</p>"}</div></details></div><button type="button" class="fruit-button" data-terminal-action="close-dialog">\u5173\u95ED</button>`;
+  function regexPreviewHtml(preset, profile2, actor) {
+    return `<h2 id="fruit-dialog-title">\u679C\u5B9E\u4F5C\u8005\u5361\u7247 \xB7 \u672C\u5730\u9884\u89C8</h2><p>\u5F53\u524D\u89D2\u8272\uFF1A${escHtml(actor.name)} \xB7 ${escHtml(preset.name)} ${escHtml(preset.version)}</p><p class="terminal-caption">\u5408\u6210\u5C0F\u8BF4\uFF0C\u4E0D\u8C03\u7528\u6A21\u578B\u3001\u4E0D\u5199\u5C0F\u8BF4\u5386\u53F2\u3002\u4EC5\u6838\u5BF9\u8FC7\u7684 #19 \u7AE0\u8282\uFF0F#20 \u72B6\u6001\u6A21\u677F\u9002\u914D\uFF1B\u5176\u4ED6\u89C4\u5219\u3001Prompt \u88C1\u526A\u3001snow \u548C\u7B2C\u4E09\u65B9\u811A\u672C\u4E0D\u6267\u884C\u3002\u8FDC\u7A0B\u5B57\u4F53\u4E0E\u56FE\u7247\u4E0D\u52A0\u8F7D\u3002\u771F\u5B9E\u56DE\u590D\u9700\u5305\u542B\u5BF9\u5E94\u5B57\u6BB5\uFF1B\u9884\u89C8\u4E0D\u6539\u53D8 Prompt \u6761\u76EE\u5F00\u5173\u3002</p><div data-regex-preview><div class="regex-preview-layout"><section><h3>\u539F\u59CB\u7ED3\u6784\u6587\u672C</h3><textarea class="field regex-preview-source" data-regex-source aria-label="\u5408\u6210\u5C0F\u8BF4\u7ED3\u6784\u6587\u672C" maxlength="100000">${escHtml(SYNTHETIC_NOVEL)}</textarea><button type="button" class="fruit-button" data-regex-theme>\u5207\u6362\u65E5\uFF0F\u591C\u9884\u89C8</button><p data-regex-preview-state role="status">\u6B63\u5728\u672C\u5730\u89E3\u6790\u2026</p></section><section><h3>\u6700\u7EC8\u5B89\u5168\u5C55\u793A</h3><div data-regex-render></div></section></div><details open><summary>\u89C4\u5219\u5F00\u5173\u4E0E\u652F\u6301\u72B6\u6001 \xB7 \u968F\u5F53\u524D\u89D2\u8272\u81EA\u52A8\u4FDD\u5B58</summary><div class="regex-preview-rules">${preset.regex.map((r) => `<label><input type="checkbox" data-regex-enabled="${escHtml(r.id)}" ${profile2.regexOverrides?.[r.id] ?? r.enabled ? "checked" : ""}><span>${escHtml(plainUiLabel(r.name) || "\u672A\u547D\u540D\u89C4\u5219")}<small>\u539F\u59CB\uFF1A${r.enabled ? "\u542F\u7528" : "\u5173\u95ED"} \xB7 <span data-regex-result="${escHtml(r.id)}">\u7B49\u5F85\u6A21\u677F\u6838\u5BF9</span></small></span></label>`).join("") || "<p>\u6B64\u9884\u8BBE\u6CA1\u6709\u6B63\u5219\uFF0C\u6B63\u6587\u4FDD\u6301\u5B89\u5168\u6587\u5B57\u663E\u793A\u3002</p>"}</div></details></div><button type="button" class="fruit-button" data-terminal-action="close-dialog">\u5173\u95ED</button>`;
   }
-  function mountRegexPreview(root, preset, profile) {
+  function mountRegexPreview(root, preset, profile2) {
     let lifetime = new AbortController(), job = new AbortController(), frames = () => {
     }, night = true, timer;
     async function draw() {
@@ -12352,12 +12534,12 @@ channel.onmessage=async({data:job})=>{
       const signal = job.signal, target = root.querySelector("[data-regex-render]"), state2 = root.querySelector("[data-regex-preview-state]"), input2 = root.querySelector("[data-regex-source]");
       if (!target || !state2 || !input2 || lifetime.signal.aborted) return;
       try {
-        const parsed = parseFruitOutput(input2.value), sections = permittedNovelSections(parsed.sections, profile());
+        const parsed = parseFruitOutput(input2.value), sections = permittedNovelSections(parsed.sections, profile2());
         target.classList.toggle("regex-preview-night", night);
         target.innerHTML = novelSectionsHtml(sections);
         if (!parsed.content) throw Error("\u6B63\u6587\u6807\u7B7E\u7F3A\u5931\u6216\u7ED3\u6784\u4E0D\u5B8C\u6574\uFF0C\u8BF7\u68C0\u67E5\u5408\u6210\u6587\u672C");
         state2.textContent = "\u6B63\u5728\u6838\u5BF9\u6A21\u677F\u4E0E\u5B57\u6BB5\u2026";
-        const result = await runNovelCards({ rules: preset.regex, sections, overrides: profile().regexOverrides || {}, depth: 0, isEdit: false, names: { char: "\u65C5\u4EBA\u7532", user: "\u65C5\u4EBA\u4E59" }, night }, signal);
+        const result = await runNovelCards({ rules: preset.regex, sections, overrides: profile2().regexOverrides || {}, depth: 0, isEdit: false, names: { char: "\u65C5\u4EBA\u7532", user: "\u65C5\u4EBA\u4E59" }, night }, signal);
         if (signal.aborted || !root.isConnected) return;
         frames = mountAuthorCards(target, result, signal, () => root.isConnected && !lifetime.signal.aborted, night);
         for (const row of root.querySelectorAll("[data-regex-result]")) {
@@ -12474,9 +12656,9 @@ channel.onmessage=async({data:job})=>{
   }
 
   // src/core/fruit/compiler.ts
-  function compileFruitPrompt(preset, profile, context, options = {}) {
+  function compileFruitPrompt(preset, profile2, context, options = {}) {
     if (context.source !== "isolated-fixture") throw new Error("FRUIT-01 \u4EC5\u5141\u8BB8\u9694\u79BB\u6D4B\u8BD5\u4E0A\u4E0B\u6587\uFF1B\u5C1A\u672A\u63A5\u5165\u6B63\u5F0F\u8BB0\u5FC6");
-    return { ...compileConversationPrompt(preset, profile, context, options), mode: context.mode, previewOnly: true, sendAllowed: false };
+    return { ...compileConversationPrompt(preset, profile2, context, options), mode: context.mode, previewOnly: true, sendAllowed: false };
   }
 
   // src/core/fruit/fixture.ts
@@ -12572,12 +12754,12 @@ channel.onmessage=async({data:job})=>{
     const single = prompt.name.match(/([^｜|\s]+)单选/u)?.[1];
     return { title, description, section, uncertain: uncertain2, structural, single };
   }
-  function fruitPromptRows(preset, profile) {
+  function fruitPromptRows(preset, profile2) {
     const order = new Map(preset.order.map((item, index) => [item.identifier, { ...item, index }]));
     return preset.prompts.map((prompt) => {
       const item = order.get(prompt.identifier), label2 = describeFruitPrompt(prompt);
       const reason = prompt.blockedReason || (!item ? "\u672A\u5305\u542B\u5728\u5F53\u524D\u6392\u5E8F\u4E2D\uFF0C\u4EC5\u4F9B\u67E5\u9605" : "");
-      const enabled = Boolean(item && !reason && (Object.hasOwn(profile.overrides, prompt.identifier) ? profile.overrides[prompt.identifier] : item.enabled));
+      const enabled = Boolean(item && !reason && (Object.hasOwn(profile2.overrides, prompt.identifier) ? profile2.overrides[prompt.identifier] : item.enabled));
       return { prompt, ...label2, section: !item ? "advanced" : label2.section, enabled, reason, orderIndex: item?.index };
     }).sort((a, b) => (a.orderIndex ?? 1e4) - (b.orderIndex ?? 1e4));
   }
@@ -12597,10 +12779,10 @@ channel.onmessage=async({data:job})=>{
   }
 
   // src/core/fruit/readiness.ts
-  function novelPresetReadiness(preset, profile, mode, enabled = true) {
+  function novelPresetReadiness(preset, profile2, mode, enabled = true) {
     const diagnostics = [];
     try {
-      const result = compileFruitPrompt(preset, profile, makeFruitFixtureContext(mode), { rng: () => 0.5 });
+      const result = compileFruitPrompt(preset, profile2, makeFruitFixtureContext(mode), { rng: () => 0.5 });
       diagnostics.push(...result.diagnostics.filter((d) => d.severity === "error"));
       if (!isNativePreset(preset)) {
         novelSamplingParameters(preset);
@@ -12616,9 +12798,9 @@ channel.onmessage=async({data:job})=>{
   // src/terminalPresetView.ts
   var terminalModeName = (mode) => mode === "meeting" ? "\u89C1\u9762\u5C0F\u8BF4" : "\u620F\u4E2D\u620F";
   var presetLabel = (entry2) => plainUiLabel(entry2.preset.name) || (entry2.kind === "fruit" ? "MoM \u679C\u5B9E\u9884\u8BBE" : entry2.kind === "native" ? "Elsewhere \u539F\u751F\u9884\u8BBE" : "\u5BFC\u5165\u9884\u8BBE");
-  function renderPresetList(preset, profile) {
+  function renderPresetList(preset, profile2) {
     const prompts = new Map(preset.prompts.map((p) => [p.identifier, p])), ordered = new Set(preset.order.map((p) => p.identifier));
-    const items = [...preset.order.map((item) => ({ prompt: prompts.get(item.identifier), enabled: Object.hasOwn(profile.overrides, item.identifier) ? profile.overrides[item.identifier] : item.enabled, ordered: true })), ...preset.prompts.filter((p) => !ordered.has(p.identifier)).map((prompt) => ({ prompt, enabled: false, ordered: false }))];
+    const items = [...preset.order.map((item) => ({ prompt: prompts.get(item.identifier), enabled: Object.hasOwn(profile2.overrides, item.identifier) ? profile2.overrides[item.identifier] : item.enabled, ordered: true })), ...preset.prompts.filter((p) => !ordered.has(p.identifier)).map((prompt) => ({ prompt, enabled: false, ordered: false }))];
     let html = "", group = "", run = 0;
     for (const item of items) {
       const p = item.prompt;
@@ -12635,8 +12817,8 @@ channel.onmessage=async({data:job})=>{
         continue;
       }
       const reason = p.blockedReason || (p.position !== 0 && p.position !== 1 ? "\u6CE8\u5165\u4F4D\u7F6E\u5C1A\u4E0D\u517C\u5BB9" : !item.ordered ? "\u672A\u5728\u539F\u59CB\u6392\u5E8F\u4E2D\uFF0C\u4E0D\u4F1A\u7F16\u8BD1" : "");
-      const modified = Object.hasOwn(profile.overrides, p.identifier) || Object.hasOwn(profile.edits || {}, p.identifier) || (profile.customPrompts || []).some((c) => c.identifier === p.identifier);
-      html += `<div class="terminal-prompt-row ${modified ? "is-modified" : ""} ${reason ? "is-protected" : ""}" data-prompt-row="${escHtml(p.identifier)}" data-search="${escHtml(p.name + " " + p.identifier + " " + p.group)}"><button type="button" class="terminal-drag" data-prompt-drag="${escHtml(p.identifier)}" draggable="${!reason && !isPromptPinned(p)}" aria-label="\u62D6\u52A8${escHtml(plainUiLabel(p.name) || "\u672A\u547D\u540D\u6761\u76EE")}" ${reason || isPromptPinned(p) ? "disabled" : ""}>${uiIcon("drag")}</button><div class="terminal-prompt-name"><b>${escHtml(plainUiLabel(p.name) || "\u672A\u547D\u540D\u6761\u76EE")}</b>${(profile.customPrompts || []).some((c) => c.identifier === p.identifier) ? "<span>\u81EA\u5EFA</span>" : p.marker ? "<span>\u5FC5\u8981\u4E0A\u4E0B\u6587</span>" : p.position === 1 ? "<span>In-Chat</span>" : ""}<i data-row-dirty ${modified ? "" : "hidden"} title="\u6B64\u89D2\u8272\u6709\u8986\u76D6">\u25CF</i></div><div class="terminal-prompt-actions"><button type="button" data-prompt-move="up" data-id="${escHtml(p.identifier)}" aria-label="\u4E0A\u79FB${escHtml(plainUiLabel(p.name) || "\u672A\u547D\u540D\u6761\u76EE")}" ${reason || isPromptPinned(p) ? "disabled" : ""}>${uiIcon("up")}</button><button type="button" data-prompt-move="down" data-id="${escHtml(p.identifier)}" aria-label="\u4E0B\u79FB${escHtml(plainUiLabel(p.name) || "\u672A\u547D\u540D\u6761\u76EE")}" ${reason || isPromptPinned(p) ? "disabled" : ""}>${uiIcon("down")}</button><label class="terminal-row-switch" title="${escHtml(reason || (p.marker ? "\u5FC5\u8981 Marker \u53D7\u4FDD\u62A4" : "\u542F\u7528 / \u505C\u7528"))}"><input type="checkbox" class="fruit-switch" data-prompt-enabled="${escHtml(p.identifier)}" ${item.enabled && !reason ? "checked" : ""} ${reason || p.marker ? "disabled" : ""} aria-label="\u542F\u7528${escHtml(plainUiLabel(p.name) || "\u672A\u547D\u540D\u6761\u76EE")}"></label><button type="button" data-prompt-edit="${escHtml(p.identifier)}" aria-label="\u7F16\u8F91${escHtml(plainUiLabel(p.name) || "\u672A\u547D\u540D\u6761\u76EE")}">${uiIcon("edit")}</button></div></div>`;
+      const modified = Object.hasOwn(profile2.overrides, p.identifier) || Object.hasOwn(profile2.edits || {}, p.identifier) || (profile2.customPrompts || []).some((c) => c.identifier === p.identifier);
+      html += `<div class="terminal-prompt-row ${modified ? "is-modified" : ""} ${reason ? "is-protected" : ""}" data-prompt-row="${escHtml(p.identifier)}" data-search="${escHtml(p.name + " " + p.identifier + " " + p.group)}"><button type="button" class="terminal-drag" data-prompt-drag="${escHtml(p.identifier)}" draggable="${!reason && !isPromptPinned(p)}" aria-label="\u62D6\u52A8${escHtml(plainUiLabel(p.name) || "\u672A\u547D\u540D\u6761\u76EE")}" ${reason || isPromptPinned(p) ? "disabled" : ""}>${uiIcon("drag")}</button><div class="terminal-prompt-name"><b>${escHtml(plainUiLabel(p.name) || "\u672A\u547D\u540D\u6761\u76EE")}</b>${(profile2.customPrompts || []).some((c) => c.identifier === p.identifier) ? "<span>\u81EA\u5EFA</span>" : p.marker ? "<span>\u5FC5\u8981\u4E0A\u4E0B\u6587</span>" : p.position === 1 ? "<span>In-Chat</span>" : ""}<i data-row-dirty ${modified ? "" : "hidden"} title="\u6B64\u89D2\u8272\u6709\u8986\u76D6">\u25CF</i></div><div class="terminal-prompt-actions"><button type="button" data-prompt-move="up" data-id="${escHtml(p.identifier)}" aria-label="\u4E0A\u79FB${escHtml(plainUiLabel(p.name) || "\u672A\u547D\u540D\u6761\u76EE")}" ${reason || isPromptPinned(p) ? "disabled" : ""}>${uiIcon("up")}</button><button type="button" data-prompt-move="down" data-id="${escHtml(p.identifier)}" aria-label="\u4E0B\u79FB${escHtml(plainUiLabel(p.name) || "\u672A\u547D\u540D\u6761\u76EE")}" ${reason || isPromptPinned(p) ? "disabled" : ""}>${uiIcon("down")}</button><label class="terminal-row-switch" title="${escHtml(reason || (p.marker ? "\u5FC5\u8981 Marker \u53D7\u4FDD\u62A4" : "\u542F\u7528 / \u505C\u7528"))}"><input type="checkbox" class="fruit-switch" data-prompt-enabled="${escHtml(p.identifier)}" ${item.enabled && !reason ? "checked" : ""} ${reason || p.marker ? "disabled" : ""} aria-label="\u542F\u7528${escHtml(plainUiLabel(p.name) || "\u672A\u547D\u540D\u6761\u76EE")}"></label><button type="button" data-prompt-edit="${escHtml(p.identifier)}" aria-label="\u7F16\u8F91${escHtml(plainUiLabel(p.name) || "\u672A\u547D\u540D\u6761\u76EE")}">${uiIcon("edit")}</button></div></div>`;
     }
     return html + (group ? "</div></details>" : "");
   }
@@ -12663,9 +12845,9 @@ channel.onmessage=async({data:job})=>{
       return `<div class="terminal-select-line"><span class="grow">${escHtml(presetLabel(e))}${e.archived ? " \xB7 \u5DF2\u79FB\u51FA\u5217\u8868" : ""}<small>${refs.length ? " \u5F53\u524D\u4F7F\u7528\uFF1A" + escHtml(names(refs)) : " \u65E0\u89D2\u8272\u6B63\u5728\u4F7F\u7528"}</small></span><button class="fruit-button" type="button" data-terminal-action="${e.archived ? "restore-library-entry" : "remove-library-entry"}" data-id="${escHtml(e.id)}">${e.archived ? "\u6062\u590D\u5230\u5217\u8868" : "\u79FB\u51FA\u5217\u8868"}</button></div>`;
     }).join("")}</details>`;
   }
-  function renderTerminalPresetPanel(library, entry2, _mode, profile, preset, dirty, owner) {
+  function renderTerminalPresetPanel(library, entry2, _mode, profile2, preset, dirty, owner) {
     const options = library.entries.filter((e) => !e.archived || e.id === entry2.id).map((e) => `<option value="${escHtml(e.id)}" ${e.id === entry2.id ? "selected" : ""}>${escHtml(presetLabel(e))}${e.archived ? "\uFF08\u5DF2\u79FB\u51FA\u5217\u8868\uFF09" : ""}</option>`).join("");
-    const length = profile.length, selected = length.min === 150 && length.max === 400 ? "short" : length.min === 600 && length.max === 1200 ? "normal" : length.min === 1500 && length.max === 3e3 ? "long" : "custom", binding = rolePresetBinding(library, owner.id, entry2.id), newer = entry2.kind !== "native" && binding.baseHash !== entry2.preset.sha256;
+    const length = profile2.length, selected = length.min === 150 && length.max === 400 ? "short" : length.min === 600 && length.max === 1200 ? "normal" : length.min === 1500 && length.max === 3e3 ? "long" : "custom", binding = rolePresetBinding(library, owner.id, entry2.id), newer = entry2.kind !== "native" && binding.baseHash !== entry2.preset.sha256;
     let issues = "";
     try {
       projectRoleNovelProfile(library, entry2.id, binding);
@@ -12677,9 +12859,9 @@ channel.onmessage=async({data:job})=>{
  <div class="terminal-preset-tools">${entry2.kind !== "native" ? `<label class="terminal-active"><input type="checkbox" class="fruit-switch" data-preset-active ${entry2.enabled ? "checked" : ""}>\u6B64\u89D2\u8272\u5141\u8BB8\u6B63\u5F0F\u5C0F\u8BF4\u751F\u6210</label><label class="fruit-button terminal-import">\u66F4\u65B0\u5168\u5C40\u539F\u4EF6<input type="file" accept=".json,application/json" data-preset-update aria-label="\u66F4\u65B0\u5F53\u524D\u9884\u8BBE JSON"></label><button class="fruit-button" data-terminal-action="export-raw">\u5BFC\u51FA\u539F\u59CB\u6587\u4EF6</button>` : ""}<button class="fruit-button" data-terminal-action="compatibility">\u517C\u5BB9\u6027\u8BF4\u660E</button><button class="fruit-button" data-terminal-action="reload">\u91CD\u65B0\u8BFB\u53D6\u5DF2\u4FDD\u5B58\u914D\u7F6E</button></div>
  ${newer ? `<p class="fruit-notice">\u5168\u5C40\u539F\u4EF6\u5DF2\u66F4\u65B0\u3002\u6240\u6709\u89D2\u8272\u90FD\u4F7F\u7528\u4E0A\u65B9\u65B0\u7248\uFF0C\u5404\u81EA\u8986\u76D6\u4FDD\u6301\u4E0D\u53D8\u3002${issues ? "\u672C\u89D2\u8272\u6682\u4E0D\u80FD\u751F\u6210\uFF1A" + escHtml(issues) : "\u672C\u89D2\u8272\u8986\u76D6\u53EF\u517C\u5BB9\u4F7F\u7528\uFF1B\u65B0\u589E\u4F5C\u8005\u6761\u76EE\u6CBF\u7528\u65B0\u7248\u9ED8\u8BA4\u3002"}<button type="button" class="fruit-button" data-terminal-action="review-update">\u590D\u6838\u65B0\u7248\u8986\u76D6</button></p>` : ""}
  <p class="fruit-notice" data-generation-status role="status">${escHtml(roleGenerationStatus(library, owner.id))}</p>
- <form data-terminal-profile novalidate><details class="terminal-profile-settings"><summary>\u89D2\u8272\u5C0F\u8BF4\u8BBE\u7F6E<span>\u6587\u98CE\u3001\u7BC7\u5E45\u4E0E\u8F93\u51FA \xB7 \u4E24\u79CD\u5C0F\u8BF4\u5171\u7528</span></summary><div class="terminal-field-grid"><label>\u6B63\u6587\u7BC7\u5E45<select class="field" data-terminal-length>${[["short", "\u7B80\u77ED\u4E92\u52A8 \xB7 150\u2013400"], ["normal", "\u6B63\u5E38\u7BC7\u5E45 \xB7 600\u20131200"], ["long", "\u957F\u7BC7\u53D9\u4E8B \xB7 1500\u20133000"], ["custom", "\u81EA\u5B9A\u4E49"]].map(([id, name]) => `<option value="${id}" ${selected === id ? "selected" : ""}>${name}</option>`).join("")}</select></label><label>\u6587\u98CE\u8986\u76D6<input class="field" name="preset-style" maxlength="2000" value="${escHtml(profile.style)}" placeholder="\u7559\u7A7A\u7EE7\u627F\u539F\u4EF6"></label></div><div class="terminal-field-grid"><label>\u6700\u5C11\u5B57\u6570<input class="field" type="number" name="preset-min" min="1" max="50000" value="${length.min}"></label><label>\u6700\u591A\u5B57\u6570<input class="field" type="number" name="preset-max" min="1" max="50000" value="${length.max}"></label></div>${entry2.kind !== "native" ? `<div class="terminal-output-options">${[["scene", "\u573A\u666F\u4FE1\u606F"], ["summary", "\u6458\u8981"], ["characters", "\u4EBA\u7269\u8F85\u52A9"], ["auxiliary", "\u751F\u6210\u8F85\u52A9\u6587\u672C"]].map(([key, name]) => `<label><input type="checkbox" name="preset-output-${key}" ${profile.output[key] ? "checked" : ""}>${name}</label>`).join("")}</div><p class="terminal-caption">\u5173\u95ED\u7684\u8F85\u52A9\u5757\u4E0D\u5C55\u793A\u3001\u4E0D\u4FDD\u5B58\uFF1B\u8F85\u52A9\u6587\u672C\u4E0D\u662F\u771F\u5B9E\u5185\u90E8\u63A8\u7406\u6216\u89D2\u8272\u8BB0\u5FC6\u3002snow \u5C0F\u5267\u573A\u7EE7\u7EED\u5173\u95ED\u3002</p>` : ""}</details>
- <details class="terminal-profile-settings"><summary>\u89D2\u8272\u6B63\u5219\u4E0E\u4F5C\u8005\u5361\u7247<span>\u4E24\u79CD\u5C0F\u8BF4\u5171\u7528 \xB7 \u7AE0\u8282\uFF0F\u72B6\u6001\u5361\u5B89\u5168\u9002\u914D</span></summary><button type="button" class="fruit-button" data-terminal-action="regex-preview">\u672C\u5730\u9884\u89C8\u4F5C\u8005\u5361\u7247</button><p class="terminal-caption">\u4EC5 #19\uFF0F#20 \u5DF2\u6838\u5BF9\u6A21\u677F\u53EF\u663E\u793A\u4F5C\u8005\u5361\u7247\uFF0C\u5176\u4ED6\u89C4\u5219\u4E0D\u6267\u884C\u3002\u5C55\u793A\u4E0D\u6539\u6B63\u6587\u6216\u5386\u53F2\uFF1B\u811A\u672C\u3001HTML \u4E8B\u4EF6\u4E0E\u8FDC\u7A0B\u8D44\u6E90\u4E0D\u6267\u884C\u3002\u539F\u59CB\u89C4\u5219\u5B8C\u6574\u4FDD\u7559\u3002</p>${entry2.preset.regex.map((r) => `<div class="terminal-prompt-row"><label class="grow"><input type="checkbox" data-regex-enabled="${escHtml(r.id)}" ${profile.regexOverrides?.[r.id] ?? r.enabled ? "checked" : ""}>${escHtml(plainUiLabel(r.name) || "\u672A\u547D\u540D\u89C4\u5219")}</label><span>${Object.values(AUTHOR_CARD_IDS).some((id) => id === r.id) ? "\u5361\u7247\u9002\u914D\u5668 \xB7 \u9884\u89C8\u6838\u5BF9\u7248\u672C" : "\u672A\u652F\u6301\u6267\u884C"}</span><details><summary>\u539F\u59CB\u89C4\u5219</summary>${fruitPre(r.pattern)}${fruitPre(r.replacement)}<p>\u4F4D\u7F6E\uFF1A${escHtml(r.placement.join("\u3001"))} \xB7 ${escHtml(r.side)}${r.hasExecutableMarkup ? " \xB7 \u542B\u53EF\u6267\u884C\u6807\u8BB0\uFF0C\u4ECD\u7981\u6B62\u811A\u672C\u6267\u884C" : ""}</p></details></div>`).join("") || "<p>\u6B64\u539F\u4EF6\u6CA1\u6709\u6B63\u5219\u3002</p>"}</details>
- <div class="terminal-list-toolbar"><button class="fruit-button fruit-primary" data-testid="preset-save">\u7ACB\u5373\u4FDD\u5B58 / \u91CD\u8BD5</button><button class="fruit-button" type="button" data-terminal-action="add">${uiIcon("plus")} \u6DFB\u52A0 Prompt</button><button class="fruit-button" type="button" data-terminal-action="undo">\u653E\u5F03\u5931\u8D25\u7684\u4FEE\u6539</button><button class="fruit-button" type="button" data-terminal-action="reset">\u6062\u590D\u6B64\u89D2\u8272\u9ED8\u8BA4</button><button class="fruit-button" type="button" data-terminal-action="preview">\u9884\u89C8\u7EC4\u88C5\u540E\u7684 Prompt</button></div><div class="terminal-profile-state"><span data-terminal-dirty>${dirty ? "\u4FDD\u5B58\u4E2D\u2026" : "\u5DF2\u4FDD\u5B58"}</span><span>\u5373\u65F6\u8BBE\u7F6E\u81EA\u52A8\u4FDD\u5B58\uFF1B\u6B63\u6587\u786E\u8BA4\u540E\u63D0\u4EA4</span></div><div class="terminal-list-filter"><input class="field" type="search" data-terminal-search placeholder="\u641C\u7D22 Prompt \u540D\u79F0" aria-label="\u641C\u7D22 Prompt"><label><input type="checkbox" data-terminal-only>\u53EA\u770B\u5DF2\u542F\u7528</label><button type="button" class="fruit-button" data-terminal-action="fold">\u6298\u53E0\u5168\u90E8</button></div><div class="terminal-prompt-list" data-terminal-list>${renderPresetList(preset, profile)}</div></form>
+ <form data-terminal-profile novalidate><details class="terminal-profile-settings"><summary>\u89D2\u8272\u5C0F\u8BF4\u8BBE\u7F6E<span>\u6587\u98CE\u3001\u7BC7\u5E45\u4E0E\u8F93\u51FA \xB7 \u4E24\u79CD\u5C0F\u8BF4\u5171\u7528</span></summary><div class="terminal-field-grid"><label>\u6B63\u6587\u7BC7\u5E45<select class="field" data-terminal-length>${[["short", "\u7B80\u77ED\u4E92\u52A8 \xB7 150\u2013400"], ["normal", "\u6B63\u5E38\u7BC7\u5E45 \xB7 600\u20131200"], ["long", "\u957F\u7BC7\u53D9\u4E8B \xB7 1500\u20133000"], ["custom", "\u81EA\u5B9A\u4E49"]].map(([id, name]) => `<option value="${id}" ${selected === id ? "selected" : ""}>${name}</option>`).join("")}</select></label><label>\u6587\u98CE\u8986\u76D6<input class="field" name="preset-style" maxlength="2000" value="${escHtml(profile2.style)}" placeholder="\u7559\u7A7A\u7EE7\u627F\u539F\u4EF6"></label></div><div class="terminal-field-grid"><label>\u6700\u5C11\u5B57\u6570<input class="field" type="number" name="preset-min" min="1" max="50000" value="${length.min}"></label><label>\u6700\u591A\u5B57\u6570<input class="field" type="number" name="preset-max" min="1" max="50000" value="${length.max}"></label></div>${entry2.kind !== "native" ? `<div class="terminal-output-options">${[["scene", "\u573A\u666F\u4FE1\u606F"], ["summary", "\u6458\u8981"], ["characters", "\u4EBA\u7269\u8F85\u52A9"], ["auxiliary", "\u751F\u6210\u8F85\u52A9\u6587\u672C"]].map(([key, name]) => `<label><input type="checkbox" name="preset-output-${key}" ${profile2.output[key] ? "checked" : ""}>${name}</label>`).join("")}</div><p class="terminal-caption">\u5173\u95ED\u7684\u8F85\u52A9\u5757\u4E0D\u5C55\u793A\u3001\u4E0D\u4FDD\u5B58\uFF1B\u8F85\u52A9\u6587\u672C\u4E0D\u662F\u771F\u5B9E\u5185\u90E8\u63A8\u7406\u6216\u89D2\u8272\u8BB0\u5FC6\u3002snow \u5C0F\u5267\u573A\u7EE7\u7EED\u5173\u95ED\u3002</p>` : ""}</details>
+ <details class="terminal-profile-settings"><summary>\u89D2\u8272\u6B63\u5219\u4E0E\u4F5C\u8005\u5361\u7247<span>\u4E24\u79CD\u5C0F\u8BF4\u5171\u7528 \xB7 \u7AE0\u8282\uFF0F\u72B6\u6001\u5361\u5B89\u5168\u9002\u914D</span></summary><button type="button" class="fruit-button" data-terminal-action="regex-preview">\u672C\u5730\u9884\u89C8\u4F5C\u8005\u5361\u7247</button><p class="terminal-caption">\u4EC5 #19\uFF0F#20 \u5DF2\u6838\u5BF9\u6A21\u677F\u53EF\u663E\u793A\u4F5C\u8005\u5361\u7247\uFF0C\u5176\u4ED6\u89C4\u5219\u4E0D\u6267\u884C\u3002\u5C55\u793A\u4E0D\u6539\u6B63\u6587\u6216\u5386\u53F2\uFF1B\u811A\u672C\u3001HTML \u4E8B\u4EF6\u4E0E\u8FDC\u7A0B\u8D44\u6E90\u4E0D\u6267\u884C\u3002\u539F\u59CB\u89C4\u5219\u5B8C\u6574\u4FDD\u7559\u3002</p>${entry2.preset.regex.map((r) => `<div class="terminal-prompt-row"><label class="grow"><input type="checkbox" data-regex-enabled="${escHtml(r.id)}" ${profile2.regexOverrides?.[r.id] ?? r.enabled ? "checked" : ""}>${escHtml(plainUiLabel(r.name) || "\u672A\u547D\u540D\u89C4\u5219")}</label><span>${Object.values(AUTHOR_CARD_IDS).some((id) => id === r.id) ? "\u5361\u7247\u9002\u914D\u5668 \xB7 \u9884\u89C8\u6838\u5BF9\u7248\u672C" : "\u672A\u652F\u6301\u6267\u884C"}</span><details><summary>\u539F\u59CB\u89C4\u5219</summary>${fruitPre(r.pattern)}${fruitPre(r.replacement)}<p>\u4F4D\u7F6E\uFF1A${escHtml(r.placement.join("\u3001"))} \xB7 ${escHtml(r.side)}${r.hasExecutableMarkup ? " \xB7 \u542B\u53EF\u6267\u884C\u6807\u8BB0\uFF0C\u4ECD\u7981\u6B62\u811A\u672C\u6267\u884C" : ""}</p></details></div>`).join("") || "<p>\u6B64\u539F\u4EF6\u6CA1\u6709\u6B63\u5219\u3002</p>"}</details>
+ <div class="terminal-list-toolbar"><button class="fruit-button fruit-primary" data-testid="preset-save">\u7ACB\u5373\u4FDD\u5B58 / \u91CD\u8BD5</button><button class="fruit-button" type="button" data-terminal-action="add">${uiIcon("plus")} \u6DFB\u52A0 Prompt</button><button class="fruit-button" type="button" data-terminal-action="undo">\u653E\u5F03\u5931\u8D25\u7684\u4FEE\u6539</button><button class="fruit-button" type="button" data-terminal-action="reset">\u6062\u590D\u6B64\u89D2\u8272\u9ED8\u8BA4</button><button class="fruit-button" type="button" data-terminal-action="preview">\u9884\u89C8\u7EC4\u88C5\u540E\u7684 Prompt</button></div><div class="terminal-profile-state"><span data-terminal-dirty>${dirty ? "\u4FDD\u5B58\u4E2D\u2026" : "\u5DF2\u4FDD\u5B58"}</span><span>\u5373\u65F6\u8BBE\u7F6E\u81EA\u52A8\u4FDD\u5B58\uFF1B\u6B63\u6587\u786E\u8BA4\u540E\u63D0\u4EA4</span></div><div class="terminal-list-filter"><input class="field" type="search" data-terminal-search placeholder="\u641C\u7D22 Prompt \u540D\u79F0" aria-label="\u641C\u7D22 Prompt"><label><input type="checkbox" data-terminal-only>\u53EA\u770B\u5DF2\u542F\u7528</label><button type="button" class="fruit-button" data-terminal-action="fold">\u6298\u53E0\u5168\u90E8</button></div><div class="terminal-prompt-list" data-terminal-list>${renderPresetList(preset, profile2)}</div></form>
  <details class="terminal-profile-settings"><summary>\u8FC1\u79FB\u4E0E\u66F4\u65B0\u6062\u590D<span>\u4FDD\u7559\u65E7\u914D\u7F6E\uFF0C\u4E0D\u6539\u539F\u4EF6</span></summary><button type="button" class="fruit-button" data-terminal-action="restore-legacy">\u6062\u590D\u8FC1\u79FB\u524D\u53CC\u6A21\u5F0F\u4F7F\u7528\u65B9\u5F0F</button>${library.roleNovel?.[owner.id]?.previous ? '<button type="button" class="fruit-button" data-terminal-action="restore-previous-shared">\u6062\u590D\u4E0A\u6B21\u5171\u4EAB\u914D\u7F6E</button>' : ""}${library.roleNovel?.[owner.id]?.backups?.[entry2.id] ? '<button type="button" class="fruit-button" data-terminal-action="restore-profile-backup">\u6062\u590D\u672C\u89D2\u8272\u66F4\u65B0\u524D\u8986\u76D6</button>' : ""}<p class="terminal-caption">\u65E7\u53CC\u6A21\u5F0F\u5FEB\u7167\u59CB\u7EC8\u4FDD\u7559\u3002\u6062\u590D\u65E7\u8986\u76D6\u4E0D\u964D\u7EA7\u5168\u5C40\u539F\u4EF6\uFF0C\u4E0D\u517C\u5BB9\u65F6\u4ECD\u963B\u6B62\u751F\u6210\u3002</p></details></section></div>`;
   }
   function renderPromptEditor(prompt, original, isNew = false, reason = "") {
@@ -12702,7 +12884,7 @@ channel.onmessage=async({data:job})=>{
     const entry2 = () => rolePresetEntry(library, actor.id);
     const key = () => JSON.stringify([actor?.id, shared() ? selectedId() : "legacy"]);
     const binding = () => rolePresetBinding(library, actor.id);
-    const profile = () => {
+    const profile2 = () => {
       const id = key();
       if (!drafts.has(id)) {
         let p;
@@ -12717,14 +12899,14 @@ channel.onmessage=async({data:job})=>{
     };
     const original = () => entry2().kind === "native" ? natives.meeting : entry2().preset;
     const effective = () => {
-      const e = entry2(), b = binding(), p = planRoleProfile(library, e.id, { ...b, profile: profile() }).profile, result = applyFruitProfile(original(), { ...p, length: createFruitState().profiles.meeting.length });
+      const e = entry2(), b = binding(), p = planRoleProfile(library, e.id, { ...b, profile: profile2() }).profile, result = applyFruitProfile(original(), { ...p, length: createFruitState().profiles.meeting.length });
       return e.kind === "native" ? { ...result, prompts: result.prompts.filter((p2) => nativeEntryApplies(p2.identifier, "meeting")), order: result.order.filter((p2) => nativeEntryApplies(p2.identifier, "meeting")) } : result;
     };
     function readDraft() {
       if (!host || !library || !natives || !shared()) return;
       const style = host.querySelector('[name="preset-style"]');
       if (!style) return;
-      const p = profile();
+      const p = profile2();
       p.style = style.value;
       for (const part of ["min", "max"]) {
         const f = host.querySelector(`[name="preset-${part}"]`);
@@ -12771,7 +12953,7 @@ channel.onmessage=async({data:job})=>{
     function changed() {
       dirty.add(key());
       try {
-        const snapshot2 = sharedNovelProfile(profile(), entry2().kind === "native");
+        const snapshot2 = sharedNovelProfile(profile2(), entry2().kind === "native");
         saveRoleNovelProfile(library, actor.id, entry2().id, snapshot2, activeDrafts.get(key()));
         drafts.set(key(), snapshot2);
         invalid.delete(key());
@@ -12850,7 +13032,7 @@ channel.onmessage=async({data:job})=>{
       if (!host || !library) return;
       const vp = host.closest(".viewport"), top = vp?.scrollTop || 0;
       const list = host.querySelector("[data-terminal-list]");
-      if (list) list.innerHTML = renderPresetList(effective(), profile());
+      if (list) list.innerHTML = renderPresetList(effective(), profile2());
       filter();
       chrome();
       if (focusId) {
@@ -12863,7 +13045,7 @@ channel.onmessage=async({data:job})=>{
       if (!host) return;
       const vp = host.closest(".viewport"), top = vp?.scrollTop || 0;
       closeDialog();
-      host.innerHTML = `<div class="terminal-library-status" role="status" aria-live="polite" data-terminal-status>${escHtml(status)}</div>` + (library && natives && actor ? (shared() ? renderTerminalPresetPanel(library, { ...entry2(), enabled: activeDrafts.get(key()) ?? entry2().enabled }, "meeting", profile(), effective(), dirty.has(key()), actor) : renderRoleMigration(library, actor)) + renderRoleLibraryTools(library, context.roles()) : '<p class="terminal-caption">\u79C1\u6709\u9884\u8BBE\u5E93\u8BFB\u53D6\u4E2D\uFF0C\u539F\u4EF6\u548C\u5DF2\u6709\u914D\u7F6E\u4FDD\u7559\u3002</p><button type="button" class="fruit-button" data-terminal-action="reload">\u91CD\u65B0\u8BFB\u53D6</button>');
+      host.innerHTML = `<div class="terminal-library-status" role="status" aria-live="polite" data-terminal-status>${escHtml(status)}</div>` + (library && natives && actor ? (shared() ? renderTerminalPresetPanel(library, { ...entry2(), enabled: activeDrafts.get(key()) ?? entry2().enabled }, "meeting", profile2(), effective(), dirty.has(key()), actor) : renderRoleMigration(library, actor)) + renderRoleLibraryTools(library, context.roles()) : '<p class="terminal-caption">\u79C1\u6709\u9884\u8BBE\u5E93\u8BFB\u53D6\u4E2D\uFF0C\u539F\u4EF6\u548C\u5DF2\u6709\u914D\u7F6E\u4FDD\u7559\u3002</p><button type="button" class="fruit-button" data-terminal-action="reload">\u91CD\u65B0\u8BFB\u53D6</button>');
       const f = host.querySelector("[data-terminal-search]");
       if (f) f.value = search;
       const only = host.querySelector("[data-terminal-only]");
@@ -12974,7 +13156,7 @@ channel.onmessage=async({data:job})=>{
     function saveProfile() {
       readDraft();
       if (library && dirty.has(key()) && !invalid.has(key())) {
-        const snapshot2 = validateProfile(profile());
+        const snapshot2 = validateProfile(profile2());
         saver.enqueue(key(), { roleId: actor.id, presetId: entry2().id, profile: snapshot2, ...activeDrafts.has(key()) ? { enabled: activeDrafts.get(key()) } : {} });
       }
       void ensureSaved(true).then((ok) => {
@@ -13146,7 +13328,7 @@ channel.onmessage=async({data:job})=>{
       }
       if (move?.dataset.id) {
         try {
-          drafts.set(key(), movePrompt(original(), profile(), move.dataset.id, move.dataset.promptMove === "up" ? -1 : 1));
+          drafts.set(key(), movePrompt(original(), profile2(), move.dataset.id, move.dataset.promptMove === "up" ? -1 : 1));
           changed();
           renderList(move.dataset.id);
         } catch (e) {
@@ -13198,14 +13380,14 @@ channel.onmessage=async({data:job})=>{
       }
       if (action === "regex-preview") {
         const preset = original();
-        showDialog(regexPreviewHtml(preset, profile(), actor), true);
+        showDialog(regexPreviewHtml(preset, profile2(), actor), true);
         const root = dialog?.querySelector("[data-regex-preview]");
-        if (root) disposeRegexPreview = mountRegexPreview(root, preset, () => validateProfile(profile()));
+        if (root) disposeRegexPreview = mountRegexPreview(root, preset, () => validateProfile(profile2()));
         return;
       }
       if (action === "preview") {
         try {
-          const p = validateProfile(profile()), preset = original(), result = compileFruitPrompt(preset, p, makeFruitFixtureContext(mode), { rng: () => 0.5, ...entry2().kind === "native" ? { format: "native" } : {} });
+          const p = validateProfile(profile2()), preset = original(), result = compileFruitPrompt(preset, p, makeFruitFixtureContext(mode), { rng: () => 0.5, ...entry2().kind === "native" ? { format: "native" } : {} });
           showDialog(renderFruitPreview(result, fruitPromptRows(effective(), p)), true);
         } catch (e) {
           status = e instanceof Error ? e.message : "\u65E0\u6CD5\u7F16\u8BD1";
@@ -13254,11 +13436,11 @@ channel.onmessage=async({data:job})=>{
         let next;
         if (editorNew) {
           const p = { identifier: editorId, name: patch.name, role: patch.role, content: patch.content, position: patch.position, depth: patch.depth, injectionOrder: patch.injectionOrder };
-          next = addPrompt(original(), profile(), p);
+          next = addPrompt(original(), profile2(), p);
         } else if (editorOriginal && Object.entries(patch).every(([k, v]) => Reflect.get(editorOriginal, k) === v)) {
-          next = structuredClone(profile());
+          next = structuredClone(profile2());
           if (next.edits) delete next.edits[editorId];
-        } else next = editPrompt(original(), profile(), editorId, patch);
+        } else next = editPrompt(original(), profile2(), editorId, patch);
         drafts.set(key(), next);
         changed();
         closeDialog();
@@ -13338,7 +13520,7 @@ channel.onmessage=async({data:job})=>{
         return;
       }
       if (target.dataset.regexEnabled && target instanceof HTMLInputElement) {
-        profile().regexOverrides = { ...profile().regexOverrides, [target.dataset.regexEnabled]: target.checked };
+        profile2().regexOverrides = { ...profile2().regexOverrides, [target.dataset.regexEnabled]: target.checked };
         for (const checkbox of host?.querySelectorAll("[data-regex-enabled]") || []) if (checkbox.dataset.regexEnabled === target.dataset.regexEnabled) checkbox.checked = target.checked;
         changed();
         return;
@@ -13356,7 +13538,7 @@ channel.onmessage=async({data:job})=>{
       if (target.dataset.promptEnabled && target instanceof HTMLInputElement) {
         const id = target.dataset.promptEnabled, p = effective().prompts.find((p2) => p2.identifier === id);
         if (!p || p.marker || p.blockedReason) return;
-        profile().overrides[id] = target.checked;
+        profile2().overrides[id] = target.checked;
         const row = target.closest("[data-prompt-row]");
         row?.classList.add("is-modified");
         const dot = row?.querySelector("[data-row-dirty]");
@@ -13367,8 +13549,8 @@ channel.onmessage=async({data:job})=>{
       }
       if (target.matches("[data-terminal-length]")) {
         readDraft();
-        const length = target.value === "short" ? { min: 150, max: 400 } : target.value === "long" ? { min: 1500, max: 3e3 } : target.value === "normal" ? { min: 600, max: 1200 } : profile().length;
-        profile().length = length;
+        const length = target.value === "short" ? { min: 150, max: 400 } : target.value === "long" ? { min: 1500, max: 3e3 } : target.value === "normal" ? { min: 600, max: 1200 } : profile2().length;
+        profile2().length = length;
         for (const part of ["min", "max"]) {
           const field = host?.querySelector(`[name="preset-${part}"]`);
           if (field) field.value = String(length[part]);
@@ -13433,7 +13615,7 @@ channel.onmessage=async({data:job})=>{
       dragId = "";
       if (!destination || destination === id) return;
       try {
-        let next = profile(), preset = original();
+        let next = profile2(), preset = original();
         const ids = applyFruitProfile(preset, next).order.map((e) => e.identifier), from = ids.indexOf(id), to = ids.indexOf(destination);
         if (from < 0 || to < 0) return;
         for (let i = from; i !== to; i += from < to ? 1 : -1) next = movePrompt(preset, next, id, from < to ? 1 : -1);
@@ -15359,7 +15541,10 @@ ${prevLogs}` : "",
         }
         if (!data.roles.includes(r) || !chatBatchValid(r, batch)) return;
         if (prepared) includeScenePromptTrace(r);
-        const extracted = splitSceneReply(await requestPhoneReply(r, prepared?.messages || messages, controller.signal)), text2 = extracted.text;
+        const usedIds = new Set(compiled.value?.messages.flatMap((m) => m.sourceIds || []) || []);
+        const personal = preparePersonalReply(r, prepared?.messages || messages, now(), batch.id, "", r.chats.filter((m) => usedIds.has(m.id)));
+        const privateReply = splitPersonalReply(await requestPhoneReply(r, personal.messages, controller.signal));
+        const extracted = splitSceneReply(privateReply.text), text2 = extracted.text;
         if (!data.roles.includes(r) || !chatBatchValid(r, batch)) {
           if (r.chatTiming?.inFlight?.id === batch.id) {
             reviseChatTiming(r, now());
@@ -15372,7 +15557,7 @@ ${prevLogs}` : "",
         const timingBefore = structuredClone(r.chatTiming), outboxBefore = r.pendingReplies;
         if (!completeChatBatch(r, batch)) return;
         const turnId = makeUid("turn"), base = now();
-        r.pendingReplies = [...r.pendingReplies || [], ...bubbles.map((bubble, i) => ({ id: uid(), replyTo: batch.sources.at(-1).id, replyTurnId: turnId, bubbles: [bubble], dueAt: base + i * 240, sources: batch.sources, chatBatchId: batch.id, ...prepared && extracted.payload && i === bubbles.length - 1 ? { sceneReply: { ...prepared.ticket, payload: extracted.payload } } : {} }))];
+        r.pendingReplies = [...r.pendingReplies || [], ...bubbles.map((bubble, i) => ({ id: uid(), replyTo: batch.sources.at(-1).id, replyTurnId: turnId, bubbles: [bubble], dueAt: base + i * 240, sources: batch.sources, chatBatchId: batch.id, ...i === bubbles.length - 1 && privateReply.payload ? { personalReply: { ticket: personal.ticket, payload: privateReply.payload } } : {}, ...prepared && extracted.payload && i === bubbles.length - 1 ? { sceneReply: { ...prepared.ticket, payload: extracted.payload } } : {} }))];
         if (!save()) {
           r.chatTiming = timingBefore;
           r.pendingReplies = outboxBefore;
@@ -15410,6 +15595,73 @@ ${prevLogs}` : "",
         if (batch) void runChatBatch(r, batch);
       }
     }
+    let proactiveBusy = false;
+    async function runProactive(r, task) {
+      const controller = new AbortController();
+      activeChatRequests.set(r.id, controller);
+      const valid = () => data.roles.includes(r) && proactiveTaskValid(r, task);
+      try {
+        const messages = await compileRequest(r, "chat", (options) => compileNativeConversation(data, r, "chat", "", { ...options, nowTs: now(), openingTask: proactiveInstruction(task) }), valid);
+        if (!valid()) return;
+        const personal = preparePersonalReply(r, messages, now(), task.id);
+        const response = parseProactiveReply(await requestPhoneReply(r, personal.messages, controller.signal), task);
+        if (!valid()) return;
+        if (!response.send) {
+          const previous2 = structuredClone(r.proactive), privateBefore = r.personalThreads;
+          if (response.payload) applyPersonalReply(r, personal.ticket, response.payload, now());
+          finishProactive(r, task, "skipped");
+          if (!save()) {
+            r.proactive = previous2;
+            r.personalThreads = privateBefore;
+            throw new Error("\u79C1\u4EBA\u5173\u6CE8\u672A\u80FD\u4FDD\u5B58");
+          }
+          return;
+        }
+        const bubbles = splitChatBubbles(response.text, r);
+        if (!bubbles.length) throw new Error("\u4E3B\u52A8\u8054\u7CFB\u6CA1\u6709\u6709\u6548\u6B63\u6587");
+        const outbox = r.pendingReplies, previous = structuredClone(r.proactive), base = now();
+        r.pendingReplies = [...outbox || [], ...bubbles.map((bubble, i) => ({ id: uid(), replyTo: "", replyTurnId: task.id, proactiveId: task.id, bubbles: [bubble], dueAt: base + i * 240, ...i === bubbles.length - 1 && response.payload ? { personalReply: { ticket: personal.ticket, payload: response.payload } } : {} }))];
+        finishProactive(r, task, "queued");
+        if (!save()) {
+          r.pendingReplies = outbox;
+          r.proactive = previous;
+          throw new Error("\u4E3B\u52A8\u6D88\u606F\u672A\u80FD\u4FDD\u5B58");
+        }
+        deliverPending(r);
+        syslog("chat-contact", "\u89D2\u8272\u81EA\u4E3B\u8054\u7CFB\u5DF2\u5165\u961F", { roleId: r.id, source: task.id });
+      } catch (error) {
+        finishProactive(r, task, "failed", error instanceof Error ? error.message : "\u8054\u7CFB\u5931\u8D25");
+        save();
+        syslog("chat-contact", "\u4E3B\u52A8\u8054\u7CFB\u672A\u53D1\u9001\uFF1B\u4FDD\u7559\u51B7\u5374\uFF0C\u4E0D\u81EA\u52A8\u91CD\u8BD5", { roleId: r.id, code: "contact-failed" });
+      } finally {
+        const saved = r.proactive?.attempts.find((t) => t.id === task.id);
+        if (saved?.status === "attempted") {
+          finishProactive(r, task, "cancelled");
+          save();
+        }
+        if (activeChatRequests.get(r.id) === controller) {
+          activeChatRequests.delete(r.id);
+          chatTyping.delete(r.id);
+        }
+        proactiveBusy = false;
+        if (view === "chat" && role()?.id === r.id) patchDynamicRegionsOnTick();
+      }
+    }
+    function pumpProactive() {
+      if (document.hidden || proactiveBusy || busy || diaryQueueBusy || activeChatRequests.size || !token.trim() || !canUseRealModel(data.settings)) return;
+      for (const r of data.roles) {
+        if (isRoleInActiveFocus(r)) continue;
+        const previous = r.proactive ? structuredClone(r.proactive) : void 0, task = claimProactive(data.roles, r, now(), true);
+        if (!task) continue;
+        if (!save()) {
+          r.proactive = previous;
+          return;
+        }
+        proactiveBusy = true;
+        void runProactive(r, task);
+        return;
+      }
+    }
     function acceptPhoneMessage(r, item) {
       const timingBefore = r.chatTiming ? structuredClone(r.chatTiming) : void 0;
       const chatsBefore = r.chats.length, eventsBefore = r.events.length, planBefore = r.meetingPlan;
@@ -15424,6 +15676,7 @@ ${prevLogs}` : "",
         r.meetingPlan = planBefore;
         return false;
       }
+      if (r.proactive?.attempts.some((t) => t.status === "attempted")) activeChatRequests.get(r.id)?.abort();
       if (role()?.id === r.id) quotingMessage = null;
       queueMicrotask(() => {
         const pane = $("#scroll-area");
@@ -15767,10 +16020,16 @@ ${prevLogs}` : "",
     }
     function deliverPending(r) {
       if (!r?.pendingReplies?.length || !data.roles.includes(r)) return false;
-      const before = r.pendingReplies, chats = r.chats.length, events = r.events.length, firstMessage = r.firstMessageState, planBefore = r.meetingPlan;
+      const before = r.pendingReplies, chats = r.chats.length, events = r.events.length, firstMessage = r.firstMessageState, planBefore = r.meetingPlan, privateBefore = r.personalThreads, proactiveBefore = r.proactive ? structuredClone(r.proactive) : void 0;
       const remaining = [];
       let changed = false;
       for (const job of before) {
+        const contact = job.proactiveId ? r.proactive?.attempts.find((t) => t.id === job.proactiveId) : void 0;
+        if (job.proactiveId && (!contact || !proactiveTaskValid(r, contact))) {
+          if (contact) finishProactive(r, contact, "cancelled");
+          changed = true;
+          continue;
+        }
         if (job.sources && (r.scene || r.play || !job.sources.every((source) => sourceStillValid(r, source)))) {
           changed = true;
           continue;
@@ -15781,12 +16040,15 @@ ${prevLogs}` : "",
         }
         const turnId = job.replyTurnId || job.id;
         for (const [index, bubble] of job.bubbles.entries()) {
-          const at = now() + index, item = { id: uid(), speaker: "char", text: bubble, at, kind: "chat", replyTo: job.replyTo, replyTurnId: turnId, status: "active", ...job.sources ? { replySourceIds: job.sources.map((m) => m.id) } : {} };
+          const at = now() + index, item = { id: uid(), speaker: "char", text: bubble, at, kind: "chat", replyTo: job.replyTo, replyTurnId: turnId, status: "active", ...job.proactiveId ? { proactive: true } : {}, ...job.sources ? { replySourceIds: job.sources.map((m) => m.id) } : {} };
           if (job.sceneReply && index === job.bubbles.length - 1) item.sceneReply = job.sceneReply;
           r.chats.push(item);
           eMemory(r, bubble, "char", "chat", at, item.id);
           if (r.firstMessageState?.status !== "ready") r.firstMessageState = { status: "ready", updatedAt: at };
         }
+        if (contact) recordProactiveDelivery(r, contact);
+        if (job.personalReply) applyPersonalReply(r, job.personalReply.ticket, job.personalReply.payload, now(), r.chats.filter((m) => m.replyTurnId === turnId));
+        if (contact && before.filter((other) => other.proactiveId === contact.id).at(-1) === job) finishProactive(r, contact, "sent");
         changed = true;
       }
       r.pendingReplies = remaining;
@@ -15797,6 +16059,8 @@ ${prevLogs}` : "",
         r.events.length = events;
         r.firstMessageState = firstMessage;
         r.meetingPlan = planBefore;
+        r.personalThreads = privateBefore;
+        r.proactive = proactiveBefore;
         return false;
       }
       if (changed && !remaining.length) resumeLocalSceneReplies(r);
@@ -17363,7 +17627,7 @@ ${prevLogs}` : "",
     }
     function systemLogsHtml() {
       const date = systemLogDate || toLocalDateKey(now()), logs = data.logs || [];
-      return `<h3>\u7CFB\u7EDF Log</h3><p>\u6309\u672C\u5730\u65E5\u671F\u67E5\u770B\u8FDE\u63A5\u4E0E\u6A21\u5F0F\u8BCA\u65AD\uFF1B\u4E0D\u8BB0\u5F55 API Key\u3001Prompt \u6216\u804A\u5929\u5168\u6587\u3002</p><div class="row"><button class="btn small secondary" data-action="exportlogs">\u5BFC\u51FA\u65E5\u5FD7 JSON</button><button class="btn small ghost" data-action="clearlogs">\u6E05\u7A7A\u65E5\u5FD7</button></div><details><summary>\u6700\u8FD1\u8BF7\u6C42\u7ED3\u6784 \xB7 \u5F53\u524D\u89D2\u8272</summary><pre>${esc(JSON.stringify(promptTraces.get(role().id) || { status: "\u5F53\u524D\u4F1A\u8BDD\u5C1A\u65E0\u8BF7\u6C42" }, null, 2))}</pre></details><div class="row between"><b>${esc(date)}${systemLogDate ? "" : " \xB7 \u4ECA\u65E5"}</b><button type="button" class="btn small ghost" data-action="logtoday">\u4ECA\u65E5\u65E5\u5FD7</button></div><details data-log-history><summary>\u5386\u53F2\u65E5\u5FD7</summary><label>\u9009\u62E9\u65E5\u671F<select class="field" data-log-date aria-label="\u65E5\u5FD7\u65E5\u671F">${logDays(logs, now()).map((day) => `<option value="${day}" ${date === day ? "selected" : ""}>${day}</option>`).join("")}</select></label></details><div class="log-list">${logsForDay(logs, date).map((l) => `<details class="log-row" data-log-id="${esc(l.id)}"><summary>${esc(logTimestamp(l.at))} \xB7 ${esc(l.type)} \xB7 ${esc(l.detail.slice(0, 75))}</summary><pre>${esc(JSON.stringify(l, null, 2))}</pre></details>`).join("") || '<p class="sub">\u8FD9\u4E00\u5929\u6682\u65E0\u65E5\u5FD7\u3002</p>'}</div>`;
+      return `<h3>\u7CFB\u7EDF Log</h3><p>\u6309\u672C\u5730\u65E5\u671F\u67E5\u770B\u8FDE\u63A5\u4E0E\u6A21\u5F0F\u8BCA\u65AD\uFF1B\u4E0D\u8BB0\u5F55 API Key\u3001Prompt \u6216\u804A\u5929\u5168\u6587\u3002</p><div class="row"><button class="btn small secondary" data-action="exportlogs">\u5BFC\u51FA\u65E5\u5FD7 JSON</button><button class="btn small ghost" data-action="clearlogs">\u6E05\u7A7A\u65E5\u5FD7</button></div><details><summary>\u6700\u8FD1\u8BF7\u6C42\u7ED3\u6784 \xB7 \u5F53\u524D\u89D2\u8272</summary><pre>${esc(JSON.stringify(promptTraces.get(role().id) || { status: "\u5F53\u524D\u4F1A\u8BDD\u5C1A\u65E0\u8BF7\u6C42" }, null, 2))}</pre></details><div class="row between"><b>${esc(date)}${systemLogDate ? "" : " \xB7 \u4ECA\u65E5"}</b><button type="button" class="btn small ghost" data-action="logtoday">\u4ECA\u65E5\u65E5\u5FD7</button></div><details data-log-history><summary>\u5386\u53F2\u65E5\u5FD7</summary><label>\u9009\u62E9\u65E5\u671F<select class="field" data-log-date aria-label="\u65E5\u5FD7\u65E5\u671F">${logDays(logs, now()).map((day2) => `<option value="${day2}" ${date === day2 ? "selected" : ""}>${day2}</option>`).join("")}</select></label></details><div class="log-list">${logsForDay(logs, date).map((l) => `<details class="log-row" data-log-id="${esc(l.id)}"><summary>${esc(logTimestamp(l.at))} \xB7 ${esc(l.type)} \xB7 ${esc(l.detail.slice(0, 75))}</summary><pre>${esc(JSON.stringify(l, null, 2))}</pre></details>`).join("") || '<p class="sub">\u8FD9\u4E00\u5929\u6682\u65E0\u65E5\u5FD7\u3002</p>'}</div>`;
     }
     function refreshSystemLogs() {
       const root = $("#system-log-root");
@@ -17801,16 +18065,19 @@ ${prevLogs}` : "",
       render();
       try {
         const prompt = await compileRequest(r, "chat", (options) => compileOpeningPrompt(data, r, now(), options), () => data.roles.includes(r) && chatRevisionKey(r) === revision2 && r.scene === scene && r.play === play);
-        const rawText = await requestPhoneReply(r, prompt, controller.signal, "first-message");
+        const personal = preparePersonalReply(r, prompt, now(), makeUid("opening-private"));
+        const raw = splitPersonalReply(await requestPhoneReply(r, personal.messages, controller.signal, "first-message")), rawText = raw.text;
         if (!data.roles.includes(r) || chatRevisionKey(r) !== revision2 || r.scene !== scene || r.play !== play) throw new Error("\u804A\u5929\u72B6\u6001\u5DF2\u53D8\u5316\uFF0C\u9996\u6761\u6D88\u606F\u672A\u5199\u5165");
         const bubbles = splitChatBubbles(rawText, r);
         if (!bubbles.length) throw new Error("\u6A21\u578B\u672A\u8FD4\u56DE\u6709\u6548\u7684\u624B\u673A\u6D88\u606F");
-        const chatsBefore = r.chats.length, eventsBefore = r.events.length, firstBefore = r.firstMessageState;
-        applyGeneratedFirstMessage(r, bubbles, now());
+        const chatsBefore = r.chats.length, eventsBefore = r.events.length, firstBefore = r.firstMessageState, privateBefore = r.personalThreads;
+        const created = applyGeneratedFirstMessage(r, bubbles, now());
+        if (raw.payload) applyPersonalReply(r, personal.ticket, raw.payload, now(), created);
         if (!save()) {
           r.chats.length = chatsBefore;
           r.events.length = eventsBefore;
           r.firstMessageState = firstBefore;
+          r.personalThreads = privateBefore;
           throw new Error("\u9996\u6761\u6D88\u606F\u672A\u80FD\u4FDD\u5B58\uFF0C\u8BF7\u91CD\u8BD5");
         }
         syslog("role", `${r.name} \u5DF2\u751F\u6210\u9996\u6761\u5F00\u573A\u6D88\u606F`);
@@ -17851,11 +18118,16 @@ ${prevLogs}` : "",
       }
     }
     async function generateCharacterDiaryForDate(r, dateKey, manualTrigger = false) {
-      syncRoleDiaryTasks(r, data.settings, now());
-      if (!manualTrigger && hasCharacterDiaryForDate(r, dateKey)) {
+      if (dateKey >= toLocalDateKey(now())) {
+        if (manualTrigger) notify("\u8FD9\u4E00\u5929\u5C1A\u672A\u7ED3\u675F\uFF0C\u8DE8\u65E5\u540E\u518D\u5F52\u6863\u3002");
         return false;
       }
-      if (!canUseRealModel(data.settings)) {
+      syncRoleDiaryTasks(r, data.settings, now());
+      if (hasCharacterDiaryForDate(r, dateKey)) {
+        if (manualTrigger) notify("\u8FD9\u4E00\u5929\u5DF2\u6709\u5F52\u6863\u65E5\u8BB0\uFF0C\u539F\u6587\u4FDD\u7559\u3002");
+        return false;
+      }
+      if (!token.trim() || !canUseRealModel(data.settings)) {
         const task2 = (r.diaryTasks || []).find((t) => t.dateKey === dateKey);
         if (task2) {
           task2.status = "awaiting_api";
@@ -17896,12 +18168,13 @@ ${prevLogs}` : "",
       try {
         const s = data.settings;
         const url = s.endpoint.trim().replace(/\/+$/, "");
-        const { messages: prompt, facts } = buildCharacterDiaryPrompt(
+        const { messages: prompt, facts, personal } = buildCharacterDiaryPrompt(
           r,
           data.user,
-          dateKey,
-          userTasksSummary(data)
+          dateKey
         );
+        const sourcesBefore = JSON.stringify(collectDailyDiaryFacts(r, dateKey, true));
+        const userBefore = JSON.stringify(data.user);
         syslog("diary", `\u8BF7\u6C42\u751F\u6210\u89D2\u8272\u6BCF\u65E5\u65E5\u8BB0 \xB7 ${r.name} \xB7 ${dateKey}`, {
           model: s.model,
           dateKey,
@@ -17925,16 +18198,18 @@ ${prevLogs}` : "",
             ...completionLimit(s, "diary")
           })
         });
-        if (!res.ok) {
-          throw new Error(
-            `\u63A5\u53E3\u8FD4\u56DE ${res.status}: ${(await res.text()).slice(0, 120)}`
-          );
-        }
-        const json = await res.json();
-        const rawText = json.choices?.[0]?.message?.content?.trim() || "";
-        const applied = applyGeneratedCharacterDiary(r, dateKey, rawText, now());
+        const raw = splitPersonalReply(await readChatResponse(res));
+        if (!data.roles.includes(r) || userBefore !== JSON.stringify(data.user) || !personalTicketValid(r, personal) || sourcesBefore !== JSON.stringify(collectDailyDiaryFacts(r, dateKey, true))) throw new Error("\u65E5\u8BB0\u6765\u6E90\u5DF2\u53D8\u5316\uFF0C\u672A\u5F52\u6863\uFF1B\u53EF\u91CD\u65B0\u751F\u6210");
+        const before = { diaries: structuredClone(r.diaries), diaryTasks: structuredClone(r.diaryTasks), diaryDay: r.diaryDay, personalThreads: r.personalThreads };
+        const applied = applyGeneratedCharacterDiary(r, dateKey, raw.text, now());
         if (!applied.ok) {
           throw new Error(applied.reason || "\u6A21\u578B\u8FD4\u56DE\u65E5\u8BB0\u5185\u5BB9\u4E3A\u7A7A");
+        }
+        if (applied.diary) applied.diary.continuitySources = personal.sources;
+        if (raw.payload && applied.diary) applyPersonalReply(r, personal, raw.payload, facts.endMs, [applied.diary]);
+        if (!save()) {
+          Object.assign(r, before);
+          throw new Error("\u65E5\u8BB0\u672A\u80FD\u4FDD\u5B58\uFF0C\u539F\u8BB0\u5F55\u4FDD\u7559");
         }
         syslog(
           "diary",
@@ -17945,7 +18220,6 @@ ${prevLogs}` : "",
             wordCount: applied.diary?.wordCount
           }
         );
-        save();
         safeRenderWhenNotTyping();
         if (manualTrigger) {
           notify(`\u5DF2\u751F\u6210\u5E76\u5F52\u6863 ${r.name} \u5728 ${dateKey} \u7684\u79C1\u4EBA\u65E5\u8BB0`);
@@ -17968,7 +18242,7 @@ ${prevLogs}` : "",
       for (const roleItem of data.roles) {
         syncRoleDiaryTasks(roleItem, data.settings, now());
       }
-      if (!canUseRealModel(data.settings)) {
+      if (!token.trim() || !canUseRealModel(data.settings)) {
         save();
         return;
       }
@@ -18364,7 +18638,7 @@ ${prevLogs}` : "",
         }, () => data.roles.includes(r) && chatRevisionKey(r) === revision2 && r.scene === scene && r.play === play);
         const plan = regenerated.plan;
         if (!plan) throw new Error("\u6709\u6548\u6765\u6E90\u4E0D\u5B8C\u6574");
-        const text2 = await requestPhoneReply(r, promptMessages, controller.signal);
+        const text2 = splitPersonalReply(await requestPhoneReply(r, promptMessages, controller.signal)).text;
         if (!data.roles.includes(r) || chatRevisionKey(r) !== revision2 || r.scene !== scene || r.play !== play || !getActiveMessages(r.chats).some((m) => m.id === id)) return;
         const bubbles = splitChatBubbles(text2, r);
         if (!bubbles.length) throw new Error("\u56DE\u590D\u4E2D\u6CA1\u6709\u6709\u6548\u7684\u624B\u673A\u6D88\u606F");
@@ -19817,7 +20091,7 @@ ${prevLogs}` : "",
           notify("\u8BF7\u9009\u62E9 8MB \u4EE5\u5185\u7684\u56FE\u7247\u6587\u4EF6\uFF08PNG / JPG / WebP / GIF\uFF09");
           return;
         }
-        const version = ++userAvatarUploadVersion;
+        const version2 = ++userAvatarUploadVersion;
         let preview;
         try {
           preview = await makeAvatarPreview(f);
@@ -19825,7 +20099,7 @@ ${prevLogs}` : "",
           notify("\u56FE\u7247\u65E0\u6CD5\u89E3\u7801\uFF0C\u8BF7\u9009\u62E9\u6709\u6548\u7684\u5934\u50CF\u56FE\u7247");
           return;
         }
-        if (version !== userAvatarUploadVersion || view !== "userprofile") {
+        if (version2 !== userAvatarUploadVersion || view !== "userprofile") {
           avatarPreviewURLs.set(preview, false);
           clearMediaURLs();
           return;
@@ -19845,7 +20119,7 @@ ${prevLogs}` : "",
           notify("\u8BF7\u9009\u62E9 8MB \u4EE5\u5185\u7684\u56FE\u7247\u6587\u4EF6\uFF08PNG / JPG / WebP / GIF\uFF09");
           return;
         }
-        const version = ++roleAvatarUploadVersion;
+        const version2 = ++roleAvatarUploadVersion;
         const targetRole = editingRoleId;
         let preview;
         try {
@@ -19854,7 +20128,7 @@ ${prevLogs}` : "",
           notify("\u56FE\u7247\u65E0\u6CD5\u89E3\u7801\uFF0C\u8BF7\u9009\u62E9\u6709\u6548\u7684\u5934\u50CF\u56FE\u7247");
           return;
         }
-        if (version !== roleAvatarUploadVersion || view !== "roleform" || editingRoleId !== targetRole) {
+        if (version2 !== roleAvatarUploadVersion || view !== "roleform" || editingRoleId !== targetRole) {
           avatarPreviewURLs.set(preview, false);
           clearMediaURLs();
           return;
@@ -20044,6 +20318,7 @@ ${prevLogs}` : "",
     });
     for (const roleItem of data.roles) {
       recoverChatTiming(roleItem);
+      recoverProactive(roleItem);
       syncRoleDiaryTasks(roleItem, data.settings, now(), { resetGenerating: true });
     }
     save();
@@ -20055,11 +20330,13 @@ ${prevLogs}` : "",
       captureMeetingDraft();
       if (!document.hidden) {
         pumpChatSchedules();
+        pumpProactive();
         if (view === "home") homeTasks.refresh();
       }
     });
     window.addEventListener("pageshow", () => {
       pumpChatSchedules();
+      pumpProactive();
       if (view === "home") homeTasks.refresh();
     });
     if (typeof setInterval === "function") {
@@ -20067,6 +20344,7 @@ ${prevLogs}` : "",
         refreshSystemLogs();
         if (view === "home") homeTasks.refresh();
         pumpChatSchedules();
+        pumpProactive();
         let chatDelivered = false;
         for (const item of data.roles) {
           if (deliverPending(item) && item.id === data.selected) chatDelivered = true;

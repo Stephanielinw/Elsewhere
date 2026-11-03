@@ -37,7 +37,7 @@ export function buildPhoneRegeneration(data:AppData,r:RoleData,id:string,at:numb
   const sources=sourceIds.map(sourceId=>getActiveMessages(r.chats).find(m=>m.id===sourceId&&m.speaker==='me'));
   if(sources.some(m=>!m))return null;
   // shortcut: historical memory snapshots do not exist; replay uses bounded chat, without current retrieved events/diaries/tasks.
-  copy.events=[];copy.diaries=[];
+  copy.events=[];copy.diaries=[];copy.personalThreads=[];
   const compilation=sources.length?compileChatBatchPrompt({...data,sharedTasks:{ddl:[],todo:[]}},copy,{
     id:'regeneration',roleId:r.id,generation:0,sources:sources.filter((m):m is NonNullable<typeof m>=>Boolean(m)).sort((a,b)=>a.at-b.at),quietUntil:0,replyDueAt:0,revisionKey:'',sceneId:null,playId:null,
   },target.at,options):compileOpeningPrompt({...data,sharedTasks:{ddl:[],todo:[]}},copy,target.at,options);

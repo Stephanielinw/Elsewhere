@@ -1,4 +1,6 @@
 import type {NovelDocument} from './novelDocument';
+import type {PersonalThread,PersonalTicket,PersonalSource} from './roleLife';
+import type {ProactiveState} from './proactiveChat';
 export type ThemeName = 'blue' | 'green' | 'pink' | 'coffee' | 'night';
 
 export type MessageKind = 'chat' | 'sticker' | 'photo' | 'voice' | 'packet' | 'scene' | 'play';
@@ -56,6 +58,7 @@ export interface MessageRevisionRecord {
 }
 
 export interface EventRecord {
+  lifeEvidence?: 'confirmed';
   sceneChange?: {requestId:string;sceneId:string;sources:MeetingPlan['sources'];before:Pick<SceneData,'where'|'agreement'|'locationEvidence'>;after:Pick<SceneData,'where'|'agreement'|'locationEvidence'>};
   id: string;
   kind: 'life' | 'chat' | 'scene' | 'drama' | 'focus' | 'diary' | 'diary_share' | string;
@@ -105,6 +108,8 @@ export interface DiaryGenerationTask {
 }
 
 export interface DiaryEntry {
+  sourceMessageRevisions?: Record<string,number>;
+  continuitySources?: PersonalSource[];
   id: string;
   speaker: 'char' | 'me';
   at: number;
@@ -204,6 +209,8 @@ export interface ChatTimingState {
 }
 
 export interface PendingReplyJob {
+  personalReply?: {ticket:PersonalTicket;payload:string};
+  proactiveId?: string;
   sceneReply?:SceneReplyTicket;
   id: string;
   replyTo: string;
@@ -343,6 +350,8 @@ export interface CustomAvatarFrame {
 }
 
 export interface RoleData {
+  proactive?: ProactiveState;
+  personalThreads?: PersonalThread[];
   id: string;
   name: string;
   emoji: string;

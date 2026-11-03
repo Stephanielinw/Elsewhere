@@ -15,6 +15,7 @@ import {
   makeUid,
 } from './revisions';
 import { awaitingNainOpening, canUseRealModel } from './firstMessage';
+import {collectRoleLife,personalContext,preparePersonalReply} from './roleLife';
 
 export function toLocalDateKey(ts: number): string {
   const d = new Date(ts);
@@ -245,7 +246,8 @@ export interface DailyDiaryFacts {
  */
 export function collectDailyDiaryFacts(
   role: RoleData,
-  dateKey: string
+  dateKey: string,
+  trustedLifeOnly = false
 ): DailyDiaryFacts {
   const { startMs, endMs, label, shortLabel } = getLocalDayBounds(dateKey);
 
@@ -312,8 +314,10 @@ export function collectDailyDiaryFacts(
   });
 
   // 5. Legitimately known events on `dateKey`
+  const validMessages=trustedLifeOnly?new Set(getActiveMessages([...(role.chats||[]),...allScenes.flatMap(s=>s?.messages||[]),...allPlays.flatMap(p=>[...(p?.messages||[]),...(p?.intermissionMessages||[])])]).filter(m=>m.at<=endMs).map(m=>m.id)):new Set<string>();
+  const trustedLife=trustedLifeOnly?new Set(collectRoleLife(role,endMs).events.map(e=>e.id)):new Set<string>();
   const permittedEventsOnDay = getRoleKnownEvents(role).filter(
-    (e) => e.at >= startMs && e.at <= endMs
+    e=>e.at>=startMs&&e.at<=endMs&&(!trustedLifeOnly||(!e.messageId||validMessages.has(e.messageId))&&(e.kind!=='life'||trustedLife.has(e.id)))
   );
   const focusEvents = permittedEventsOnDay.filter((e) => e.kind === 'focus');
   const lifeRoutines = permittedEventsOnDay.filter((e) => e.kind === 'life');
@@ -396,8 +400,9 @@ export function buildCharacterDiaryPrompt(
 ): {
   messages: { role: string; content: string }[];
   facts: DailyDiaryFacts;
+  personal: ReturnType<typeof preparePersonalReply>['ticket'];
 } {
-  const facts = collectDailyDiaryFacts(role, dateKey);
+  const facts = collectDailyDiaryFacts(role, dateKey, true);
   const userName = String(role.userAlias || user?.name || '你').trim() || '你';
 
   const userIdentityLines = [
@@ -424,20 +429,21 @@ export function buildCharacterDiaryPrompt(
     : '';
 
   // Assemble concrete factual blocks
-  const chatTranscript = facts.chatMessages
+  const safeLine=(m:ChatMessage)=>m.quote&&!getActiveMessages(role.chats).some(s=>s.id===m.quote!.id)?m.text:formatMessageContentForModel(m,role.name,userName);
+  const chatTranscript = facts.chatMessages.filter(m=>m.speaker!=='note').slice(-12)
     .map(
       (m) =>
         `[${formatHm(m.at)}] ${
           m.speaker === 'me' ? userName : role.name
-        }：${formatMessageContentForModel(m, role.name, userName)}`
+        }：${safeLine(m).slice(0,300)}`
     )
     .join('\n');
 
-  const sceneTranscript = facts.sceneBlocks
+  const sceneTranscript = facts.sceneBlocks.slice(-2)
     .map(
       (b) =>
         `地点：${b.where}\n` +
-        b.messages
+        b.messages.slice(-8)
           .map(
             (m) =>
               `[${formatHm(m.at)}] ${
@@ -446,46 +452,46 @@ export function buildCharacterDiaryPrompt(
                   : m.speaker === 'char'
                   ? role.name
                   : '场景旁白'
-              }：${formatMessageContentForModel(m, role.name, userName)}`
+              }：${safeLine(m).slice(0,300)}`
           )
           .join('\n')
     )
     .join('\n---\n');
 
-  const playTranscript = facts.playBlocks
+  const playTranscript = facts.playBlocks.slice(-2)
     .map((p) => {
       const playLines = p.messages
-        .slice(-16)
-        .map((m) => `${m.speaker === 'me' ? userName : role.name}：${m.text}`)
+        .slice(-8)
+        .map((m) => `${m.speaker === 'me' ? userName : role.name}：${m.text.slice(0,300)}`)
         .join(' / ');
       const interLines = p.intermissionMessages
-        .slice(-10)
-        .map((m) => `${m.speaker === 'me' ? userName : role.name}：${m.text}`)
+        .slice(-6)
+        .map((m) => `${m.speaker === 'me' ? userName : role.name}：${m.text.slice(0,300)}`)
         .join(' / ');
       return `剧目《${p.title}》（戏内设定：${p.world}；${role.name}饰「${p.charRole}」，${userName}饰「${p.userRole}」）\n戏内片段：${playLines || '无'}\n幕间讨论（戏外真实身份交流）：${interLines || '无'}\n（注：戏剧是你们一起排演的虚构故事，日记中若提及，应以“今天和TA排演了这出戏”的戏外真实视角回顾，切勿把戏内虚构情节当成现实发生的事）`;
     })
     .join('\n---\n');
 
-  const focusTranscript = facts.focusEvents
-    .map((e) => `[${formatHm(e.at)}] ${e.title}：${e.detail}`)
+  const focusTranscript = facts.focusEvents.slice(-6)
+    .map((e) => `[${formatHm(e.at)}] ${e.title}：${e.detail.slice(0,400)}`)
     .join('\n');
 
-  const sharedDiaryTranscript = facts.sharedUserDiaries
+  const sharedDiaryTranscript = facts.sharedUserDiaries.slice(-2)
     .map(
       (d) =>
-        `[${formatHm(d.sharedAt?.[role.id] ?? d.at)} ${userName}主动分享给你的日记] ${d.text}`
+        `[${formatHm(d.sharedAt?.[role.id] ?? d.at)} ${userName}主动分享给你的日记] ${d.text.slice(0,400)}`
     )
     .join('\n');
 
   const routineSummary = facts.lifeRoutines
     .slice(-8)
-    .map((e) => `[${formatHm(e.at)}] ${e.title}（${e.detail}）`)
+    .map((e) => `[${formatHm(e.at)}] ${e.title}（${e.detail.slice(0,400)}）`)
     .join('；');
 
   const otherKnownEvents = facts.knownEvents
-    .filter((e) => e.kind !== 'focus')
+    .filter((e) => !['focus','chat','drama','diary_share'].includes(e.kind))
     .slice(-12)
-    .map((e) => `[${formatHm(e.at)} | ${e.kind}] ${e.title}：${e.detail}`)
+    .map((e) => `[${formatHm(e.at)} | ${e.kind}] ${e.title}：${e.detail.slice(0,400)}`)
     .join('\n');
 
   const systemPrompt = `你正在扮演 ${role.name}，现在是当地时间深夜，你正在写一篇属于你自己的【私人日记】，归档日期为 ${facts.dateLabel}（${facts.dateKey}）。
@@ -503,54 +509,41 @@ export function buildCharacterDiaryPrompt(
 【私人日记写作准则（极其重要）】
 1. 视角与性质：这是你（${role.name}）写给自己看的私人文字，必须使用第一人称“我”书写。它不是系统的客观摘要，不是交给用户的汇报，也不是客服式的温柔总结。
 2. 语气与文风：完全贴合你的性格、职业习惯、说话方式、心理防御机制与生活处境。不同角色必须有截然不同的笔触。不要使用千篇一律的“今天也是充实的一天”“我理解你的感受”等 AI 模板套话。
-3. 内容优先级：
-   - 第一优先：${facts.dateKey} 当天你与 ${userName} 实际发生的互动（聊天、当面相处、共同专注、排演戏剧、或对方主动分享给你的日记）。
-   - 第二优先：你对这些互动的真实主观感受、揣测、怀疑、期待、未说出口的话或保留意见。
-   - 第三优先：你当天在自己生活中确认发生的事（工作、观察到的细节、自身人际与处境）。
-   - 第四优先：你的私人念头、习惯与未解决的事。
-4. 事实与知识权限边界（防幻觉与防越权）：
-   - 只能把下方【${facts.dateKey} 当日真实记录】中列出的互动当作今天实际发生过的事。
-   - 若下方没有任何与 ${userName} 的互动记录，说明今天你们没有联系或没有深聊——请自然书写你自己这一天的工作、生活细节与私人思绪，绝不要强行围绕用户抒情，更不要编造“今天我们聊了很多/见了面”等虚假互动。
-   - 【日常作息投影】仅代表你今天大致去过哪里、做过什么日常工作，可作为环境与生活质感的轻背景，严禁凭空编造重大突发事件凑字数。
-   - 严禁假装知道用户未主动分享的私密日记，严禁引用已被撤回或修改前的废弃消息，严禁剧透当前时间线尚未发生的未来剧情。
-5. 篇幅要求：
-   - 当日素材丰富时，目标长度约 1,000 个汉字（建议范围 800–1,200 字），分段自然，细节充实，有真实的心理层次。
-   - 若当日真实素材较少，允许自然缩短（如 450–800 字），严禁为了凑字数凭空捏造无意义的虚假事件。
+3. 内容选择：从你本人今天真正挂心的事出发，结合工作、他人关系、未解决的问题、已有观点、私人计划和普通观察，自行选择值得留下的内容。与 ${userName} 的联系只是素材之一；可以重要，也可以只提一句或不提。不是聊天回顾，不必逐条复述，不规定一天的段落顺序。
+4. 事实与知识权限边界：
+   - 当日记录中的发言是对应说话者的主张，不自动成为外部事实。私人持续关注是你此前的念头或打算，不等于已经发生的事件。
+   - 没有与 ${userName} 的互动记录时，自然书写你自己这一天的工作、生活细节与私人思绪，绝不要强行围绕用户抒情；不得虚构一起聊天、见面或相处。
+   - 只有明确来源、有效时间和本人知情的生活记录才是已确认素材。其余不可靠活动推测不用；没有记录时，不假定照常工作了一整天。
+   - 素材少时允许与世界观、职业和已有处境相符的普通私人观察与思考；未经确认的重大事件、他人的决定、关系变化和行动结果不能写成已发生事实。新的持续想法用独立元数据记下，不靠每天重新编造生活。
+   - 不得获知未分享的用户日记、废弃消息、未来剧情；戏内故事只能以参与排演的戏外视角回忆，不成为真实人生。
+5. 长度与笔触：由今天的内容和你的私人书写习惯决定。可以只记几句，也可以长写、分析或断续记事；不凑字数、不要求精致散文，也不用固定抒情结尾。
 6. 输出格式：直接输出日记正文（可在首行自然写上日期、时间或地点简记，如“${facts.shortLabel}，夜”），不要输出任何 Markdown 代码块标记、不要写“好的，这是日记”等前缀说明。`;
 
-  const userPrompt = `请根据以下归档于【${facts.dateLabel}（${facts.dateKey}）】的真实记录，以 ${role.name} 的第一人称写下这一天的私人日记：
+  const continuity=personalContext(role,facts.endMs);
+  const userPrompt = `归档日：${facts.dateLabel}（${facts.dateKey}）。从自己的角度选择值得记录的事。
 
-=== 一、当日与 ${userName} 的手机聊天记录（${facts.chatMessages.length} 条） ===
-${chatTranscript || '（当日无手机聊天记录）'}
+=== 角色自身的生活与未解决关注 ===
+${continuity}
+已确认的当日其他事件：
+${otherKnownEvents||'无额外已确认事件'}
+已确认的当日生活记录：${routineSummary||'暂无可确认的活动记录'}
 
-=== 二、当日面对面相处记录（${facts.sceneBlocks.length} 场） ===
-${sceneTranscript || '（当日无面对面见面记录）'}
+${(`=== 与他人的当日联系（有选择地参考，不逐条总结） ===
+手机聊天 ${facts.chatMessages.length} 条，下列为最近最多12条短摘录（说话者的主张不自动成为事实）：
+${chatTranscript||'（当日无手机聊天记录）'}
+面对面相处（保留现实来源，与小说推测区分）：
+${sceneTranscript||'（当日无面对面见面记录）'}
+共同专注：${focusTranscript||'无'}
+虚构戏剧与戏外交流（不能作为现实人生）：
+${playTranscript||'无'}
+对方明确分享的日记：${sharedDiaryTranscript||'无；未分享的私人日记不知情'}
+`).slice(0,8000)}
+（联系材料仅为节选，未列出不代表发生过其他事情。）
+${sharedTasksText?`公开待办背景：${sharedTasksText.slice(0,500)}`:''}
 
-=== 三、当日共同专注陪伴记录（${facts.focusEvents.length} 条） ===
-${focusTranscript || '（当日无共同专注记录）'}
-
-=== 四、当日戏剧排演与幕间交流（${facts.playBlocks.length} 场） ===
-${playTranscript || '（当日无戏剧排演记录）'}
-
-=== 五、当日 ${userName} 主动分享给你的个人日记（${facts.sharedUserDiaries.length} 篇） ===
-${sharedDiaryTranscript || '（当日对方未向你分享个人日记；对方未分享的任何私密日记你均不知情）'}
-
-=== 六、当日其他已确认事件与日常作息投影 ===
-- 已确认事件：
-${otherKnownEvents || '（无额外事件）'}
-- 日常作息背景投影（仅作地点与日常工作参考，勿夸大编造）：
-${routineSummary || `在 ${role.place || '常驻地'} 照常度过一天`}
-${sharedTasksText ? `- 玩家共享待办面板（公开可见背景）：${sharedTasksText}` : ''}
-
-请现在开始以 ${role.name} 的口吻写下 ${facts.dateKey} 的私人日记正文：`;
-
-  return {
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt },
-    ],
-    facts,
-  };
+直接写下 ${facts.dateKey} 的私人日记。`;
+  const prepared=preparePersonalReply(role,[{role:'system',content:systemPrompt},{role:'user',content:userPrompt}],facts.endMs,makeUid('private-diary'),'本次只输出私人日记正文；可选元数据同次提供，不生成公开手机消息。',facts.chatMessages.slice(-12),'diary');
+  return {messages:prepared.messages,facts,personal:prepared.ticket};
 }
 
 /**
@@ -769,11 +762,10 @@ export function applyGeneratedCharacterDiary(
     return { ok: false, reason: '模型返回的日记内容为空' };
   }
 
-  stripLegacyTemplateDiaries(role);
   if (!Array.isArray(role.diaries)) role.diaries = [];
   if (!Array.isArray(role.diaryTasks)) role.diaryTasks = [];
 
-  const facts = collectDailyDiaryFacts(role, dateKey);
+  const facts = collectDailyDiaryFacts(role, dateKey, true);
   const wordCount = countDiaryChars(text);
 
   // Check if a formal character diary already exists for this dateKey
@@ -785,45 +777,13 @@ export function applyGeneratedCharacterDiary(
       getCharacterDiaryDateKey(d) === dateKey
   );
 
-  if (diary) {
-    diary.text = text;
-    diary.dateKey = dateKey;
-    diary.at = facts.endMs;
-    diary.generatedAt = nowTs;
-    diary.wordCount = wordCount;
-    diary.source = 'ai';
-    diary.sourceIds = [...facts.sourceEventIds, ...facts.sourceMessageIds];
-    diary.sourceMessageIds = facts.sourceMessageIds;
-    diary.sourceEventIds = facts.sourceEventIds;
-    diary.factSummary = facts.summary;
-  } else {
-    diary = {
-      id: makeUid('diary'),
-      speaker: 'char',
-      dateKey,
-      at: facts.endMs,
-      generatedAt: nowTs,
-      text,
-      wordCount,
-      source: 'ai',
-      sourceIds: [...facts.sourceEventIds, ...facts.sourceMessageIds],
-      sourceMessageIds: facts.sourceMessageIds,
-      sourceEventIds: facts.sourceEventIds,
-      factSummary: facts.summary,
-    };
-    role.diaries.push(diary);
-  }
-
-  // Ensure no duplicate character diaries exist for this dateKey
-  const seenSameDate = new Set<string>();
-  role.diaries = role.diaries.filter((d) => {
-    if (d.speaker !== 'char') return true;
-    const k = getCharacterDiaryDateKey(d);
-    if (k !== dateKey) return true;
-    if (seenSameDate.has(k)) return false;
-    seenSameDate.add(k);
-    return true;
-  });
+  if(diary)return {ok:false,reason:'这一天已有归档日记，原文已保留'};
+  diary = {
+    id: makeUid('diary'),speaker:'char',dateKey,at:facts.endMs,generatedAt:nowTs,text,wordCount,source:'ai',
+    sourceIds:[...facts.sourceEventIds,...facts.sourceMessageIds],sourceMessageIds:facts.sourceMessageIds,sourceEventIds:facts.sourceEventIds,factSummary:facts.summary,
+    sourceMessageRevisions:Object.fromEntries([...facts.chatMessages,...facts.sceneBlocks.flatMap(b=>b.messages),...facts.playBlocks.flatMap(b=>[...b.messages,...b.intermissionMessages])].map(m=>[m.id,m.revisionCount||0])),
+  };
+  role.diaries.push(diary);
 
   let task = role.diaryTasks.find((t) => t.dateKey === dateKey);
   if (!task) {

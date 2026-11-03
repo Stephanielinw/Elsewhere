@@ -2,6 +2,7 @@ import {meetingPlan,encounterHistory} from './encounter';
 import {compileConversationPrompt,requestMessages,type ConversationCompilation,type ConversationContext} from './conversationPrompt';
 import {nativePreset,isNativePreset} from './fruit/nativePreset';
 import {nativeBubbleRule,projectChatVoiceProfile,chatVoiceChoice} from './chatVoice';
+import {personalContext,collectRoleLife} from './roleLife';
 import {createLiveNovelContext} from './novelContext';
 import {createFruitState} from './fruit/preset';
 import type {FruitContext,FruitProfile,FruitPreset} from './fruit/types';
@@ -162,9 +163,11 @@ export function buildNativeContext(
       const message=e.messageId?shownPhoneSources.get(e.messageId):undefined;
       // Only omit a verbatim record of the same visible source; summaries and facts remain candidates.
       const duplicate=e.kind==='chat'&&message&&e.detail===message.text&&e.at===message.at&&(!e.speaker||e.speaker===message.speaker)&&(!e.source||e.source==='chat');
+      if(kind==='chat'&&e.kind==='life')return false; // Read trusted life once through the shared private projection.
       return !duplicate&&e.kind!=='drama'&&(e.kind!=='life'||Boolean(e.source&&e.knownBy?.includes(r.id)))&&e.at<=nowTs&&(!e.messageId||validIds.has(e.messageId)&&!bridgedIds.has(e.messageId));
     });
-    recalled=retrieve({...r,events:candidates},input,12,nowTs);
+    const interests=kind==='chat'?collectRoleLife(r,nowTs).threads.map(t=>t.text).join('；'):'';
+    recalled=retrieve({...r,events:candidates},input+(kind==='chat'?'\n'+r.job+'\n'+interests:''),12,nowTs);
     facts = recalled
       .map((e) => `[${dt(e.at)} | ${e.kind} | ${e.id}] ${e.title}: ${e.detail}`)
       .join('\n');
@@ -182,11 +185,12 @@ export function buildNativeContext(
       base += `\n\n用户曾主动分享给你的个人日记（未在此列出的私人日记你不知情）：\n${sharedDiaries}`;
     }
     base += `\n\n可检索的剧外经历（并非保证完整，剧内虚构剧情不等于现实历史）：\n${facts || '暂无'}`;
+    if(kind==='chat')base+='\n\n'+personalContext(r,nowTs);
   }
 
   const values={char:kind==='play'?r.play!.char:r.name,user:kind==='play'?r.play!.user:userName,time:hm(nowTs),date:dateStr(nowTs),personality:kind==='play'?r.play!.char:r.traits,description:kind==='play'?r.play!.world:r.profile,
     native_bubbles:nativeBubbleRule,
-    native_life:isFocused?'当前处于「专心聊」状态，双方都在手机前专注交谈，请自然连贯地回应；仍保有自己的性格与主见。':'你仍在照常生活，不必总是立刻有空；但不要声称已执行未发生的行动。',
+    native_life:kind==='chat'?'这段交流发生在你自己的生活中。从已有经历、关系与关切形成自己的判断，再决定此刻值得说什么；可以同意、保留意见、纠正自己或谈起自己的事，也可以只简短回应。认真参与对方正在讨论的事，不为展示自主性强行转题。私人关注不等于需要公开，打算不等于已经做过。':isFocused?'当前处于「专心聊」状态，双方都在手机前专注交谈，请自然连贯地回应；仍保有自己的性格与主见。':'你仍在照常生活，不必总是立刻有空；但不要声称已执行未发生的行动。',
     native_novel_rule:kind==='play'?'使用中文进行自然的沉浸式叙事。推进场景、表现人物心理与自身动作，不代替用户做出选择。':'你正在和用户面对面相处，采用文字小说式描写场景与自己的言语动作。回复使用自然中文。只写你自己的回应，不替用户行动。',
     native_output_rule:kind==='play'?'这是独立戏剧世界，严格遵守本剧角色人设；不要透露戏外知识。':'这是面对面的文字小说，仅描述自己和环境，不替用户行动。'};
   if(options.profile&&(kind==='scene'||kind==='play'))values.native_output_rule+=`目标 ${options.profile.length.min}–${options.profile.length.max} 字，按剧情自然取舍，不凑字数。${options.profile.style?`文风：${options.profile.style}。`:''}`;

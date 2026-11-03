@@ -515,7 +515,7 @@ test('Daily AI Diary 1 & 2: midnight rollover (00:00) & multi-day offline backfi
     1
   );
 
-  // Calling applyGeneratedCharacterDiary again for the same date updates in place rather than duplicating
+  // A duplicate/late completion keeps the existing archive instead of overwriting it
   applyGeneratedCharacterDiary(
     role,
     '2026-10-28',
@@ -649,6 +649,7 @@ test('Daily AI Diary 4, 5 & 8: zero-interaction day writes independent character
     detail: '修复工坊 · 调制浆糊，修补一册明代方志的虫蛀书叶',
     at: day28.startMs + 15 * 3600000,
     where: '修复工坊',
+    source: 'manual',lifeEvidence:'confirmed',knownBy:[shenXu.id],
     status: 'active',
   });
 

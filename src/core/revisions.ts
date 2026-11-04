@@ -1,4 +1,5 @@
 import {reconcileSceneSources} from './sceneRevisions';
+import {syncRoleMemory} from './memory';
 import type {
   ChatMessage,
   EventRecord,
@@ -84,6 +85,7 @@ export function editMessage(
   const msg = list.find((m) => m.id === messageId && m.status !== 'retracted');
   if (!msg) return { ok: false, reason: '未找到目标消息' };
   if (msg.text === newText) return { ok: false, reason: '内容未发生变化' };
+  if(scope==='chat')syncRoleMemory(role,nowTs);
 
   const prevText = msg.text;
   const bridgeSource=scope==='scene'?msg.sourceMessageId:undefined;
@@ -99,6 +101,7 @@ export function editMessage(
       id: makeUid('ev'),
       detail: newText,
       messageId: msg.id,
+      sourceRevision: (msg.revisionCount || 0) + 1,
       status: 'active',
     });
   }
@@ -152,6 +155,7 @@ export function retractMessage(
   const list = getScopeMessages(role, scope);
   const msg = list.find((m) => m.id === messageId && m.status !== 'retracted');
   if (!msg) return { ok: false, reason: '未找到可撤回的消息' };
+  if(scope==='chat')syncRoleMemory(role,nowTs);
 
   const linked = findLinkedEvents(role, msg);
   const supersededEventIds: string[] = [];
@@ -206,6 +210,7 @@ export function prepareRegenerateReply(
   if (targetMsg.speaker !== 'char') {
     return { ok: false, reason: '只能重抽角色的回复' };
   }
+  if(scope==='chat')syncRoleMemory(role,nowTs);
 
   // Walk backward to find the start of this AI reply turn (including preceding bubbles in the same turn)
   let turnStartIdx = targetIdx;

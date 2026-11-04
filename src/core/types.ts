@@ -1,6 +1,7 @@
 import type {NovelDocument} from './novelDocument';
 import type {PersonalThread,PersonalTicket,PersonalSource} from './roleLife';
 import type {ProactiveState} from './proactiveChat';
+import type {RoleMemoryLedger} from './memory';
 export type ThemeName = 'blue' | 'green' | 'pink' | 'coffee' | 'night';
 
 export type MessageKind = 'chat' | 'sticker' | 'photo' | 'voice' | 'packet' | 'scene' | 'play';
@@ -58,6 +59,7 @@ export interface MessageRevisionRecord {
 }
 
 export interface EventRecord {
+  sourceRevision?: number;
   lifeEvidence?: 'confirmed';
   sceneChange?: {requestId:string;sceneId:string;sources:MeetingPlan['sources'];before:Pick<SceneData,'where'|'agreement'|'locationEvidence'>;after:Pick<SceneData,'where'|'agreement'|'locationEvidence'>};
   id: string;
@@ -108,6 +110,7 @@ export interface DiaryGenerationTask {
 }
 
 export interface DiaryEntry {
+  memoryState?: {version:1;factIds:string[];ignoredMessageIds:string[]};
   sourceMessageRevisions?: Record<string,number>;
   continuitySources?: PersonalSource[];
   id: string;
@@ -350,6 +353,7 @@ export interface CustomAvatarFrame {
 }
 
 export interface RoleData {
+  memory?: RoleMemoryLedger;
   proactive?: ProactiveState;
   personalThreads?: PersonalThread[];
   id: string;

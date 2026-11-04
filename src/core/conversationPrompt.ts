@@ -5,10 +5,11 @@ import { applyFruitProfile } from './fruit/profile';
 import { FruitMacroError, FruitMacroResolver } from './fruit/macros';
 import { FRUIT_MARKERS, validateProfile } from './fruit/preset';
 import type { FruitCompilation, FruitCompiledMessage, FruitContext, FruitLength, FruitPreset, FruitProfile } from './fruit/types';
+import {memoryRuleConflicts,type MemoryDecision} from './memory';
 
 export interface ConversationContext extends Omit<FruitContext,'source'|'mode'> {
- source:'isolated-fixture'|'native-live'|'novel-live';mode:ConversationMode;
- native?:{protectedText:string;values:Record<string,string>;legacy:PresetData|null;currentInputs:FruitContext['history'];suffix?:string};
+ source:'isolated-fixture'|'native-live'|'novel-live';mode:ConversationMode;memoryDenied?:{id:string;value:string}[];
+ native?:{protectedText:string;values:Record<string,string>;legacy:PresetData|null;currentInputs:FruitContext['history'];suffix?:string;factFragments?:Record<string,string>;memoryTrace?:MemoryDecision[]};
 }
 export interface ConversationCompilation extends Omit<FruitCompilation,'previewOnly'|'sendAllowed'|'mode'> {
  engine:'conversation-v1';origin:'native'|'third-party';mode:ConversationMode;
@@ -63,7 +64,7 @@ export function compileConversationPrompt(preset:FruitPreset,rawProfile:FruitPro
   if(!native&&context.source!=='isolated-fixture'&&!liveNovel)result.diagnostics.push({code:'fixture-required',severity:'error',message:'第三方预设需要隔离预览或受验证的小说上下文'});
   if(purpose==='preview')result.diagnostics.push({code:'preview-only',severity:'warning',message:'这是隔离测试预览，不发送 API。正式小说另行验证真实上下文、任务和输出；完整语义检索与修订依赖链尚未实现。'});
   const permitted=(f:{active:boolean;revisionValid:boolean;at:number;scope:string;knownBy:string[]})=>f.active&&f.revisionValid&&f.at<=context.now&&f.scope===context.scope&&f.knownBy.includes(context.actorId);
-  const facts=context.facts.filter(permitted).slice(0,60),history=context.history.filter(permitted).slice(native||liveNovel?-30:-12);
+  const facts=context.facts.filter(permitted).slice(0,native&&context.source==='native-live'&&context.mode==='chat'?Infinity:60),history=context.history.filter(permitted).slice(native||liveNovel?-30:-12);
   if(facts.length!==context.facts.length)result.diagnostics.push({code:'memory-filter',severity:'info',message:'部分来源因权限、时间、修订或作用域被排除；不展示被排除的内容。'});
   const markerFor=(f:typeof facts[number])=>f.marker||({identity:'charDescription',relationship:'worldInfoBefore',episodic:'worldInfoAfter',currentState:'scenario'}[f.layer]);
   const markerText=(id:string)=>facts.filter(f=>markerFor(f)===id).map(f=>`[来源 ${f.id} · ${new Date(f.at).toISOString()}]\n${f.text}`).join('\n');
@@ -103,7 +104,7 @@ export function compileConversationPrompt(preset:FruitPreset,rawProfile:FruitPro
     const source={sourceId:prompt.identifier,sourceName:prompt.name,orderIndex};
     if(prompt.marker){
       if(native&&prompt.identifier==='nativeContext'){
-        if(context.native)relative.push({role:'system',content:context.native.protectedText,...source,marker:prompt.identifier,sourceIds:facts.map(f=>f.id)});
+        if(context.native)relative.push({role:'system',content:context.native.protectedText,...source,marker:prompt.identifier,sourceIds:facts.filter(f=>context.native?.factFragments?.[f.id]&&context.native.protectedText.includes(context.native.factFragments[f.id])).map(f=>f.id)});
         else for(const id of ['personaDescription','charDescription','charPersonality','worldInfoBefore','worldInfoAfter','scenario']){const content=markerText(id);if(content)relative.push({role:'system',content,...source,marker:id,sourceIds:facts.filter(f=>markerFor(f)===id).map(f=>f.id)});}
         continue;
       }
@@ -125,6 +126,9 @@ export function compileConversationPrompt(preset:FruitPreset,rawProfile:FruitPro
       const expanded=resolver.resolve(native?adaptedContent:replaceLength(adaptedContent,profile.length));
       const content=prompt.identifier.startsWith('legacy:')?expanded:expanded.trim();
       if(!content)continue;
+      if((prompt.identifier.startsWith('legacy:')||prompt.identifier.startsWith('custom:')||typeof profile.edits?.[prompt.identifier]?.content==='string')){
+        for(const conflict of memoryRuleConflicts(content,context.memoryDenied||[]))result.diagnostics.push({code:'memory-config-conflict',severity:'error',sourceId:prompt.identifier,message:`该条目与当前有效的用户纠正 ${conflict} 冲突；配置和用户消息保留，请核对条目。`});
+      }
       const sourceIds=[...new Set([...resolver.referencedValues()].flatMap(key=>valueSources[key]||[]))];
       const message:FruitCompiledMessage={role:prompt.role,content,...source,sourceIds};
       if(prompt.position===1)injections.push({...message,depth:prompt.depth,injectionOrder:prompt.injectionOrder});else relative.push(message);
@@ -154,8 +158,9 @@ export function compileConversationPrompt(preset:FruitPreset,rawProfile:FruitPro
     }else result.messages.push({role:'system',content:finalGuard,sourceId:'elsewhere-output-policy',sourceName:'Elsewhere 模式覆盖与输出约束',orderIndex:preset.order.length});
   }
   const used=new Set(result.messages.flatMap(m=>m.sourceIds||[]));
-  result.memorySources=facts.filter(f=>used.has(f.id)).map(({id,layer,at,scope,knownBy})=>({id,layer,at,scope,knownBy}));
-  result.memorySources.push(...history.filter(h=>used.has(h.id)).map(({id,at,scope,knownBy})=>({id,layer:'episodic' as const,at,scope,knownBy})));
+  const materialized=facts.filter(f=>{const fragment=context.native?.factFragments?.[f.id]||`[来源 ${f.id} · ${new Date(f.at).toISOString()}]\n${f.text}`;return used.has(f.id)&&result.messages.some(m=>m.sourceIds?.includes(f.id)&&m.content.includes(fragment));});
+  result.memorySources=materialized.map(({id,layer,at,scope,knownBy})=>({id,layer,at,scope,knownBy}));
+  result.memorySources.push(...history.filter(h=>used.has(h.id)&&result.messages.some(m=>m.sourceIds?.includes(h.id)&&m.content.includes(h.text))).map(({id,at,scope,knownBy})=>({id,layer:'episodic' as const,at,scope,knownBy})));
   if(facts.filter(f=>used.has(f.id)).length<facts.length)result.diagnostics.push({code:'memory-unused',severity:'info',message:'部分授权候选未被启用的 Marker 或宏实际注入，来源摘要不将它们计为已使用。'});
   result.variables=resolver.variables();
   if(result.messages.reduce((n,m)=>n+m.content.length,0)>500000)result.diagnostics.push({code:'compile-budget',severity:'error',message:'预览超过 500000 字符，阻止正式使用'});

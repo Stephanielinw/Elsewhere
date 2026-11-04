@@ -3,6 +3,7 @@ import type {ConversationContext} from './conversationPrompt';
 import type {AppData,RoleData,ChatMessage} from './types';
 import type {FruitSource} from './fruit/types';
 import {formatMessageContentForModel,getActiveMessages} from './revisions';
+import {projectedUserFields,projectRoleMemory,memoryFactText,relationshipContext,memoryRuleConflicts} from './memory';
 
 const authorized=new WeakSet<ConversationContext>();
 export const isLiveNovelContext=(context:ConversationContext)=>authorized.has(context);
@@ -25,8 +26,10 @@ export function createLiveNovelContext(data:AppData,r:RoleData,kind:'scene'|'pla
   add('identity:'+r.id,'identity','charDescription',`姓名：${r.name}；身份：${r.job}；所在区域与世界设定：${r.place}；人设：${r.profile}；Canon 与尚未发生的边界：${r.canonNotes||'以已确认设定为准'}`);
   add('traits:'+r.id,'identity','charPersonality',r.traits);
   const u=data.user;
-  add('persona:'+r.id,'identity','personaDescription',`对方称呼：${r.userAlias||u.name||'未指定'}；身份：${u.identity||''}；背景：${u.background||''}；称呼与代词：${u.pronouns||''}；自述：${u.notes||''}；仅对本角色的补充：${r.notes||''}`);
-  add('relationship:'+r.id,'relationship','worldInfoBefore',r.relationship);
+  const fields=Object.fromEntries(projectedUserFields(u,r,at).map(f=>[f.key,f.conflicts.length?'':f.text])),memory=projectRoleMemory(r,at);
+  add('persona:'+r.id,'identity','personaDescription',`对方称呼：${r.userAlias||fields.name||'未指定'}；身份：${fields.identity||''}；背景：${fields.background||''}；称呼与代词：${fields.pronouns||''}；自述：${fields.notes||''}；仅对本角色的补充：${memoryRuleConflicts('用户补充：'+r.notes,memory.denied).length>0?'':r.notes||''}`);
+  for(const f of memory.facts)facts.push({id:f.id,text:memoryFactText(f),layer:f.layer,marker:f.layer==='identity'?'personaDescription':'worldInfoBefore',at:f.at,scope,knownBy:[r.id],active:true,revisionValid:true});
+  add('relationship:'+r.id,'relationship','worldInfoBefore',relationshipContext(r,at));
   add('state:'+r.id,'currentState','scenario',`本次见面地点：${r.scene!.where}；当前时间：${new Date(at).toISOString()}`);
   const realMessages=[...r.chats,...(r.scene?.messages||[]),...(r.meetings||[]).flatMap(s=>s.messages)];
   const active=new Map(getActiveMessages(realMessages).filter(m=>m.at<=at).map(m=>[m.id,m]));
@@ -44,6 +47,6 @@ export function createLiveNovelContext(data:AppData,r:RoleData,kind:'scene'|'pla
   const source:ChatMessage={...m,quote:quote?{id:quote.id,speaker:quote.speaker,text:quote.text,at:quote.at}:null};
   return {id:m.id,role:m.speaker==='me'?'user' as const:'assistant' as const,text:`[消息 ID=${m.id}; createdAt=${new Date(m.at).toISOString()}]\n${formatMessageContentForModel(source,base.char,base.user)}`,at:m.at,scope,knownBy,active:true,revisionValid:true};
  });
- const context:ConversationContext={source:'novel-live',mode,actorId:r.id,scope,now:at,user:base.user,char:base.char,facts,history,examples:[],capabilities:{keywordRetrieval:kind==='scene',semanticRetrieval:false,completeRevisionChain:false}};
+ const context:ConversationContext={source:'novel-live',mode,memoryDenied:kind==='scene'?base.memoryDenied:[],actorId:r.id,scope,now:at,user:base.user,char:base.char,facts,history,examples:[],capabilities:{keywordRetrieval:kind==='scene',semanticRetrieval:false,completeRevisionChain:false}};
  authorized.add(context);return context;
 }

@@ -17,6 +17,7 @@ import {chatTiming,setChatFocused,enqueueChat,prepareChatDue,claimChatBatch,chat
 import {compileChatBatchPrompt,buildPhoneRegeneration,readChatResponse} from './core/chatBatchPrompt';
 import {describeChatVoice,chatVoiceSummary} from './core/chatVoice';
 import {preparePersonalReply,splitPersonalReply,applyPersonalReply,personalTicketValid} from './core/roleLife';
+import {syncRoleMemory} from './core/memory';
 import {claimProactive,proactiveTaskValid,finishProactive,recordProactiveDelivery,recoverProactive,proactiveInstruction,parseProactiveReply,type ProactiveTask} from './core/proactiveChat';
 import {createChatVoiceDialog} from './chatVoiceView';
 import {createHomeTasks} from './homeTasksView';
@@ -1424,7 +1425,7 @@ export function initElsewhereApp(): void {
       speaker === 'me' ? '你说过' : `${r.name}说过`,
       text,
       at,
-      { speaker, messageId, knownBy: ['user', r.id] }
+      { speaker, messageId, knownBy: ['user', r.id],...(messageId?{sourceRevision:r.chats.find(m=>m.id===messageId)?.revisionCount||0}:{}) }
     );
   }
 
@@ -1536,7 +1537,7 @@ export function initElsewhereApp(): void {
       if(!data.roles.includes(r)||!chatBatchValid(r,batch))return;
       if(prepared)includeScenePromptTrace(r);
       const usedIds=new Set(compiled.value?.messages.flatMap(m=>m.sourceIds||[])||[]);
-      const personal=preparePersonalReply(r,prepared?.messages||messages,now(),batch.id,'',r.chats.filter(m=>usedIds.has(m.id)));
+      const personal=preparePersonalReply(r,prepared?.messages||messages,now(),batch.id,'',r.chats.filter(m=>usedIds.has(m.id)),'chat',true);
       const privateReply=splitPersonalReply(await requestPhoneReply(r,personal.messages,controller.signal));
       const extracted=splitSceneReply(privateReply.text),text=extracted.text;
       if(!data.roles.includes(r)||!chatBatchValid(r,batch)){
@@ -1628,9 +1629,9 @@ export function initElsewhereApp(): void {
 
   function acceptPhoneMessage(r:RoleData,item:ChatMessage):boolean {
     const timingBefore=r.chatTiming?structuredClone(r.chatTiming):undefined;
-    const chatsBefore=r.chats.length,eventsBefore=r.events.length,planBefore=r.meetingPlan;
-    r.chats.push(item);eMemory(r,item.text,'me','chat',item.at,item.id);enqueueChat(r,item.id,item.at);r.meetingPlan=meetingPlan(r,item.at);
-    if(!save()){r.chats.length=chatsBefore;r.events.length=eventsBefore;r.chatTiming=timingBefore;r.meetingPlan=planBefore;return false;}
+    const chatsBefore=r.chats.length,eventsBefore=r.events.length,planBefore=r.meetingPlan,memoryBefore=r.memory;
+    r.chats.push(item);eMemory(r,item.text,'me','chat',item.at,item.id);syncRoleMemory(r,item.at);enqueueChat(r,item.id,item.at);r.meetingPlan=meetingPlan(r,item.at);
+    if(!save()){r.chats.length=chatsBefore;r.events.length=eventsBefore;r.chatTiming=timingBefore;r.meetingPlan=planBefore;r.memory=memoryBefore;return false;}
     if(r.proactive?.attempts.some(t=>t.status==='attempted'))activeChatRequests.get(r.id)?.abort();
     if(role()?.id===r.id)quotingMessage=null;
     // Accepted sends reveal the new bubble after the caller restores its draft/focus.
@@ -2025,7 +2026,7 @@ export function initElsewhereApp(): void {
 
   function deliverPending(r?:RoleData):boolean {
     if(!r?.pendingReplies?.length||!data.roles.includes(r))return false;
-    const before=r.pendingReplies,chats=r.chats.length,events=r.events.length,firstMessage=r.firstMessageState,planBefore=r.meetingPlan,privateBefore=r.personalThreads,proactiveBefore=r.proactive?structuredClone(r.proactive):undefined;
+    const before=r.pendingReplies,chats=r.chats.length,events=r.events.length,firstMessage=r.firstMessageState,planBefore=r.meetingPlan,privateBefore=r.personalThreads,memoryBefore=r.memory,proactiveBefore=r.proactive?structuredClone(r.proactive):undefined;
     const remaining=[];let changed=false;
     for(const job of before){
       const contact=job.proactiveId?r.proactive?.attempts.find(t=>t.id===job.proactiveId):undefined;
@@ -2045,8 +2046,8 @@ export function initElsewhereApp(): void {
       changed=true;
     }
     r.pendingReplies=remaining;
-    if(changed)r.meetingPlan=meetingPlan(r,now());
-    if(changed&&!save()){r.pendingReplies=before;r.chats.length=chats;r.events.length=events;r.firstMessageState=firstMessage;r.meetingPlan=planBefore;r.personalThreads=privateBefore;r.proactive=proactiveBefore;return false;}
+    if(changed){r.meetingPlan=meetingPlan(r,now());syncRoleMemory(r,now());}
+    if(changed&&!save()){r.pendingReplies=before;r.chats.length=chats;r.events.length=events;r.firstMessageState=firstMessage;r.meetingPlan=planBefore;r.personalThreads=privateBefore;r.memory=memoryBefore;r.proactive=proactiveBefore;return false;}
     if(changed&&!remaining.length)resumeLocalSceneReplies(r);
     return changed;
   }
@@ -6305,7 +6306,7 @@ export function initElsewhereApp(): void {
         targetMessageId: msgId,
         revisionId: res.revision?.id,
       });
-      if(scope==='chat'){revisePhoneSchedule(r);if(r.chats.find(m=>m.id===msgId)?.speaker==='me')enqueueChat(r,msgId,now());}
+      if(scope==='chat'){syncRoleMemory(r,now());revisePhoneSchedule(r);if(r.chats.find(m=>m.id===msgId)?.speaker==='me')enqueueChat(r,msgId,now());}
       save();
       render(false);
       notify('消息已修改，旧版本已归档并从正式上下文移除');

@@ -15,7 +15,9 @@ import {
   makeUid,
 } from './revisions';
 import { awaitingNainOpening, canUseRealModel } from './firstMessage';
+import {memoryExcerpt} from './contextBudget';
 import {collectRoleLife,personalContext,preparePersonalReply} from './roleLife';
+import {projectedUserFields,eventSourceValid,memorySnapshot,projectRoleMemory,relationshipContext,memoryMessageIndex,memoryRuleConflicts,compactRoleMemory,memoryFactText} from './memory';
 
 export function toLocalDateKey(ts: number): string {
   const d = new Date(ts);
@@ -316,8 +318,10 @@ export function collectDailyDiaryFacts(
   // 5. Legitimately known events on `dateKey`
   const validMessages=trustedLifeOnly?new Set(getActiveMessages([...(role.chats||[]),...allScenes.flatMap(s=>s?.messages||[]),...allPlays.flatMap(p=>[...(p?.messages||[]),...(p?.intermissionMessages||[])])]).filter(m=>m.at<=endMs).map(m=>m.id)):new Set<string>();
   const trustedLife=trustedLifeOnly?new Set(collectRoleLife(role,endMs).events.map(e=>e.id)):new Set<string>();
+  const messageIndex=trustedLifeOnly?memoryMessageIndex(role):undefined;
+  const rejected=trustedLifeOnly?projectRoleMemory(role,endMs).supersededSources:undefined;
   const permittedEventsOnDay = getRoleKnownEvents(role).filter(
-    e=>e.at>=startMs&&e.at<=endMs&&(!trustedLifeOnly||(!e.messageId||validMessages.has(e.messageId))&&(e.kind!=='life'||trustedLife.has(e.id)))
+    e=>e.at>=startMs&&e.at<=endMs&&(!trustedLifeOnly||eventSourceValid(role,e,endMs,messageIndex,rejected)&&(!e.messageId||validMessages.has(e.messageId))&&(e.kind!=='life'||trustedLife.has(e.id)))
   );
   const focusEvents = permittedEventsOnDay.filter((e) => e.kind === 'focus');
   const lifeRoutines = permittedEventsOnDay.filter((e) => e.kind === 'life');
@@ -403,16 +407,18 @@ export function buildCharacterDiaryPrompt(
   personal: ReturnType<typeof preparePersonalReply>['ticket'];
 } {
   const facts = collectDailyDiaryFacts(role, dateKey, true);
-  const userName = String(role.userAlias || user?.name || '你').trim() || '你';
+  const memory=compactRoleMemory(role,facts.endMs);
+  const projected=Object.fromEntries(projectedUserFields(user,role,facts.endMs,memory).map(f=>[f.key,f.conflicts.length?'':f.text]));
+  const userName = String(role.userAlias || projected.name || '你').trim() || '你';
 
   const userIdentityLines = [
-    user?.name ? `用户名：${user.name}` : '',
+    projected.name ? `用户名：${projected.name}` : '',
     role.userAlias ? `你在私下或当面对TA的惯用称呼：${role.userAlias}` : '',
     user?.pronouns ? `代词：${user.pronouns}` : '',
-    user?.identity ? `身份与性格：${user.identity}` : '',
-    user?.background ? `背景：${user.background}` : '',
-    user?.notes ? `补充说明：${user.notes}` : '',
-    role.notes ? `仅对你（${role.name}）生效的身份补充：${role.notes}` : '',
+    projected.identity ? `身份与性格：${projected.identity}` : '',
+    projected.background ? `背景：${projected.background}` : '',
+    projected.notes ? `补充说明：${projected.notes}` : '',
+    role.notes&&!memoryRuleConflicts('用户补充：'+role.notes,projectRoleMemory(role,facts.endMs).denied).length ? `仅对你（${role.name}）生效的身份补充：${role.notes}` : '',
   ]
     .filter(Boolean)
     .join('；');
@@ -484,14 +490,14 @@ export function buildCharacterDiaryPrompt(
     .join('\n');
 
   const routineSummary = facts.lifeRoutines
-    .slice(-8)
-    .map((e) => `[${formatHm(e.at)}] ${e.title}（${e.detail.slice(0,400)}）`)
+    .slice(-4)
+    .map((e) => `[生活记录 ${e.id} · ${formatHm(e.at)}] ${e.title}（${memoryExcerpt(e.detail,'',80)}）`)
     .join('；');
 
   const otherKnownEvents = facts.knownEvents
     .filter((e) => !['focus','chat','drama','diary_share'].includes(e.kind))
-    .slice(-12)
-    .map((e) => `[${formatHm(e.at)} | ${e.kind}] ${e.title}：${e.detail.slice(0,400)}`)
+    .slice(-4)
+    .map((e) => `[${formatHm(e.at)} | ${e.kind}] ${e.title}：${memoryExcerpt(e.detail,'',80)}`)
     .join('\n');
 
   const systemPrompt = `你正在扮演 ${role.name}，现在是当地时间深夜，你正在写一篇属于你自己的【私人日记】，归档日期为 ${facts.dateLabel}（${facts.dateKey}）。
@@ -503,7 +509,7 @@ export function buildCharacterDiaryPrompt(
 - 性格特征：${role.traits || '有自己的节奏与判断'}
 - 完整人设与过往经历：${role.profile || '按角色既有设定行动'}
 - 前史节点与未发生剧情边界（Canon）：${role.canonNotes || '严格遵守已发生事实，不预知未来'}
-- 你与用户（${userName}）的关系：${role.relationship || '熟悉但各自独立'}
+- 你与用户（${userName}）的关系：${relationshipContext(role,facts.endMs,memory) || '熟悉但各自独立'}
 - 用户身份背景：${userIdentityLines || '未特别披露'}${nainCanonGuard}
 
 【私人日记写作准则（极其重要）】
@@ -519,7 +525,9 @@ export function buildCharacterDiaryPrompt(
 5. 长度与笔触：由今天的内容和你的私人书写习惯决定。可以只记几句，也可以长写、分析或断续记事；不凑字数、不要求精致散文，也不用固定抒情结尾。
 6. 输出格式：直接输出日记正文（可在首行自然写上日期、时间或地点简记，如“${facts.shortLabel}，夜”），不要输出任何 Markdown 代码块标记、不要写“好的，这是日记”等前缀说明。`;
 
-  const continuity=personalContext(role,facts.endMs);
+  const providedEvents=new Set(facts.lifeRoutines.slice(-4).map(e=>e.id));
+  const stable=memory.facts.filter(f=>!(f.polarity==='affirm'&&(f.mutual&&relationshipContext(role,facts.endMs,memory)===f.value||f.attribute==='name'&&projected.name===f.value||(f.attribute==='self'||/^attribute:(?:身份|职业|工作)$/.test(f.attribute))&&projected.identity===f.value))).map(f=>memoryFactText(f,true)).join('\n');
+  const continuity=personalContext(role,facts.endMs,{excludeEvents:providedEvents})+'\n当前有效自述和关系记录：\n'+stable;
   const userPrompt = `归档日：${facts.dateLabel}（${facts.dateKey}）。从自己的角度选择值得记录的事。
 
 === 角色自身的生活与未解决关注 ===
@@ -542,7 +550,7 @@ ${playTranscript||'无'}
 ${sharedTasksText?`公开待办背景：${sharedTasksText.slice(0,500)}`:''}
 
 直接写下 ${facts.dateKey} 的私人日记。`;
-  const prepared=preparePersonalReply(role,[{role:'system',content:systemPrompt},{role:'user',content:userPrompt}],facts.endMs,makeUid('private-diary'),'本次只输出私人日记正文；可选元数据同次提供，不生成公开手机消息。',facts.chatMessages.slice(-12),'diary');
+  const prepared=preparePersonalReply(role,[{role:'system',content:systemPrompt},{role:'user',content:userPrompt}],facts.endMs,makeUid('private-diary'),'本次只输出私人日记正文；可选元数据同次提供，不生成公开手机消息。',facts.chatMessages.slice(-12),'diary',true);
   return {messages:prepared.messages,facts,personal:prepared.ticket};
 }
 
@@ -782,6 +790,7 @@ export function applyGeneratedCharacterDiary(
     id: makeUid('diary'),speaker:'char',dateKey,at:facts.endMs,generatedAt:nowTs,text,wordCount,source:'ai',
     sourceIds:[...facts.sourceEventIds,...facts.sourceMessageIds],sourceMessageIds:facts.sourceMessageIds,sourceEventIds:facts.sourceEventIds,factSummary:facts.summary,
     sourceMessageRevisions:Object.fromEntries([...facts.chatMessages,...facts.sceneBlocks.flatMap(b=>b.messages),...facts.playBlocks.flatMap(b=>[...b.messages,...b.intermissionMessages])].map(m=>[m.id,m.revisionCount||0])),
+    memoryState:memorySnapshot(role,facts.endMs),
   };
   role.diaries.push(diary);
 

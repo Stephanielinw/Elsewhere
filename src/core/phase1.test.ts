@@ -479,8 +479,8 @@ test('Daily AI Diary 1 & 2: midnight rollover (00:00) & multi-day offline backfi
   const tasks1 = syncRoleDiaryTasks(role, appData.settings, nowOct29Midnight);
   assert.equal(
     role.diaries.some((d) => d.source === 'life'),
-    false,
-    'Legacy fake life template diary must be stripped'
+    true,
+    'Legacy diary text must be preserved without becoming a trusted AI archive'
   );
   assert.equal(tasks1.length, 2);
   assert.equal(tasks1[0].dateKey, '2026-10-27');
@@ -694,7 +694,7 @@ test('Daily AI Diary 4, 5 & 8: zero-interaction day writes independent character
   assert.equal(hasCharacterDiaryForDate(shenXu, '2026-10-28'), true);
 });
 
-test('Track A 1 & 2: Monitor Daily Footprints consolidates chat sessions without per-line spam while preserving omniscient inner thoughts and verbatim transcripts', () => {
+test('Track A 1 & 2: Monitor preserves source transcripts without fabricating life facts or private thoughts', () => {
   const nain = makeMockRole('奈恩');
   const day28 = getLocalDayBounds('2026-10-28');
 
@@ -765,18 +765,18 @@ test('Track A 1 & 2: Monitor Daily Footprints consolidates chat sessions without
   const chatItems = recordAt16.items.filter((it) => it.category === 'interaction');
   assert.equal(chatItems.length, 1);
   assert.equal(chatItems[0].sourceMessageIds.length, 4);
-  assert.equal(chatItems[0].title.includes('线上联络'), true);
+  assert.equal(chatItems[0].id.startsWith('fp_chat_'), true);
   // Summary is third-person overview, NOT "奈恩说过……" / "你说过……" spam
   assert.equal(chatItems[0].summary.includes('奈恩说过'), false);
   assert.equal(chatItems[0].summary.includes('你说过'), false);
   // Omniscient inner thought and verbatim transcript are both preserved for expandable inspection
-  assert.equal(Boolean(chatItems[0].innerThought && chatItems[0].innerThought.thought.length > 10), true);
+  assert.equal(chatItems[0].innerThought, undefined);
   assert.equal((chatItems[0].rawTranscript || []).length, 4);
   assert.equal(chatItems[0].rawTranscript?.[0].text.includes('今天在密歇根的雪停了吗'), true);
 
   // Duplicate routine events with same title|where are deduplicated, and the 23:00 future event is hidden at 16:00
   const lifeItemsAt16 = recordAt16.items.filter((it) => it.category === 'life');
-  assert.equal(lifeItemsAt16.length, 1);
+  assert.equal(lifeItemsAt16.length, 0);
   assert.equal(recordAt16.items.some((it) => it.title.includes('深夜回家')), false);
 
   // At 23:30 on 2026-10-28, the 23:00 event becomes visible
@@ -785,7 +785,7 @@ test('Track A 1 & 2: Monitor Daily Footprints consolidates chat sessions without
     '2026-10-28',
     day28.startMs + 23.5 * 3600000
   );
-  assert.equal(recordAt2330.items.some((it) => it.title.includes('深夜回家')), true);
+  assert.equal(recordAt2330.items.some((it) => it.title.includes('深夜回家')), false, 'A past routine projection still needs source confirmation');
 });
 
 test('Track A 3, 4 & 5: Structured life artifacts strip XSS, enforce world/era rules, and share consistent facts with Daily AI Diary', () => {

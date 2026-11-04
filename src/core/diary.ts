@@ -644,7 +644,7 @@ export function listMissingDiaryDateKeys(
 
 /**
  * Synchronizes a character's daily diary generation tasks (`role.diaryTasks`).
- * - Strips any legacy `source === 'life'` template diaries.
+ * - Preserves legacy template diaries as untrusted archives.
  * - Detects missed past calendar days (including midnight `00:00` rollover and multi-day offline backfill).
  * - Deduplicates by `(role.id, dateKey)` so refreshing or switching views never creates duplicate tasks.
  * - Updates task status between `'pending'` and `'awaiting_api'` depending on whether a real API is configured.
@@ -660,7 +660,7 @@ export function syncRoleDiaryTasks(
   } = {}
 ): DiaryGenerationTask[] {
   if(awaitingNainOpening(role))return role.diaryTasks||[];
-  stripLegacyTemplateDiaries(role);
+
   if (!Array.isArray(role.diaryTasks)) {
     role.diaryTasks = [];
   }

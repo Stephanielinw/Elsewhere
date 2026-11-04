@@ -197,10 +197,7 @@ export function normalizeAndMigrateData(raw: unknown): AppData {
   for (const r of data.roles) {
     if (!Array.isArray(r.chats)) r.chats = [];
     if (!Array.isArray(r.diaries)) r.diaries = [];
-    // Remove legacy fixed-template diaries (source === 'life') so only real AI character diaries or user manual diaries remain
-    r.diaries = r.diaries.filter(
-      (d) => !(d && d.speaker === 'char' && d.source === 'life')
-    );
+    // Legacy diary text stays archived; trusted-life readers exclude source=life.
     if (!Array.isArray(r.events)) r.events = [];
     if (!Array.isArray(r.plays)) r.plays = [];
     if (!Array.isArray(r.messageRevisions)) r.messageRevisions = [];

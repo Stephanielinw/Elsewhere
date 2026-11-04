@@ -15,14 +15,22 @@ const ledgerVersion=(r:RoleData)=>version((r.personalThreads||[]).map(threadVers
 const profile=(r:RoleData)=>version([r.name,r.job,r.traits,r.place,r.profile,r.relationship,r.canonNotes,r.notes]);
 function messageRef(m:ChatMessage):PersonalSource{return {kind:'message',id:m.id,at:m.at,version:version([m.speaker,m.text,m.at,m.revisionCount||0,m.quote||null])};}
 function diaryRef(d:DiaryEntry):PersonalSource{return {kind:'diary',id:d.id,at:d.at,version:version([d.speaker,d.text,d.at,d.sourceMessageIds,d.sourceEventIds,d.sourceMessageRevisions,d.memoryState])};}
-function eventRef(e:EventRecord):PersonalSource{return {kind:'event',id:e.id,at:e.at,version:version([e.kind,e.title,e.detail,e.at,e.source,e.knownBy,e.messageId,e.lifeEvidence])};}
+function eventRef(e:EventRecord):PersonalSource{
+ const fields:unknown[]=[e.kind,e.title,e.detail,e.at,e.source,e.knownBy,e.messageId,e.lifeEvidence];
+ if(e.lifeRecord)fields.push(e.where,[e.lifeRecord.version,e.lifeRecord.roleId,e.lifeRecord.taskId,e.lifeRecord.origin,e.lifeRecord.action,e.lifeRecord.until,Array.isArray(e.lifeRecord.sources)?e.lifeRecord.sources.map(s=>s&&[s.kind,s.id,s.at]):null]);
+ return {kind:'event',id:e.id,at:e.at,version:version(fields)};
+}
 const allRealMessages=(r:RoleData)=>[...r.chats,...(r.scene?.messages||[]),...(r.meetings||[]).flatMap(s=>s.messages)];
 function referenceValid(r:RoleData,s:PersonalSource,at:number,seen=new Set<string>(),memory=compactRoleMemory(r,at)):boolean {
- if(!Number.isFinite(s.at)||s.at>at)return false;
+ if(!s||typeof s.version!=='string'||!Number.isFinite(s.at)||s.at>at)return false;
  if(s.kind==='profile')return s.id===r.id&&s.version===profile(r);
  if(s.kind==='message'){const m=getActiveMessages(allRealMessages(r)).find(m=>m.id===s.id&&m.speaker!=='note'&&m.at<=at);return Boolean(m&&messageRef(m).version===s.version&&!memory.supersededSources.has(m.id));}
  if(s.kind==='event'){
+  if(seen.has('event:'+s.id))return false;
   const e=getActiveEvents(r.events).find(e=>e.id===s.id&&e.at<=at&&e.knownBy?.includes(r.id)&&e.kind!=='drama'&&e.kind!=='diary');
+  const life=e?.lifeRecord,task=life&&Array.isArray(r.lifeTasks)?r.lifeTasks.find(t=>t.id===life.taskId):undefined;
+  if(!life&&e?.source?.startsWith('autonomous-life-v1:'))return false;
+  if(life&&(!e||life.version!==1||life.roleId!==r.id||life.origin!=='simulation'||!task||task.roleId!==r.id||task.status!=='completed'||!task.eventIds?.includes(e.id)||e.at<task.from||life.until>task.to||life.until>at||life.until<e.at||!Number.isFinite(life.until)||!Array.isArray(life.sources)||!life.sources.length||!life.sources.every(ref=>referenceValid(r,ref,at,new Set([...seen,'event:'+s.id]),memory))))return false;
   return Boolean(e&&eventRef(e).version===s.version&&eventSourceValid(r,e,at,memoryMessageIndex(r,allRealMessages(r)),memory.supersededSources)&&(e.kind!=='life'||e.lifeEvidence==='confirmed'&&e.source));
  }
  if(s.kind==='diary'){

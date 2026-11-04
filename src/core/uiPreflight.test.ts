@@ -47,18 +47,16 @@ test('ambiguous Nain histories are not auto-cleared; backup or main-write failur
   }
 });
 
-test('first-person monologues replace analytical AI/cache text without changing raw transcripts',()=>{
+test('monitor preserves old enrichment bytes and provenance without fabricated inner monologues',()=>{
   const role=makeNain(),at=Date.now(),day=toLocalDateKey(at);role.chats=[{id:'one',speaker:'me',text:'约翰刚才说什么？',at:at-1000}];
   const grounded=buildGroundedDailyFootprints(role,day,at),item=grounded.items.find(i=>i.category==='interaction')!;
-  assert.ok(item.innerThought?.thought.includes('我'));assert.ok(!item.innerThought?.thought.includes('关联片段'));assert.ok(item.innerThought!.thought.length<=90);
-  const transcript=structuredClone(item.rawTranscript),fallback=item.innerThought!.thought;
+  assert.equal(item.innerThought,undefined);const transcript=structuredClone(item.rawTranscript),fallback='';
   assert.equal(normalizeInnerMonologue(role,'他其实在意的是我是否认同他。',fallback),fallback);
   assert.equal(normalizeInnerMonologue(role,'我先听着……这句话得记住。',fallback),'我先听着……这句话得记住。');
-  const old=structuredClone(grounded);old.aiGeneratedAt=at;old.items[0].innerThought!.thought='奈恩其实在意的是我的态度。';role.footprintsByDate={[day]:old};
-  const shown=getOrBuildDailyFootprints(role,day,at);assert.ok(shown.items[0].innerThought?.thought.includes('我'));assert.ok(!shown.items[0].innerThought?.thought.includes('其实在意'));assert.deepEqual(shown.items[0].rawTranscript,transcript);
-  const enriched=applyAiDailyFootprints(role,day,JSON.stringify({enrichmentByIndex:[{index:0,innerThought:{surfaceState:'看着屏幕',mood:'平静',thought:'他其实是在分析我。'}}]}),at);
-  assert.ok(enriched.archive.items[0].innerThought?.thought.includes('我'));assert.ok(!enriched.archive.items[0].innerThought?.thought.includes('其实'));assert.deepEqual(enriched.archive.items[0].rawTranscript,transcript);
-  assert.ok(JSON.stringify(buildDailyFootprintsAiPrompt(role,defaults().user,day,at)).includes('第一人称'));
+  const old=structuredClone(grounded);old.aiGeneratedAt=at;old.items[0].innerThought={thought:'旧的分析文字',mood:'旧',surfaceState:'旧'};role.footprintsByDate={[day]:old};const before=JSON.stringify(role);
+  const shown=getOrBuildDailyFootprints(role,day,at);assert.equal(shown.items[0].innerThought,undefined);assert.deepEqual(shown.items[0].rawTranscript,transcript);
+  assert.equal(applyAiDailyFootprints(role,day,'{}',at).ok,false);
+  assert.throws(()=>buildDailyFootprintsAiPrompt(role,defaults().user,day,at),/停用/);assert.equal(JSON.stringify(role),before);
 });
 
 test('sticker gallery is empty by default and only reuses active user-uploaded media without changing histories',()=>{

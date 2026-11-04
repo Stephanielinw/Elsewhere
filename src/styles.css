@@ -2239,3 +2239,13 @@ html,body{overflow:hidden;background:var(--bg)}
   :root[data-theme]{--glass-fill:var(--surface)}
   .entry,.login-list,.landing-card,.fruit-dialog,.fruit-savebar,.chat-drawer,.home-topbar-glass{backdrop-filter:none;-webkit-backdrop-filter:none}
 }
+
+/* Life views read saved evidence; private thoughts have their own disclosure. */
+.monitor-life .footprint-card h3{margin:12px 0 8px}
+.monitor-life .life-narrative{line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}
+.monitor-life .life-provenance{margin-top:14px;border-top:1px solid var(--line);padding-top:10px;overflow-wrap:anywhere}
+.monitor-life details summary{cursor:pointer;color:var(--ink);font-weight:600}
+.monitor-life .life-private,.monitor-life .life-settings{margin-top:16px;overflow-wrap:anywhere}
+.monitor-life .fp-date-display{min-width:0}
+.monitor-life .fp-nav-btn{flex-shrink:0}
+@media(max-width:420px){.monitor-life .fp-date-bar{gap:6px}.monitor-life .fp-nav-btn{padding:8px;font-size:12px}.monitor-life .fp-date-display strong{font-size:14px}}

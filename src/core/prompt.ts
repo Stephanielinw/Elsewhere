@@ -42,7 +42,8 @@ export function routine(
     return {icon:'chat',where:r.scene.where,doing:'与对方当面交谈',label:'正在见面'};
   if (r.play && !r.play.endedAt && r.play.startedAt <= t)
     return {icon:'drama',where:'戏剧场景',doing:r.play.paused?'正在幕间讨论':'正在排演戏剧',label:r.play.paused?'幕间讨论':'戏剧演出'};
-  const observation = (r.events || []).filter(e =>
+  const life = r.id&&Array.isArray(r.chats)&&Array.isArray(r.diaries)&&Array.isArray(r.events)?collectRoleLife(r as RoleData,t).events:[];
+  const observation = life.filter(e =>
     e.kind === 'life' && e.at <= t && t - e.at <= 30 * 60000 &&
     e.status !== 'retracted' && e.status !== 'superseded' &&
     e.source && e.knownBy?.includes(r.id || '')
@@ -73,7 +74,8 @@ export function retrieve(
 ): EventRecord[] {
   const ks = keywords(query);
   const rejected=projectRoleMemory(r,nowTs).supersededSources,messageIndex=memoryMessageIndex(r);
-  const permittedEvents = getRoleKnownEvents(r).filter(e=>eventSourceValid(r,e,nowTs,messageIndex,rejected));
+  const trustedLife=new Set(collectRoleLife(r,nowTs).events.map(e=>e.id));
+  const permittedEvents = getRoleKnownEvents(r).filter(e=>(e.kind!=='life'||trustedLife.has(e.id))&&eventSourceValid(r,e,nowTs,messageIndex,rejected));
   return permittedEvents
     .map((e) => ({
       e,
@@ -167,14 +169,15 @@ export function buildNativeContext(
     const p = r.play!;
     base = `你正在参与一段独立、封闭的虚构戏剧。仅作为剧中角色行动，不知道剧外的手机、聊天、角色本人真实身份、用户真实身份、日记或其他生活记录。剧名：${p.title}。世界规则与开场：${p.world}。用户在剧内的身份：${p.user}。你在剧内的身份：${p.char}。推进场景、表现人物心理与自身动作，不代替用户做出选择。剧内角色之间的关系仅以剧本及本场对白为准。`;
   } else {
-    const a = routine({...r,events:r.events.filter(e=>e.kind!=='life'||e.lifeEvidence==='confirmed'&&eventSourceValid(memoryRole,e,nowTs,messageIndex,memory.supersededSources))}, nowTs);
+    const trustedLife=new Set(collectRoleLife(memoryRole,nowTs).events.map(e=>e.id));
+    const a = routine({...r,events:r.events.filter(e=>e.kind!=='life'||trustedLife.has(e.id))}, nowTs);
     const bridgedIds=new Set((kind==='scene'?r.scene?.messages||[]:[]).flatMap(m=>m.sourceMessageId?[m.sourceMessageId]:[]));
     const candidates=getRoleKnownEvents(r).filter(e=>{
       const message=e.messageId?shownPhoneSources.get(e.messageId):undefined;
       // Only omit a verbatim record of the same visible source; summaries and facts remain candidates.
       const duplicate=e.kind==='chat'&&message&&e.detail===message.text&&e.at===message.at&&(!e.speaker||e.speaker===message.speaker)&&(!e.source||e.source==='chat');
       if(kind==='chat'&&e.kind==='life')return false; // Read trusted life once through the shared private projection.
-      return eventSourceValid(memoryRole,e,nowTs,messageIndex,memory.supersededSources)&&!duplicate&&e.kind!=='drama'&&(e.kind!=='life'||Boolean(e.source&&e.knownBy?.includes(r.id)))&&e.at<=nowTs&&(!e.messageId||validIds.has(e.messageId)&&!bridgedIds.has(e.messageId));
+      return eventSourceValid(memoryRole,e,nowTs,messageIndex,memory.supersededSources)&&!duplicate&&e.kind!=='drama'&&(e.kind!=='life'||trustedLife.has(e.id))&&e.at<=nowTs&&(!e.messageId||validIds.has(e.messageId)&&!bridgedIds.has(e.messageId));
     });
     if(kind!=='chat')recalled=retrieve({...r,events:candidates},input,12,nowTs);
     if(kind==='chat'){

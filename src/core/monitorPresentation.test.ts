@@ -1,31 +1,15 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import {createRole,defaults} from './defaults';
-import {buildGroundedDailyFootprints} from './footprints';
-import {toLocalDateKey} from './diary';
-import {monitorItemsForDisplay,newestMonitorFirst} from './monitorPresentation';
-
-test('monitor chat descriptions use the saved username and active evidence, without location or invented actions',()=>{
- const role=createRole('合成角色','','职业','自然','美国密歇根州'),user={...defaults().user,name:'当前姓名'},now=Date.now();role.chats=[{id:'u',speaker:'me',text:'那封信寄到哪里去？🙂',at:now-2000},{id:'c',speaker:'char',text:'我还没寄出。',at:now-1000}];role.events=[];role.userAlias='旧称呼';
- const archive=buildGroundedDailyFootprints(role,toLocalDateKey(now),now),before=JSON.stringify({role,archive});
- const shown=monitorItemsForDisplay(role,user,archive.items,now)[0];assert.ok(shown.summary.includes('与当前姓名线上联络'));assert.ok(shown.summary.includes('信件'));assert.ok(!shown.summary.includes('密歇根'));assert.ok(!shown.summary.includes('那封信寄到哪里去'));assert.equal(shown.innerThought?.surfaceState,shown.summary);assert.deepEqual(shown.rawTranscript,archive.items[0].rawTranscript);assert.equal(JSON.stringify({role,archive}),before);
- role.chats.forEach(m=>m.status='retracted');assert.equal(monitorItemsForDisplay(role,user,archive.items,now)[0].summary,'暂无可确认的活动记录');
+import test from 'node:test';import assert from 'node:assert/strict';import {createRole,defaults} from './defaults';import {buildGroundedDailyFootprints} from './footprints';import {toLocalDateKey} from './diary';import {monitorItemsForDisplay,newestMonitorFirst} from './monitorPresentation';
+test('monitor prioritizes confirmed own life, not phone statistics or invented private thoughts',()=>{
+ const r=createRole('合成角色','','守档者','自然','古城'),now=Date.now(),user=defaults().user;r.chats=[{id:'u',speaker:'me',text:'在吗',at:now-2000},{id:'c',speaker:'char',text:'嗯',at:now-1000}];r.events=[{id:'own',kind:'life',title:'整理',detail:'整理手头的笔记。',source:'manual',lifeEvidence:'confirmed',knownBy:[r.id],at:now-500}];const a=buildGroundedDailyFootprints(r,toLocalDateKey(now),now),before=JSON.stringify(r);const shown=monitorItemsForDisplay(r,user,a.items,now);assert.equal(shown.length,1);assert.equal(shown[0].summary,r.events[0].detail);assert.equal(shown[0].confirmed,true);assert.equal(shown[0].innerThought,undefined);assert.equal(JSON.stringify(r),before);
+ r.events[0].status='retracted';assert.equal(monitorItemsForDisplay(r,user,a.items,now).length,0);
 });
-test('monitor ignores future/private sources and unconfirmed routine projections even in cached AI cards',()=>{
- const role=createRole('合成角色','','职业','自然','地点'),user=defaults().user,now=Date.now();role.chats=[];role.events=[{id:'projection',kind:'life',title:'吃饭',detail:'正在国外吃饭',at:now-1000},{id:'secret',kind:'focus',title:'私密',detail:'私密',at:now-500,knownBy:['another-role']},{id:'future',kind:'focus',title:'未来',detail:'未来',at:now+10000}];
- const item=buildGroundedDailyFootprints(role,toLocalDateKey(now),now).items[0];assert.ok(item);item.summary='AI 声称已经出门消费';item.innerThought!.surfaceState='凭空编造的动作';
- for(const ids of [['projection'],['secret'],['future']]){const shown=monitorItemsForDisplay(role,user,[{...item,sourceEventIds:ids}],now)[0];assert.equal(shown.confirmed,false);assert.equal(shown.summary,'暂无可确认的活动记录');}
+test('monitor rejects cached invented summaries, future/private sources, and unconfirmed routine projections',()=>{
+ const r=createRole('合成角色','','职业','自然','地点'),user=defaults().user,now=Date.now();r.chats=[];r.events=[{id:'projection',kind:'life',title:'吃饭',detail:'推测',at:now-1000},{id:'secret',kind:'life',title:'私密',detail:'独有观察',lifeEvidence:'confirmed',source:'manual',at:now-500,knownBy:['another-role']},{id:'future',kind:'life',title:'未来',detail:'未发生',lifeEvidence:'confirmed',source:'manual',knownBy:[r.id],at:now+10000}];
+ for(const id of ['projection','secret','future'])assert.equal(monitorItemsForDisplay(r,user,[{id:'cache',dateKey:toLocalDateKey(now),timestamp:now-1,title:'旧缓存',summary:'AI声称消费',category:'life',icon:'clock',timeLabel:'旧',sourceEventIds:[id],sourceMessageIds:[],origin:'ai_enriched'}],now).length,0);
 });
-test('monitor newest-first sorting uses numeric timestamps and stable ID ties without mutating archives or transcripts',()=>{
- const rows=[{id:'b',timestamp:20},{id:'old',timestamp:3},{id:'a',timestamp:20}];const before=JSON.stringify(rows);assert.deepEqual(newestMonitorFirst(rows).map(x=>x.id),['a','b','old']);assert.equal(JSON.stringify(rows),before);
- assert.deepEqual(newestMonitorFirst([{id:'old',at:9},{id:'new',at:100}]).map(x=>x.id),['new','old']);
+test('monitor newest-first sorting uses numeric timestamps and stable ID ties without mutating archives',()=>{
+ const rows=[{id:'b',timestamp:20},{id:'old',timestamp:3},{id:'a',timestamp:20}],before=JSON.stringify(rows);assert.deepEqual(newestMonitorFirst(rows).map(x=>x.id),['a','b','old']);assert.equal(JSON.stringify(rows),before);assert.deepEqual(newestMonitorFirst([{id:'old',at:9},{id:'new',at:100}]).map(x=>x.id),['new','old']);
 });
-test('edited messages remain usable while superseded event copies and private sources do not become evidence',()=>{
- const role=createRole('合成角色','','职业','自然','地点'),user={...defaults().user,name:'新姓名'},now=Date.now();
- role.chats=[{id:'u',speaker:'me',text:'我相信明天会更好。',at:now-2000},{id:'c',speaker:'char',text:'嗯，我也是。',at:now-1000}];
- role.events=[{id:'old',kind:'chat',title:'旧版',detail:'旧版',at:now-2000,messageId:'u',status:'superseded',knownBy:[role.id]},{id:'new',kind:'chat',title:'新版',detail:role.chats[0].text,at:now-2000,messageId:'u',knownBy:[role.id]}];
- const archive=buildGroundedDailyFootprints(role,toLocalDateKey(now),now),shown=monitorItemsForDisplay(role,user,archive.items,now)[0];
- assert.equal(shown.summary,'与新姓名线上联络。');assert.equal(shown.confirmed,true);
- role.events.push({id:'private',kind:'chat',title:'无权',detail:'无权',at:now-1000,messageId:'c',knownBy:['other']});
- assert.equal(monitorItemsForDisplay(role,user,archive.items,now)[0].summary,'收到新姓名发来的线上消息。');
+test('edits preserve the current source index but do not resurrect superseded records or cached card text',()=>{
+ const r=createRole('合成角色','','职业','自然','地点'),now=Date.now();r.chats=[{id:'u',speaker:'me',text:'当前有效文字',revisionCount:1,at:now-2000}];r.events=[{id:'old',kind:'chat',title:'旧',detail:'旧',at:now-2000,messageId:'u',status:'superseded'}];const a=buildGroundedDailyFootprints(r,toLocalDateKey(now),now);assert.ok(a.items[0].rawTranscript?.[0].text.includes('当前有效文字'));assert.equal(monitorItemsForDisplay(r,defaults().user,a.items,now).length,0);
 });

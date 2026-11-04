@@ -2250,6 +2250,16 @@ html,body{overflow:hidden;background:var(--bg)}
   .entry,.login-list,.landing-card,.fruit-dialog,.fruit-savebar,.chat-drawer,.home-topbar-glass{backdrop-filter:none;-webkit-backdrop-filter:none}
 }
 
+/* Life views read saved evidence; private thoughts have their own disclosure. */
+.monitor-life .footprint-card h3{margin:12px 0 8px}
+.monitor-life .life-narrative{line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}
+.monitor-life .life-provenance{margin-top:14px;border-top:1px solid var(--line);padding-top:10px;overflow-wrap:anywhere}
+.monitor-life details summary{cursor:pointer;color:var(--ink);font-weight:600}
+.monitor-life .life-private,.monitor-life .life-settings{margin-top:16px;overflow-wrap:anywhere}
+.monitor-life .fp-date-display{min-width:0}
+.monitor-life .fp-nav-btn{flex-shrink:0}
+@media(max-width:420px){.monitor-life .fp-date-bar{gap:6px}.monitor-life .fp-nav-btn{padding:8px;font-size:12px}.monitor-life .fp-date-display strong{font-size:14px}}
+
 </style>
 <script id="theme-boot">
       // Restore only the theme before first paint; application data stays untouched.
@@ -6515,6 +6525,8 @@ html,body{overflow:hidden;background:var(--bg)}
         detail: newText,
         messageId: msg.id,
         sourceRevision: (msg.revisionCount || 0) + 1,
+        // Editing the source is not confirmation that a derived life activity happened.
+        ...ev.kind === "life" ? { lifeEvidence: void 0, lifeRecord: void 0 } : {},
         status: "active"
       });
     }
@@ -6821,18 +6833,24 @@ ${msg.text}`;
     return { kind: "diary", id: d.id, at: d.at, version: version([d.speaker, d.text, d.at, d.sourceMessageIds, d.sourceEventIds, d.sourceMessageRevisions, d.memoryState]) };
   }
   function eventRef(e) {
-    return { kind: "event", id: e.id, at: e.at, version: version([e.kind, e.title, e.detail, e.at, e.source, e.knownBy, e.messageId, e.lifeEvidence]) };
+    const fields = [e.kind, e.title, e.detail, e.at, e.source, e.knownBy, e.messageId, e.lifeEvidence];
+    if (e.lifeRecord) fields.push(e.where, [e.lifeRecord.version, e.lifeRecord.roleId, e.lifeRecord.taskId, e.lifeRecord.origin, e.lifeRecord.action, e.lifeRecord.until, Array.isArray(e.lifeRecord.sources) ? e.lifeRecord.sources.map((s) => s && [s.kind, s.id, s.at]) : null]);
+    return { kind: "event", id: e.id, at: e.at, version: version(fields) };
   }
   var allRealMessages = (r) => [...r.chats, ...r.scene?.messages || [], ...(r.meetings || []).flatMap((s) => s.messages)];
   function referenceValid(r, s, at, seen = /* @__PURE__ */ new Set(), memory = compactRoleMemory(r, at)) {
-    if (!Number.isFinite(s.at) || s.at > at) return false;
+    if (!s || typeof s.version !== "string" || !Number.isFinite(s.at) || s.at > at) return false;
     if (s.kind === "profile") return s.id === r.id && s.version === profile(r);
     if (s.kind === "message") {
       const m = getActiveMessages(allRealMessages(r)).find((m2) => m2.id === s.id && m2.speaker !== "note" && m2.at <= at);
       return Boolean(m && messageRef(m).version === s.version && !memory.supersededSources.has(m.id));
     }
     if (s.kind === "event") {
+      if (seen.has("event:" + s.id)) return false;
       const e = getActiveEvents(r.events).find((e2) => e2.id === s.id && e2.at <= at && e2.knownBy?.includes(r.id) && e2.kind !== "drama" && e2.kind !== "diary");
+      const life = e?.lifeRecord, task = life && Array.isArray(r.lifeTasks) ? r.lifeTasks.find((t2) => t2.id === life.taskId) : void 0;
+      if (!life && e?.source?.startsWith("autonomous-life-v1:")) return false;
+      if (life && (!e || life.version !== 1 || life.roleId !== r.id || life.origin !== "simulation" || !task || task.roleId !== r.id || task.status !== "completed" || !task.eventIds?.includes(e.id) || e.at < task.from || life.until > task.to || life.until > at || life.until < e.at || !Number.isFinite(life.until) || !Array.isArray(life.sources) || !life.sources.length || !life.sources.every((ref) => referenceValid(r, ref, at, /* @__PURE__ */ new Set([...seen, "event:" + s.id]), memory)))) return false;
       return Boolean(e && eventRef(e).version === s.version && eventSourceValid(r, e, at, memoryMessageIndex(r, allRealMessages(r)), memory.supersededSources) && (e.kind !== "life" || e.lifeEvidence === "confirmed" && e.source));
     }
     if (s.kind === "diary") {
@@ -6978,17 +6996,17 @@ ${msg.text}`;
     const d = new Date(ts);
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day2 = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day2}`;
+    const day3 = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day3}`;
   }
   function parseDateKeyParts(dateKey) {
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateKey || "").trim());
     if (!m) return null;
     const year = Number(m[1]);
     const month = Number(m[2]);
-    const day2 = Number(m[3]);
-    if (!year || month < 1 || month > 12 || day2 < 1 || day2 > 31) return null;
-    return { year, month, day: day2 };
+    const day3 = Number(m[3]);
+    if (!year || month < 1 || month > 12 || day3 < 1 || day3 > 31) return null;
+    return { year, month, day: day3 };
   }
   function getLocalDayBounds(dateKey) {
     const parts = parseDateKeyParts(dateKey);
@@ -6997,16 +7015,16 @@ ${msg.text}`;
       const fallbackKey = toLocalDateKey(fallbackNow.getTime());
       return getLocalDayBounds(fallbackKey);
     }
-    const { year, month, day: day2 } = parts;
-    const startDate = new Date(year, month - 1, day2, 0, 0, 0, 0);
-    const endDate = new Date(year, month - 1, day2, 23, 59, 59, 999);
+    const { year, month, day: day3 } = parts;
+    const startDate = new Date(year, month - 1, day3, 0, 0, 0, 0);
+    const endDate = new Date(year, month - 1, day3, 23, 59, 59, 999);
     const weekdays = ["\u661F\u671F\u65E5", "\u661F\u671F\u4E00", "\u661F\u671F\u4E8C", "\u661F\u671F\u4E09", "\u661F\u671F\u56DB", "\u661F\u671F\u4E94", "\u661F\u671F\u516D"];
     const weekday = weekdays[startDate.getDay()] || "";
     return {
       startMs: startDate.getTime(),
       endMs: endDate.getTime(),
-      label: `${year}\u5E74${month}\u6708${day2}\u65E5 \xB7 ${weekday}`,
-      shortLabel: `${month}\u6708${day2}\u65E5`
+      label: `${year}\u5E74${month}\u6708${day3}\u65E5 \xB7 ${weekday}`,
+      shortLabel: `${month}\u6708${day3}\u65E5`
     };
   }
   function shiftDateKey(dateKey, deltaDays) {
@@ -7017,17 +7035,6 @@ ${msg.text}`;
   }
   function countDiaryChars(text2) {
     return Array.from(String(text2 || "").replace(/\s+/g, "")).length;
-  }
-  function stripLegacyTemplateDiaries(role) {
-    if (!Array.isArray(role.diaries)) {
-      role.diaries = [];
-      return 0;
-    }
-    const before = role.diaries.length;
-    role.diaries = role.diaries.filter(
-      (d) => !(d && d.speaker === "char" && d.source === "life")
-    );
-    return before - role.diaries.length;
   }
   function createUserDiary(role, textRaw, nowTs = Date.now()) {
     const text2 = String(textRaw ?? "").trim();
@@ -7396,7 +7403,6 @@ ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText
   }
   function syncRoleDiaryTasks(role, settings, nowTs = Date.now(), options = {}) {
     if (awaitingNainOpening(role)) return role.diaryTasks || [];
-    stripLegacyTemplateDiaries(role);
     if (!Array.isArray(role.diaryTasks)) {
       role.diaryTasks = [];
     }
@@ -7568,33 +7574,6 @@ ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText
       })[m] || m
     );
   }
-  function stripHtmlTags(raw) {
-    return String(raw ?? "").replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?>[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, "").trim();
-  }
-  function detectRoleWorldProfile(role) {
-    const haystack = [
-      role.name,
-      role.job,
-      role.place,
-      role.traits,
-      role.profile,
-      role.canonNotes
-    ].filter(Boolean).join(" ");
-    if (/古希腊|雅典|斯巴达|奥林匹斯|神庙|城邦|古罗马|中世纪|骑士|魔法学院|精灵|剑与魔法/i.test(
-      haystack
-    )) {
-      return "ancient_west";
-    }
-    if (/美国|密歇根|纽约|伦敦|英国|警探|间谍|Nain|奈恩|John|约翰|Michigan|New York/i.test(
-      haystack
-    )) {
-      return "modern_us";
-    }
-    if (/古籍修复|苏州|茶室|宣纸|线装|碑帖|沈叙|江南|古琴|水墨|古典/i.test(haystack)) {
-      return "classical_cn";
-    }
-    return "modern_cn";
-  }
   function formatNaturalTimeLabel(ts, preferFuzzy = false) {
     const d = new Date(ts);
     const h = d.getHours();
@@ -7605,686 +7584,37 @@ ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText
     }
     return `${period} ${String(h).padStart(2, "0")}:${m}`;
   }
-  var VALID_ARTIFACT_TYPES = [
-    "receipt",
-    "ticket",
-    "memo",
-    "list",
-    "letter",
-    "dossier"
-  ];
-  var VALID_PAPER_STYLES = [
-    "thermal",
-    "ticket",
-    "sticky",
-    "parchment",
-    "dossier",
-    "craft"
-  ];
-  function validateAndSanitizeArtifact(raw, role) {
-    if (!raw || typeof raw !== "object") return null;
-    const obj = raw;
-    const world = detectRoleWorldProfile(role);
-    const rawKind = stripHtmlTags(obj.kind).toLowerCase();
-    let kind = VALID_ARTIFACT_TYPES.includes(rawKind) ? rawKind : "memo";
-    const rawPaper = stripHtmlTags(obj.paperStyle).toLowerCase();
-    let paperStyle = VALID_PAPER_STYLES.includes(rawPaper) ? rawPaper : kind === "receipt" ? "thermal" : kind === "ticket" ? "ticket" : kind === "dossier" ? "dossier" : kind === "list" ? "craft" : world === "classical_cn" || world === "ancient_west" ? "parchment" : "sticky";
-    const header = stripHtmlTags(obj.header).slice(0, 80);
-    if (!header) return null;
-    const subheader = stripHtmlTags(obj.subheader).slice(0, 100) || void 0;
-    const serialNo = stripHtmlTags(obj.serialNo).slice(0, 40) || void 0;
-    const timeLabel = stripHtmlTags(obj.timeLabel).slice(0, 40) || void 0;
-    const bodyText = stripHtmlTags(obj.bodyText).slice(0, 400) || void 0;
-    const footerNote = stripHtmlTags(obj.footerNote).slice(0, 140) || void 0;
-    let totalLabel = stripHtmlTags(obj.totalLabel).slice(0, 30) || void 0;
-    let totalAmount = stripHtmlTags(obj.totalAmount).slice(0, 30) || void 0;
-    let currency = stripHtmlTags(obj.currency).slice(0, 8) || void 0;
-    if (world === "ancient_west") {
-      const combinedText = `${header} ${subheader || ""} ${bodyText || ""} ${totalAmount || ""}`;
-      if (/电影票|超市|收银|POS|扫码|支付宝|微信|美元|\$|¥|RMB|USD|卡布奇诺|拿铁/i.test(combinedText)) {
-        return null;
-      }
-      if (kind === "receipt" || kind === "ticket" || paperStyle === "thermal") {
-        kind = "memo";
-        paperStyle = "parchment";
-        totalLabel = void 0;
-        totalAmount = void 0;
-        currency = void 0;
-      }
-    }
-    if (world === "modern_us" && currency === "\xA5") {
-      currency = "$";
-    } else if (world === "modern_cn" && currency === "$") {
-      currency = "\xA5";
-    }
-    const rawItems = Array.isArray(obj.items) ? obj.items : [];
-    const items = rawItems.slice(0, 8).map((it) => {
-      if (!it || typeof it !== "object") return null;
-      const rec = it;
-      const name = stripHtmlTags(rec.name).slice(0, 60);
-      if (!name) return null;
-      const item = { name };
-      const qty = stripHtmlTags(rec.qty).slice(0, 16);
-      if (qty) item.qty = qty;
-      const price = stripHtmlTags(rec.price).slice(0, 24);
-      if (price && world !== "ancient_west") item.price = price;
-      if (typeof rec.checked === "boolean") item.checked = rec.checked;
-      const note = stripHtmlTags(rec.note).slice(0, 60);
-      if (note) item.note = note;
-      return item;
-    }).filter((it) => it !== null);
-    if (!items.length && !bodyText) {
-      return null;
-    }
-    return {
-      kind,
-      paperStyle,
-      header,
-      subheader,
-      serialNo,
-      timeLabel,
-      items: items.length ? items : void 0,
-      totalLabel,
-      totalAmount,
-      currency,
-      bodyText,
-      footerNote,
-      groundedInEventIds: Array.isArray(obj.groundedInEventIds) ? obj.groundedInEventIds.map((id) => stripHtmlTags(id)).filter(Boolean) : void 0
-    };
-  }
-  function renderSafeFootprintArtifact(artifact) {
-    const kindClass = `fp-artifact-${escHtml(artifact.kind)}`;
-    const paperClass = `fp-paper-${escHtml(artifact.paperStyle)}`;
-    const kindBadgeMap = {
-      receipt: "\u5355\u636E\u5B58\u6839",
-      ticket: "\u7968\u6839\u7559\u5B58",
-      memo: "\u968F\u624B\u4FBF\u7B7E",
-      list: "\u624B\u5199\u6E05\u5355",
-      letter: "\u77ED\u7B3A\u6458\u5F55",
-      dossier: "\u6848\u5934\u8BB0\u5F55"
-    };
-    const badgeText = kindBadgeMap[artifact.kind] || "\u751F\u6D3B\u7269\u4EF6";
-    const itemsHtml = artifact.items && artifact.items.length ? `<div class="fp-artifact-items">
-          ${artifact.items.map((it) => {
-      const checkMark = typeof it.checked === "boolean" ? `<span class="fp-item-check">${uiIcon(it.checked ? "checked" : "square")}</span>` : "";
-      const qtyPart = it.qty ? `<span class="fp-item-qty">${escHtml(it.qty)}</span>` : "";
-      const pricePart = it.price ? `<span class="fp-item-price">${escHtml(it.price)}</span>` : "";
-      const notePart = it.note ? `<div class="fp-item-note">${escHtml(it.note)}</div>` : "";
-      return `<div class="fp-artifact-row">
-                <div class="fp-artifact-row-main">
-                  <span class="fp-item-name">${checkMark}${escHtml(it.name)}</span>
-                  <span class="fp-item-meta">${qtyPart}${pricePart}</span>
-                </div>
-                ${notePart}
-              </div>`;
-    }).join("")}
-        </div>` : "";
-    const bodyHtml = artifact.bodyText ? `<div class="fp-artifact-body">${escHtml(artifact.bodyText).replace(/\n/g, "<br>")}</div>` : "";
-    const totalHtml = artifact.totalAmount || artifact.totalLabel ? `<div class="fp-artifact-total">
-          <span>${escHtml(artifact.totalLabel || "TOTAL")}</span>
-          <strong>${escHtml(artifact.currency || "")}${escHtml(artifact.totalAmount || "")}</strong>
-        </div>` : "";
-    const footerHtml = artifact.footerNote ? `<div class="fp-artifact-footer">${escHtml(artifact.footerNote)}</div>` : "";
-    return `<div class="fp-artifact-card ${kindClass} ${paperClass}" data-artifact-kind="${escHtml(artifact.kind)}" data-paper-style="${escHtml(artifact.paperStyle)}">
-    <div class="fp-artifact-top">
-      <div class="fp-artifact-heading">
-        <span class="fp-artifact-badge">${escHtml(badgeText)}</span>
-        <strong class="fp-artifact-title">${escHtml(artifact.header)}</strong>
-      </div>
-      ${artifact.serialNo ? `<span class="fp-artifact-serial">${escHtml(artifact.serialNo)}</span>` : ""}
-    </div>
-    ${artifact.subheader || artifact.timeLabel ? `<div class="fp-artifact-sub">${escHtml(artifact.subheader || "")}${artifact.subheader && artifact.timeLabel ? " \xB7 " : ""}${escHtml(artifact.timeLabel || "")}</div>` : ""}
-    <div class="fp-artifact-divider"></div>
-    ${itemsHtml}
-    ${bodyHtml}
-    ${totalHtml}
-    ${footerHtml}
-  </div>`;
-  }
-  function buildGroundedArtifactForChat(role, messages, clusterTimeLabel) {
-    const world = detectRoleWorldProfile(role);
-    const combined = messages.map((m) => m.text).join("\n");
-    if (world === "ancient_west") {
-      if (messages.length >= 2) {
-        return validateAndSanitizeArtifact(
-          {
-            kind: "memo",
-            paperStyle: "parchment",
-            header: `${role.name}\u7684\u7F8A\u76AE\u7EB8\u8BB0\u4E8B`,
-            subheader: role.place || "\u57CE\u90A6\u8BB0\u4E8B",
-            timeLabel: clusterTimeLabel,
-            bodyText: `\u8BB0\u5F55\u4ECA\u65E5\u4E0E\u4F60\u4EA4\u8C08\u7684\u8981\u4E8B\uFF1A${messages[messages.length - 1].text.slice(0, 56)}`,
-            footerNote: "\u706B\u6F06\u5C01\u5B58 \xB7 \u79C1\u4EBA\u5907\u5FD8"
-          },
-          role
-        );
-      }
-      return null;
-    }
-    if (/骰子|写信|寄到哪里|红棕色夹克|卡布奇诺|妈咪/.test(combined) && world === "modern_us") {
-      return validateAndSanitizeArtifact(
-        {
-          kind: "dossier",
-          paperStyle: "dossier",
-          header: "FIELD NOTE \xB7 \u968F\u8EAB\u5939\u9875\u4FBF\u7B7E",
-          subheader: "Michigan \xB7 \u4E2A\u4EBA\u53E3\u888B\u5907\u5FD8",
-          serialNo: "MEMO-D6",
-          timeLabel: clusterTimeLabel,
-          items: [
-            { name: "\u7EA2\u8272\u4E9A\u514B\u529B\u516D\u9762\u9AB0\uFF081\u679A\uFF09", checked: true, note: "\u5DF2\u6536\u8FDB\u5939\u514B\u5185\u888B" },
-            { name: "\u5F85\u786E\u8BA4\u56DE\u4FE1\u6295\u9012\u5730\u5740", checked: false, note: "\u5BF9\u65B9\u4ECD\u672A\u900F\u9732\u5BC4\u4FE1\u53BB\u5411" }
-          ],
-          footerNote: "\u5B57\u8FF9\u51B7\u9759\u514B\u5236\uFF0C\u9875\u89D2\u753B\u4E86\u4E00\u679A\u5C0F\u5C0F\u7684\u516D\u9762\u9AB0\u8F6E\u5ED3\u3002"
-        },
-        role
-      );
-    }
-    if (/咖啡|卡布奇诺|美式|拿铁|浓缩|茶室|茶馆|热茶|三明治|午饭|晚餐|甜点/.test(combined)) {
-      if (world === "modern_us") {
-        return validateAndSanitizeArtifact(
-          {
-            kind: "receipt",
-            paperStyle: "thermal",
-            header: "LAKEVIEW DINER & COFFEE",
-            subheader: "Michigan \xB7 Counter Service",
-            serialNo: "#CHK-204",
-            timeLabel: clusterTimeLabel,
-            items: [
-              { name: "Hot Cappuccino (Regular)", qty: "x1", price: "$4.75" },
-              { name: "Rye Toast & Drip Refill", qty: "x1", price: "$3.50" }
-            ],
-            totalLabel: "PAID (CASH)",
-            currency: "$",
-            totalAmount: "8.25",
-            footerNote: "\u80CC\u9762\u7528\u94A2\u7B14\u5199\u7740\uFF1A\u7559\u4F5C\u4ECA\u65E5\u8054\u7EDC\u65F6\u7684\u684C\u9762\u4E66\u7B7E\u3002"
-          },
-          role
-        );
-      }
-      if (world === "classical_cn") {
-        return validateAndSanitizeArtifact(
-          {
-            kind: "memo",
-            paperStyle: "parchment",
-            header: "\u8336\u5BEE\u96C5\u5EA7 \xB7 \u7AF9\u7B3A\u5C0F\u8BB0",
-            subheader: role.place || "\u65E7\u57CE\u8336\u5BA4",
-            timeLabel: clusterTimeLabel,
-            items: [
-              { name: "\u6625\u6BEB\u6E05\u8336\u4E00\u76CF", qty: "\u58F9\u4EFD", note: "\u4E34\u7A97\u6728\u6848" },
-              { name: "\u82CF\u5F0F\u8336\u70B9\u4E00\u789F", qty: "\u58F9\u4EFD" }
-            ],
-            footerNote: "\u8336\u6C34\u5FAE\u6E29\u65F6\u4E0E\u4F60\u95F2\u8C08\u7247\u523B\uFF0C\u7EB8\u89D2\u6CBE\u7740\u6DE1\u6DE1\u58A8\u9999\u3002"
-          },
-          role
-        );
-      }
-      return validateAndSanitizeArtifact(
-        {
-          kind: "receipt",
-          paperStyle: "thermal",
-          header: `${role.place || "\u8857\u89D2"} \xB7 \u5496\u5561\u5C0F\u7968`,
-          subheader: "\u5802\u98DF\u5355\u636E",
-          serialNo: "#NO-108",
-          timeLabel: clusterTimeLabel,
-          items: [{ name: "\u624B\u51B2\u70ED\u996E / \u7B80\u9910", qty: "x1", price: "\xA528.00" }],
-          totalLabel: "\u5408\u8BA1",
-          currency: "\xA5",
-          totalAmount: "28.00",
-          footerNote: "\u804A\u5929\u7684\u95F4\u9699\u987A\u624B\u6298\u597D\u5939\u8FDB\u4E86\u968F\u8EAB\u672C\u5B50\u91CC\u3002"
-        },
-        role
-      );
-    }
-    if (/电影|盗梦空间|影院|放映|剧场|演出|票/.test(combined)) {
-      return validateAndSanitizeArtifact(
-        {
-          kind: "ticket",
-          paperStyle: "ticket",
-          header: world === "modern_us" ? "STATE THEATRE \xB7 \u665A\u573A\u5F71\u7968\u5B58\u6839" : "\u827A\u672F\u5F71\u9662 \xB7 \u653E\u6620\u7968\u6839",
-          subheader: /盗梦空间/.test(combined) ? "INCEPTION (35mm Re-run)" : "\u4ECA\u65E5\u573A\u6B21\u7559\u5B58",
-          serialNo: "ROW G \xB7 SEAT 11",
-          timeLabel: clusterTimeLabel,
-          items: [
-            {
-              name: /盗梦空间/.test(combined) ? "\u300A\u76D7\u68A6\u7A7A\u95F4\u300B\u91CD\u6620\u573A" : "\u7535\u5F71\u653E\u6620\u573A\u6B21",
-              qty: "ADMIT ONE",
-              price: world === "modern_us" ? "$11.50" : "\xA545.00"
-            }
-          ],
-          footerNote: "\u526F\u5238\u6CBF\u9F7F\u5B54\u6574\u9F50\u6495\u4E0B\uFF0C\u7968\u9762\u4FDD\u5B58\u5F97\u5F88\u5E73\u6574\u3002"
-        },
-        role
-      );
-    }
-    if (/古籍|修复|书页|浆糊|宣纸|线装|装帧/.test(combined) || world === "classical_cn") {
-      return validateAndSanitizeArtifact(
-        {
-          kind: "list",
-          paperStyle: "parchment",
-          header: `${role.name}\u7684\u6848\u5934\u4FEE\u4E66\u7B3A`,
-          subheader: `${role.place || "\u4FEE\u590D\u5BA4"} \xB7 \u624B\u5199\u5DE5\u5E8F\u5355`,
-          timeLabel: clusterTimeLabel,
-          items: [
-            { name: "\u914D\u7EB8\u67D3\u65E7 \xB7 \u6BD4\u5BF9\u7EB8\u7EA4\u7EF4\u7EB9\u7406", checked: true },
-            { name: "\u6E05\u7406\u4E66\u53F6\u6298\u89D2\u4E0E\u65E7\u7D6E", checked: true },
-            { name: "\u8BB0\u4E0B\u521A\u624D\u4E0E\u4F60\u804A\u8D77\u7684\u4E8B", checked: true }
-          ],
-          footerNote: "\u624B\u5DE5\u6BDB\u8FB9\u7EB8\u88C1\u6210\u7684\u7A84\u7B3A\uFF0C\u5C0F\u6977\u5B57\u8FF9\u758F\u6717\u5E72\u51C0\u3002"
-        },
-        role
-      );
-    }
-    return null;
-  }
-  function buildGroundedArtifactForScene(role, where, messages, timeLabel) {
-    const world = detectRoleWorldProfile(role);
-    if (world === "ancient_west") {
-      return validateAndSanitizeArtifact(
-        {
-          kind: "memo",
-          paperStyle: "parchment",
-          header: `\u540C\u884C\u8BB0\u4E8B \xB7 ${where}`,
-          subheader: role.name,
-          timeLabel,
-          bodyText: `\u4E8E\u300C${where}\u300D\u4E0E\u4F60\u5F53\u9762\u76F8\u89C1\uFF0C\u5171\u8BDD ${messages.length} \u53E5\u3002`,
-          footerNote: "\u4EB2\u7B14\u7559\u5B58"
-        },
-        role
-      );
-    }
-    if (world === "modern_us") {
-      return validateAndSanitizeArtifact(
-        {
-          kind: "receipt",
-          paperStyle: "thermal",
-          header: `${where.toUpperCase()} \xB7 TABLE STUB`,
-          subheader: "Michigan \xB7 In-Person Meet",
-          serialNo: `#MT-${100 + messages.length % 89}`,
-          timeLabel,
-          items: [
-            { name: "Cappuccino & Table Service", qty: "x2", price: "$9.50" }
-          ],
-          totalLabel: "TOTAL",
-          currency: "$",
-          totalAmount: "9.50",
-          footerNote: `\u5728\u300C${where}\u300D\u4E0E\u4F60\u89C1\u9762\u540E\u7559\u4E0B\u7684\u684C\u9762\u5355\u636E\u3002`
-        },
-        role
-      );
-    }
-    if (world === "classical_cn") {
-      return validateAndSanitizeArtifact(
-        {
-          kind: "ticket",
-          paperStyle: "parchment",
-          header: `${where} \xB7 \u96C5\u96C6\u6728\u724C\u4E0E\u8336\u7B79`,
-          subheader: "\u5F53\u9762\u76F8\u53D9\u7559\u5FF5",
-          serialNo: "\u7AF9\u7B79\xB7\u53C1\u53F7",
-          timeLabel,
-          items: [{ name: `\u4E8E\u300C${where}\u300D\u540C\u5750\u53D9\u8C08`, qty: `\u5171 ${messages.length} \u6BB5` }],
-          footerNote: "\u6728\u8272\u6E29\u6DA6\uFF0C\u6563\u5E2D\u65F6\u7279\u610F\u6536\u8D77\u8FD9\u4E00\u7EB8\u8336\u7B3A\u3002"
-        },
-        role
-      );
-    }
-    return validateAndSanitizeArtifact(
-      {
-        kind: "ticket",
-        paperStyle: "ticket",
-        header: `${where} \xB7 \u89C1\u9762\u51ED\u8BC1\u5B58\u6839`,
-        subheader: `\u4E0E ${role.name} \u540C\u884C`,
-        serialNo: `#SC-${200 + messages.length % 79}`,
-        timeLabel,
-        items: [{ name: `\u300C${where}\u300D\u53CC\u4EBA\u540C\u884C`, qty: "x2", price: "\xA556.00" }],
-        totalLabel: "\u5B9E\u4ED8",
-        currency: "\xA5",
-        totalAmount: "56.00",
-        footerNote: "\u89C1\u9762\u7ED3\u675F\u65F6\u987A\u624B\u585E\u8FDB\u53E3\u888B\u7684\u7EAA\u5FF5\u7968\u636E\u3002"
-      },
-      role
-    );
-  }
-  function deriveCharacterInnerThought(role, category, contextText) {
-    const world = detectRoleWorldProfile(role);
-    if (category === "interaction") {
-      if (/奈恩|Nain/i.test(role.name)) {
-        return {
-          surfaceState: `\u770B\u7740\u624B\u673A\u5C4F\u5E55\uFF0C\u6307\u5C16\u7F13\u6162\u8F6C\u52A8\u7740\u53E3\u888B\u91CC\u7684\u90A3\u679A\u7EA2\u8272\u516D\u9762\u9AB0`,
-          mood: "\u51B7\u9759\u654F\u9510\uFF0C\u5E26\u7740\u4E00\u70B9\u4E60\u60EF\u6027\u7684\u8F7B\u5FEB\u63F6\u63C4\u4E0E\u8BD5\u63A2",
-          thought: `${/约翰|John/i.test(contextText) ? "\u7EA6\u7FF0\u7684\u4E8B\uFF0C\u6211\u5F97\u518D\u60F3\u60F3\u3002\u5148\u522B\u6025\u7740\u628A\u8BDD\u90FD\u8BF4\u900F\u3002" : `${role.userAlias || "\u5BF9\u9762"}\u8FD9\u8BDD\u2026\u2026\u6211\u8BB0\u4F4F\u4E86\u3002\u5148\u522B\u6025\u7740\u4EAE\u5E95\u724C\u3002`}`
-        };
-      }
-      if (world === "classical_cn") {
-        return {
-          surfaceState: "\u6401\u4E0B\u9547\u7EB8\u4E0E\u6BDB\u7B14\uFF0C\u5782\u7738\u7FFB\u770B\u624B\u673A\u91CC\u7684\u6D88\u606F",
-          mood: "\u6E29\u6DA6\u5E73\u548C\uFF0C\u5FC3\u601D\u7EC6\u817B",
-          thought: `\u8FD9\u8BDD\u6211\u4E14\u8BB0\u4E0B\u3002\u6848\u5934\u8FD9\u4E00\u9875\uFF0C\u8FD8\u5F97\u518D\u659F\u914C\u4E00\u904D\u3002`
-        };
-      }
-      return {
-        surfaceState: `\u5728${role.place || "\u624B\u8FB9"}\u505C\u4E0B\u6B63\u5728\u505A\u7684\u4E8B\uFF0C\u8BA4\u771F\u8BFB\u5B8C\u4F60\u7684\u6D88\u606F`,
-        mood: "\u4E13\u6CE8\u3001\u81EA\u7136\u3001\u6709\u6240\u56DE\u5E94",
-        thought: `\u6211\u770B\u5230\u4E86\u2026\u2026\u5148\u628A\u624B\u5934\u7684\u4E8B\u653E\u4E00\u653E\u3002\u56DE\u4E9B\u4EC0\u4E48\u5462\u3002`
-      };
-    }
-    if (category === "scene") {
-      return {
-        surfaceState: "\u9762\u5BF9\u9762\u4EA4\u8C08\u65F6\u76EE\u5149\u4E13\u6CE8\uFF0C\u7559\u610F\u7740\u4F60\u7684\u795E\u60C5\u4E0E\u8BED\u6C14\u53D8\u5316",
-        mood: "\u6295\u5165\u800C\u514B\u5236",
-        thought: `\u6211\u662F\u4E0D\u662F\u8BF4\u5F97\u592A\u5FEB\u4E86\u2026\u2026\u5148\u542C\u542C\uFF0C\u522B\u6025\u7740\u63A5\u8BDD\u3002`
-      };
-    }
-    if (category === "focus") {
-      return {
-        surfaceState: "\u4FDD\u6301\u5B89\u9759\u7684\u5DE5\u4F5C\u6B65\u8C03\uFF0C\u5076\u5C14\u62AC\u5934\u786E\u8BA4\u4F60\u7684\u4E13\u6CE8\u8FDB\u5EA6",
-        mood: "\u6C89\u9759\u3001\u9ED8\u5951",
-        thought: `\u6211\u5148\u628A\u8FD9\u70B9\u505A\u5B8C\u3002\u8FD9\u6837\u5B89\u9759\u5F85\u7740\uFF0C\u4E5F\u633A\u597D\u3002`
-      };
-    }
-    if (category === "drama") {
-      return {
-        surfaceState: "\u5728\u620F\u4E2D\u89D2\u8272\u4E0E\u81EA\u8EAB\u6027\u683C\u4E4B\u95F4\u6E38\u5203\u6709\u4F59\u5730\u5207\u6362",
-        mood: "\u5174\u81F4\u76CE\u7136\uFF0C\u5E26\u7740\u4E00\u70B9\u6E05\u9192\u7684\u89C2\u5BDF\u6B32",
-        thought: `\u521A\u624D\u90A3\u53E5\uFF0C\u6211\u8FD8\u60F3\u6362\u4E2A\u6F14\u6CD5\u3002\u55EF\uFF0C\u5148\u542C\u542C\u600E\u4E48\u8BF4\u3002`
-      };
-    }
-    if (category === "diary_share") {
-      return {
-        surfaceState: "\u53CD\u590D\u8BFB\u5B8C\u4E86\u4F60\u4E3B\u52A8\u5206\u4EAB\u8FC7\u6765\u7684\u79C1\u4EBA\u65E5\u8BB0",
-        mood: "\u73CD\u89C6\u3001\u82E5\u6709\u6240\u601D",
-        thought: `\u8FD9\u4E00\u9875\u662F\u4EA4\u7ED9\u6211\u7684\u3002\u6211\u8BB0\u7740\uFF0C\u4E0D\u5F80\u6CA1\u8BF4\u7684\u5730\u65B9\u731C\u3002`
-      };
-    }
-    return {
-      surfaceState: `\u5728${role.place || "\u65E5\u5E38\u4F4F\u5904"}\u6309\u81EA\u5DF1\u7684\u8282\u594F\u5904\u7406\u624B\u5934\u4E8B\u52A1`,
-      mood: "\u5E73\u7A33\u3001\u72EC\u7ACB",
-      thought: `\u6211\u624B\u5934\u8FD9\u70B9\u4E8B\u8FD8\u6CA1\u5B8C\u2026\u2026\u5148\u7406\u6E05\u695A\uFF0C\u518D\u8BF4\u522B\u7684\u3002`
-    };
-  }
-  function normalizeInnerMonologue(role, value, fallback) {
-    const thought = stripHtmlTags(value).replace(/\s+/g, " ").trim();
-    const name = role.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const analysis = new RegExp(`^(?:${name}|\u4ED6|\u5979|\u5B83|\u8BE5\u89D2\u8272|\u89D2\u8272)(?:\u5176\u5B9E|\u5728\u610F|\u5185\u5FC3|\u5FC3\u91CC|\u5FC3\u7406|\u89C9\u5F97|\u8BA4\u4E3A|\u8BD5\u56FE|\u6B63\u5728|\u628A|\u4F1A|\u662F|\u7684|\u5E76|\u4E0D|\u4E5F|\u66F4|\u5F88|\u4F3C\u4E4E|\u663E\u5F97)`);
-    return thought.length >= 5 && thought.length <= 90 && /[我咱俺吾]/.test(thought) && !analysis.test(thought) && !/这(?:表明|说明)|内心深处|关联片段|心理分析/.test(thought) ? thought : fallback;
-  }
-  function groupChatMessagesIntoSessions(messages, maxGapMs = 45 * 60 * 1e3) {
-    const sorted = [...messages].sort((a, b) => a.at - b.at);
-    const clusters = [];
-    for (const msg of sorted) {
-      const current = clusters[clusters.length - 1];
-      if (!current || msg.at - current[current.length - 1].at > maxGapMs) {
-        clusters.push([msg]);
-      } else {
-        current.push(msg);
-      }
-    }
-    return clusters;
-  }
   function buildGroundedDailyFootprints(role, dateKey, nowTs = Date.now()) {
-    const facts = collectDailyDiaryFacts(role, dateKey);
-    const userLabel = role.userAlias || "\u4F60";
-    const chatMsgs = facts.chatMessages.filter((m) => m.at <= nowTs);
-    const focusEvents = facts.focusEvents.filter((e) => e.at <= nowTs);
-    const sharedDiaries = facts.sharedUserDiaries.filter((d) => {
-      const shareTs = d.sharedAt?.[role.id] ?? d.at;
-      return shareTs <= nowTs;
+    const facts = collectDailyDiaryFacts(role, dateKey, true), cutoff = Math.min(nowTs, facts.endMs), userLabel = role.userAlias || "\u5BF9\u65B9";
+    const all = [...role.chats, ...role.scene?.messages || [], ...(role.meetings || []).flatMap((s) => s.messages), ...role.play?.messages || [], ...role.play?.intermissionMessages || [], ...(role.plays || []).flatMap((p) => [...p.messages, ...p.intermissionMessages || []])];
+    const transcript = (messages) => messages.filter((m) => m.at <= cutoff && m.speaker !== "note").map((m) => {
+      const original = m.quote ? getActiveMessages(all).find((s) => s.id === m.quote.id && s.speaker === m.quote.speaker && s.at === m.quote.at && s.text.startsWith(m.quote.text)) : void 0;
+      const safe = m.quote && !original ? { ...m, quote: null } : m;
+      return { speaker: m.speaker, speakerLabel: m.speaker === "me" ? userLabel : role.name, text: formatMessageContentForModel(safe, role.name, userLabel), at: m.at };
     });
-    const lifeRoutines = facts.lifeRoutines.filter((e) => e.at <= nowTs);
-    const items = [];
-    let artifactCount = 0;
-    const maxArtifactsPerDay = 2;
-    const chatClusters = groupChatMessagesIntoSessions(chatMsgs);
-    chatClusters.forEach((cluster, idx) => {
-      const firstAt = cluster[0].at;
-      const lastAt = cluster[cluster.length - 1].at;
-      const spanMinutes = Math.max(1, Math.round((lastAt - firstAt) / 6e4));
-      const userMsgCount = cluster.filter((m) => m.speaker === "me").length;
-      const charMsgCount = cluster.filter((m) => m.speaker === "char").length;
-      const timeLabel = formatNaturalTimeLabel(firstAt, false);
-      const previewSamples = cluster.slice(-2).map((m) => {
-        const clean = formatMessageContentForModel(m, role.name, userLabel).replace(/\s+/g, " ").trim();
-        return clean.length > 48 ? `${clean.slice(0, 48)}\u2026` : clean;
-      }).join(" / ");
-      const isTwoWay = userMsgCount > 0 && charMsgCount > 0;
-      const title = isTwoWay ? `\u4E0E${userLabel}\u7EBF\u4E0A\u8054\u7EDC \xB7 \u5171 ${cluster.length} \u6761\u6D88\u606F` : charMsgCount > 0 ? `${role.name}\u53D1\u6765\u7EBF\u4E0A\u6D88\u606F\uFF08${cluster.length} \u6761\uFF09` : `${userLabel}\u53D1\u6765\u7EBF\u4E0A\u6D88\u606F\uFF08${cluster.length} \u6761\uFF09`;
-      const summary = isTwoWay ? `${role.name}\u5728${role.place || "\u624B\u8FB9"}\u4E0E${userLabel}\u8FDB\u884C\u4E86\u7EBF\u4E0A\u4EA4\u8C08\uFF08\u5F80\u6765 ${cluster.length} \u6761\u6D88\u606F\uFF09\uFF0C\u8C08\u53CA\uFF1A\u300C${previewSamples}\u300D` : `${role.name}\u5728\u624B\u673A\u4E0A\u7559\u4E0B\u4E86\u7ED9${userLabel}\u7684\u8BAF\u606F\uFF1A\u300C${previewSamples}\u300D`;
-      let artifact = null;
-      if (artifactCount < maxArtifactsPerDay) {
-        artifact = buildGroundedArtifactForChat(role, cluster, timeLabel);
-        if (artifact) artifactCount += 1;
-      }
-      items.push({
-        id: `fp_chat_${dateKey}_${idx}_${cluster[0].id}`,
-        dateKey,
-        timestamp: lastAt,
-        timeLabel,
-        durationLabel: cluster.length > 1 ? `\u6301\u7EED\u7EA6 ${spanMinutes} \u5206\u949F` : void 0,
-        icon: "\u{1F4AC}",
-        category: "interaction",
-        title,
-        summary,
-        where: role.place || "\u7EBF\u4E0A\u8054\u7EDC",
-        innerThought: deriveCharacterInnerThought(
-          role,
-          "interaction",
-          cluster.map((m) => m.text).join(" ")
-        ),
-        artifact,
-        sourceEventIds: [],
-        sourceMessageIds: cluster.map((m) => m.id),
-        rawTranscript: cluster.map((m) => ({
-          speaker: m.speaker,
-          speakerLabel: m.speaker === "me" ? userLabel : m.speaker === "char" ? role.name : "\u65C1\u767D",
-          text: formatMessageContentForModel(m, role.name, userLabel),
-          at: m.at
-        })),
-        origin: "grounded"
-      });
-    });
-    for (const sc of facts.sceneBlocks) {
-      const msgs = sc.messages.filter((m) => m.at <= nowTs);
-      if (!msgs.length) continue;
-      const firstAt = msgs[0].at;
-      const lastAt = msgs[msgs.length - 1].at;
-      const timeLabel = formatNaturalTimeLabel(firstAt, false);
-      const sample = formatMessageContentForModel(msgs[msgs.length - 1], role.name, userLabel).replace(/\s+/g, " ").slice(0, 64);
-      let artifact = null;
-      if (artifactCount < maxArtifactsPerDay) {
-        artifact = buildGroundedArtifactForScene(role, sc.where, msgs, timeLabel);
-        if (artifact) artifactCount += 1;
-      }
-      items.push({
-        id: `fp_scene_${sc.id}`,
-        dateKey,
-        timestamp: lastAt,
-        timeLabel,
-        icon: "\u{1F4CD}",
-        category: "scene",
-        title: `\u4E8E\u300C${sc.where}\u300D\u4E0E${userLabel}\u5F53\u9762\u76F8\u5904`,
-        summary: `${role.name}\u4E0E${userLabel}\u5728\u300C${sc.where}\u300D\u89C1\u9762\uFF0C\u5171\u7559\u4E0B ${msgs.length} \u6BB5\u73B0\u573A\u4E92\u52A8\uFF1A\u300C${sample}\u300D`,
-        where: sc.where,
-        innerThought: deriveCharacterInnerThought(role, "scene", sample),
-        artifact,
-        sourceEventIds: [],
-        sourceMessageIds: msgs.map((m) => m.id),
-        rawTranscript: msgs.map((m) => ({
-          speaker: m.speaker,
-          speakerLabel: m.speaker === "me" ? userLabel : m.speaker === "char" ? role.name : "\u73B0\u573A\u63CF\u5199",
-          text: formatMessageContentForModel(m, role.name, userLabel),
-          at: m.at
-        })),
-        origin: "grounded"
-      });
+    const items = collectRoleLife(role, cutoff).events.filter((e) => e.at >= facts.startMs).map((e) => ({ id: "fp_life_" + e.id, dateKey, timestamp: e.at, timeLabel: formatNaturalTimeLabel(e.at), icon: "leaf", category: "life", title: e.title, summary: e.detail, where: e.where, sourceEventIds: [e.id], sourceMessageIds: e.messageId ? [e.messageId] : [], rawTranscript: [{ speaker: "note", speakerLabel: e.lifeRecord ? "\u751F\u6D3B\u6A21\u62DF\u8BB0\u5F55" : "\u5DF2\u786E\u8BA4\u4E8B\u4EF6", text: e.detail, at: e.at }], origin: "grounded" }));
+    const chat = getActiveMessages(facts.chatMessages).filter((m) => m.at <= cutoff && m.speaker !== "note");
+    if (chat.length) items.push({ id: "fp_chat_" + dateKey, dateKey, timestamp: chat.at(-1).at, timeLabel: formatNaturalTimeLabel(chat.at(-1).at), icon: "chat", category: "interaction", title: "\u624B\u673A\u4EA4\u8C08\u6765\u6E90", summary: "", sourceEventIds: [], sourceMessageIds: chat.map((m) => m.id), rawTranscript: transcript(chat), origin: "grounded" });
+    for (const f of compactRoleMemory(role, cutoff).facts.filter((f2) => f2.mutual && f2.at >= facts.startMs)) {
+      const sources = chat.filter((m) => m.id === f.source.id || m.id === f.contextSource?.id);
+      items.push({ id: "fp_relation_" + f.id, dateKey, timestamp: f.at, timeLabel: formatNaturalTimeLabel(f.at), icon: "heart", category: "interaction", title: "\u5173\u7CFB\u6709\u4E86\u660E\u786E\u53D8\u5316", summary: `\u4E0E${userLabel}\u660E\u786E\u786E\u8BA4\u4E86\u300C${f.value}\u300D\u7684\u5173\u7CFB\u3002`, sourceMessageIds: sources.map((m) => m.id), sourceEventIds: [], rawTranscript: transcript(sources), origin: "grounded" });
     }
-    if (focusEvents.length > 0) {
-      const firstFocus = focusEvents[0];
-      const lastFocus = focusEvents[focusEvents.length - 1];
-      const timeLabel = formatNaturalTimeLabel(lastFocus.at, false);
-      let artifact = null;
-      if (artifactCount < maxArtifactsPerDay) {
-        artifact = validateAndSanitizeArtifact(
-          {
-            kind: "list",
-            paperStyle: detectRoleWorldProfile(role) === "classical_cn" ? "parchment" : "craft",
-            header: `${role.name}\u7684\u6848\u5934\u966A\u4F34\u4FBF\u7B7E`,
-            subheader: `\u4E0E${userLabel}\u5171\u540C\u4E13\u6CE8\u8BB0\u5F55`,
-            timeLabel,
-            items: focusEvents.slice(0, 4).map((ev) => ({
-              name: ev.title,
-              checked: true,
-              note: ev.detail.slice(0, 42)
-            })),
-            footerNote: "\u5B89\u9759\u966A\u4F34\u671F\u95F4\u987A\u624B\u52FE\u9009\u7684\u684C\u9762\u6E05\u5355\u3002"
-          },
-          role
-        );
-        if (artifact) artifactCount += 1;
-      }
-      items.push({
-        id: `fp_focus_${dateKey}_${firstFocus.id}`,
-        dateKey,
-        timestamp: lastFocus.at,
-        timeLabel,
-        icon: "\u23F1\uFE0F",
-        category: "focus",
-        title: `\u4E0E${userLabel}\u5171\u540C\u4E13\u6CE8 \xB7 ${focusEvents.length} \u9879\u8BB0\u5F55`,
-        summary: focusEvents.map((e) => `${e.title}\uFF08${e.detail}\uFF09`).join("\uFF1B"),
-        where: role.place || "\u6848\u5934",
-        innerThought: deriveCharacterInnerThought(role, "focus", lastFocus.detail),
-        artifact,
-        sourceEventIds: focusEvents.map((e) => e.id),
-        sourceMessageIds: [],
-        rawTranscript: focusEvents.map((e) => ({
-          speaker: "note",
-          speakerLabel: "\u4E13\u6CE8\u8BB0\u5F55",
-          text: `${e.title}\uFF1A${e.detail}`,
-          at: e.at
-        })),
-        origin: "grounded"
-      });
+    for (const scene of facts.sceneBlocks) {
+      const messages = scene.messages.filter((m) => m.at <= cutoff);
+      if (messages.length) items.push({ id: "fp_scene_" + scene.id, dateKey, timestamp: messages.at(-1).at, timeLabel: formatNaturalTimeLabel(messages.at(-1).at), icon: "pin", category: "scene", title: "\u89C1\u9762\u76F8\u5904", summary: `${role.name}\u5728\u300C${scene.where}\u300D\u4E0E${userLabel}\u89C1\u9762\u3002`, where: scene.where, sourceMessageIds: messages.map((m) => m.id), sourceEventIds: [], rawTranscript: transcript(messages), origin: "grounded" });
     }
-    for (const pl of facts.playBlocks) {
-      const msgs = pl.messages.filter((m) => m.at <= nowTs);
-      const interMsgs = pl.intermissionMessages.filter((m) => m.at <= nowTs);
-      if (!msgs.length && !interMsgs.length) continue;
-      const allPlMsgs = [...msgs, ...interMsgs].sort((a, b) => a.at - b.at);
-      const lastAt = allPlMsgs[allPlMsgs.length - 1].at;
-      const timeLabel = formatNaturalTimeLabel(lastAt, false);
-      items.push({
-        id: `fp_play_${pl.id}`,
-        dateKey,
-        timestamp: lastAt,
-        timeLabel,
-        icon: "\u{1F3AD}",
-        category: "drama",
-        title: `\u5C0F\u5267\u573A\u5171\u521B\u300A${pl.title}\u300B`,
-        summary: `${role.name}\uFF08\u9970\u6F14\u300C${pl.charRole}\u300D\uFF09\u4E0E${userLabel}\uFF08\u9970\u6F14\u300C${pl.userRole}\u300D\uFF09\u8FDB\u884C\u4E86 ${msgs.length} \u5E55\u6F14\u51FA${interMsgs.length ? `\uFF0C\u5E76\u5728\u5E55\u95F4\u8FDB\u884C\u4E86 ${interMsgs.length} \u6761\u540E\u53F0\u4EA4\u6D41` : ""}\u3002`,
-        where: pl.world || "\u5267\u573A\u821E\u53F0",
-        innerThought: deriveCharacterInnerThought(role, "drama", pl.title),
-        artifact: null,
-        sourceEventIds: [],
-        sourceMessageIds: allPlMsgs.map((m) => m.id),
-        rawTranscript: allPlMsgs.map((m) => ({
-          speaker: m.speaker,
-          speakerLabel: m.speaker === "me" ? userLabel : m.speaker === "char" ? role.name : "\u821E\u53F0\u63D0\u793A",
-          text: formatMessageContentForModel(m, role.name, userLabel),
-          at: m.at
-        })),
-        origin: "grounded"
-      });
+    if (facts.focusEvents.length) {
+      const events = facts.focusEvents.filter((e) => e.at <= cutoff);
+      if (events.length) items.push({ id: "fp_focus_" + dateKey, dateKey, timestamp: events.at(-1).at, timeLabel: formatNaturalTimeLabel(events.at(-1).at), icon: "focus", category: "focus", title: "\u4E13\u6CE8\u7247\u523B", summary: `${role.name}\u7559\u51FA\u4E86\u4E00\u6BB5\u4E13\u6CE8\u7684\u65F6\u95F4\u3002`, sourceEventIds: events.map((e) => e.id), sourceMessageIds: [], rawTranscript: events.map((e) => ({ speaker: "note", speakerLabel: "\u4E13\u6CE8\u8BB0\u5F55", text: e.title + "\uFF1A" + e.detail, at: e.at })), origin: "grounded" });
     }
-    for (const d of sharedDiaries) {
-      const shareTs = d.sharedAt?.[role.id] ?? d.at;
-      const timeLabel = formatNaturalTimeLabel(shareTs, false);
-      const snippet = d.text.replace(/\s+/g, " ").slice(0, 68);
-      items.push({
-        id: `fp_shared_diary_${d.id}`,
-        dateKey,
-        timestamp: shareTs,
-        timeLabel,
-        icon: "\u{1F4D6}",
-        category: "diary_share",
-        title: `\u8BFB\u5B8C\u4E86${userLabel}\u5206\u4EAB\u7684\u79C1\u4EBA\u65E5\u8BB0`,
-        summary: `${userLabel}\u4E3B\u52A8\u5411${role.name}\u5206\u4EAB\u4E86\u4E00\u7BC7\u65E5\u8BB0\uFF1A\u300C${snippet}${d.text.length > 68 ? "\u2026" : ""}\u300D`,
-        where: role.place || "\u968F\u8EAB\u9605\u8BFB",
-        innerThought: deriveCharacterInnerThought(role, "diary_share", d.text),
-        artifact: null,
-        sourceEventIds: [],
-        sourceMessageIds: [],
-        rawTranscript: [
-          {
-            speaker: "me",
-            speakerLabel: `${userLabel}\u5206\u4EAB\u7684\u65E5\u8BB0\u539F\u6587`,
-            text: d.text,
-            at: shareTs
-          }
-        ],
-        origin: "grounded"
-      });
+    for (const play of facts.playBlocks) {
+      const messages = [...play.messages, ...play.intermissionMessages].filter((m) => m.at <= cutoff).sort((a, b) => a.at - b.at);
+      if (messages.length) items.push({ id: "fp_play_" + play.id, dateKey, timestamp: messages.at(-1).at, timeLabel: formatNaturalTimeLabel(messages.at(-1).at), icon: "drama", category: "drama", title: "\u4E00\u6BB5\u6392\u6F14", summary: `${role.name}\u53C2\u4E0E\u4E86\u300A${play.title}\u300B\u7684\u6392\u6F14\uFF1B\u620F\u5185\u7ECF\u5386\u4E0D\u5C5E\u4E8E\u73B0\u5B9E\u4EBA\u751F\u3002`, sourceMessageIds: messages.map((m) => m.id), sourceEventIds: [], rawTranscript: transcript(messages), origin: "grounded" });
     }
-    const seenRoutineTitles = /* @__PURE__ */ new Set();
-    const uniqueLifeRoutines = [];
-    for (const ev of lifeRoutines) {
-      const key = `${ev.title}|${ev.where || ""}`;
-      if (seenRoutineTitles.has(key)) continue;
-      seenRoutineTitles.add(key);
-      uniqueLifeRoutines.push(ev);
-    }
-    for (const ev of uniqueLifeRoutines.slice(-2)) {
-      const timeLabel = formatNaturalTimeLabel(ev.at, true);
-      items.push({
-        id: `fp_life_${ev.id}`,
-        dateKey,
-        timestamp: ev.at,
-        timeLabel,
-        icon: "\u{1F33F}",
-        category: "life",
-        title: `${ev.title}${ev.where ? ` \xB7 ${ev.where}` : ""}`,
-        summary: ev.detail,
-        where: ev.where || role.place,
-        innerThought: deriveCharacterInnerThought(role, "life", ev.detail),
-        artifact: null,
-        sourceEventIds: [ev.id],
-        sourceMessageIds: [],
-        origin: "grounded"
-      });
-    }
-    items.sort((a, b) => a.timestamp - b.timestamp);
-    const calmDayNote = items.length === 0 ? `\u8FD9\u4E00\u5929\u5341\u5206\u5E73\u9759\uFF0C\u6CA1\u6709\u55A7\u56A3\u7684\u63D2\u66F2\uFF0C${role.name}\u5728${role.place || "\u81EA\u5DF1\u7684\u6B65\u8C03\u91CC"}\u5B89\u9759\u5EA6\u8FC7\u3002` : items.length === 1 && items[0].category === "life" ? `\u4ECA\u5929\u5927\u90E8\u5206\u65F6\u95F4\u90FD\u5F88\u5B89\u9759\uFF0C${role.name}\u6309\u5E73\u65E5\u7684\u6B65\u8C03\u8FC7\u5B8C\u4E86\u4E00\u5929\u3002` : void 0;
-    const sourceSignature = [
-      dateKey,
-      `m:${chatMsgs.length}`,
-      `s:${facts.sceneBlocks.length}`,
-      `f:${focusEvents.length}`,
-      `p:${facts.playBlocks.length}`,
-      `d:${sharedDiaries.length}`,
-      `l:${uniqueLifeRoutines.length}`
-    ].join("|");
-    return {
-      dateKey,
-      updatedAt: nowTs,
-      sourceSignature,
-      calmDayNote,
-      items
-    };
+    return { dateKey, updatedAt: nowTs, sourceSignature: JSON.stringify(items.map((i) => [i.id, i.timestamp, i.summary, i.sourceEventIds, i.sourceMessageIds])), items, calmDayNote: items.some((i) => i.category !== "interaction") ? void 0 : "\u6CA1\u6709\u5DF2\u5F52\u6863\u7684\u72EC\u7ACB\u751F\u6D3B\u8BB0\u5F55\uFF1B\u8FD9\u4E0D\u4EE3\u8868\u5DF2\u7ECF\u786E\u8BA4\u6574\u5929\u65E0\u4E8B\u53D1\u751F\u3002" };
   }
   function getOrBuildDailyFootprints(role, dateKey, nowTs = Date.now()) {
-    if (!role.footprintsByDate || typeof role.footprintsByDate !== "object") {
-      role.footprintsByDate = {};
-    }
-    const fresh = buildGroundedDailyFootprints(role, dateKey, nowTs);
-    const existing = role.footprintsByDate[dateKey];
-    if (existing && existing.aiGeneratedAt && existing.sourceSignature === fresh.sourceSignature && Array.isArray(existing.items) && existing.items.length > 0) {
-      return {
-        ...existing,
-        items: existing.items.filter((it) => it.timestamp <= nowTs).map((it) => {
-          const fallback = deriveCharacterInnerThought(role, it.category, it.summary);
-          return { ...it, innerThought: it.innerThought ? { ...it.innerThought, thought: normalizeInnerMonologue(role, it.innerThought.thought, fallback.thought) } : fallback };
-        })
-      };
-    }
-    role.footprintsByDate[dateKey] = fresh;
-    return fresh;
+    return buildGroundedDailyFootprints(role, dateKey, nowTs);
   }
   function listFootprintActiveDates(role, nowTs = Date.now()) {
     const dates = /* @__PURE__ */ new Set();
@@ -8340,133 +7670,6 @@ ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText
       leadingEmptyDays: firstDayOfWeek,
       cells
     };
-  }
-  function buildDailyFootprintsAiPrompt(role, user, dateKey, nowTs = Date.now()) {
-    const grounded = buildGroundedDailyFootprints(role, dateKey, nowTs);
-    const { label: label2 } = getLocalDayBounds(dateKey);
-    const world = detectRoleWorldProfile(role);
-    const userLabel = role.userAlias || user.name || "\u4F60";
-    const worldConstraint = world === "modern_us" ? "\u89D2\u8272\u8EAB\u5904\u7F8E\u56FD\u5BC6\u6B47\u6839/\u73B0\u4EE3\u82F1\u8BED\u73AF\u5883\uFF0C\u6D89\u53CA\u7968\u636E\u8D27\u5E01\u7EDF\u4E00\u4F7F\u7528\u7F8E\u5143 `$`\uFF0C\u5E97\u540D/\u5C0F\u7968\u53EF\u5E26\u81EA\u7136\u82F1\u6587\uFF0C\u4F46\u4E25\u7981\u751F\u9020\u4E0E\u5DF2\u53D1\u751F\u4E8B\u4EF6\u77DB\u76FE\u7684\u6D88\u8D39\u3002" : world === "classical_cn" ? '\u89D2\u8272\u8EAB\u5904\u53E4\u5178\u6C5F\u5357/\u53E4\u7C4D\u4FEE\u590D\u73AF\u5883\uFF0C\u7968\u636E\u7269\u4EF6\u5E94\u4E3A\u5BA3\u7EB8\u4FEE\u4E66\u7B3A\u3001\u8336\u5BA4\u7AF9\u7B3A\u3001\u4E66\u76EE\u6E05\u5355\uFF08paperStyle: "parchment"\uFF09\uFF0C\u4E25\u7981\u51FA\u73B0\u73B0\u4EE3\u8D85\u5E02\u70ED\u654F\u6761\u7801\u3002' : world === "ancient_west" ? '\u89D2\u8272\u8EAB\u5904\u53E4\u5178\u897F\u65B9/\u53E4\u4EE3\u4E16\u754C\uFF0C\u4E25\u7981\u51FA\u73B0\u4EFB\u4F55\u73B0\u4EE3\u7535\u5F71\u7968\u3001\u7F8E\u5143/\u4EBA\u6C11\u5E01\u3001\u70ED\u654F\u5C0F\u7968\uFF0C\u7269\u4EF6\u4EC5\u9650\u7F8A\u76AE\u7EB8\u4FBF\u7B7E\u6216\u624B\u5199\u6E05\u5355\uFF08paperStyle: "parchment"\uFF09\u3002' : "\u7269\u4EF6\u98CE\u683C\u9700\u4E25\u683C\u5951\u5408\u89D2\u8272\u6240\u5904\u57CE\u5E02\u4E0E\u804C\u4E1A\u65E5\u5E38\u3002";
-    const groundedLines = grounded.items.map(
-      (it, i) => `${i + 1}. [${it.timeLabel}] (${it.category}) ${it.title} \u2014\u2014 ${it.summary}`
-    );
-    return [
-      {
-        role: "system",
-        content: `\u4F60\u662F Elsewhere \u7684\u300C\u65E5\u5E38\u8DB3\u8FF9\u4E0E\u751F\u6D3B\u4FA7\u5199\u300D\u8BB0\u5F55\u5668\u3002
-\u8BF7\u6839\u636E\u89D2\u8272\u8BBE\u5B9A\u4E0E ${label2}\uFF08${dateKey}\uFF09\u5DF2\u53D1\u751F\u7684\u771F\u5B9E\u4E8B\u4EF6\uFF0C\u6574\u7406\u8BE5\u89D2\u8272\u8FD9\u4E00\u5929\u7684\u300C\u65E5\u5E38\u8DB3\u8FF9\u300DJSON\u3002
-
-\u3010\u6838\u5FC3\u89C4\u5219\u3011
-1. \u5FC5\u987B\u4EE5\u5DF2\u53D1\u751F\u7684\u771F\u5B9E\u4E92\u52A8\u548C\u4E8B\u4EF6\u4E3A\u9AA8\u67B6\uFF0C\u5141\u8BB8\u4E00\u5929\u5341\u5206\u5E73\u9759\uFF081\uFF5E4 \u6761\u8BB0\u5F55\u5373\u53EF\uFF09\uFF0C\u7EDD\u4E0D\u51D1\u6570\u6216\u6309\u5C0F\u65F6\u673A\u68B0\u62A5\u65F6\u3002
-2. \u4E25\u7981\u8F93\u51FA\u4EFB\u4F55 HTML \u4EE3\u7801\uFF08\u4E0D\u8981\u8F93\u51FA html_snippet\uFF09\uFF1B\u6240\u6709\u89C6\u89C9\u7269\u4EF6\u5FC5\u987B\u4F7F\u7528\u7ED3\u6784\u5316\u5B57\u6BB5 \`artifact\`\uFF0C\u7531\u524D\u7AEF\u5B89\u5168\u7EC4\u4EF6\u6E32\u67D3\u3002
-3. \u89C6\u89C9\u7269\u4EF6\uFF08artifact\uFF09\u53EA\u80FD\u5076\u53D1\u51FA\u73B0\uFF08\u5168\u5929\u6700\u591A 1\uFF5E2 \u4E2A\uFF09\uFF0C\u4E14\u5FC5\u987B\u6E90\u4E8E\u5F53\u5929\u771F\u5B9E\u4E8B\u4EF6\u6216\u89D2\u8272\u5E38\u9A7B\u4E60\u60EF\u3002${worldConstraint}
-4. summary \u4FDD\u6301\u5BA2\u89C2\u7B2C\u4E09\u4EBA\u79F0\uFF1BinnerThought.surfaceState \u4E3A\u5916\u5728\u52A8\u4F5C\uFF0Cmood \u4E3A\u60C5\u7EEA\u8BCD\u3002
-5. innerThought.thought \u5FC5\u987B\u662F\u89D2\u8272\u672C\u4EBA\u7B2C\u4E00\u4EBA\u79F0\u7684\u5373\u65F6\u5FC3\u58F0\uFF0C\u7528\u201C\u6211\u201D\u7B49\u81EA\u79F0\uFF0C15\u201360\u5B57\uFF0C\u4E00\u4E24\u53E5\u77ED\u4FC3\u3001\u81EA\u7136\u3001\u53EF\u5E26\u505C\u987F\u7684\u8111\u5185\u81EA\u8A00\u81EA\u8BED\u3002\u9075\u5FAA\u4EBA\u8BBE\u4E0E\u53E3\u543B\uFF0C\u5948\u6069\u4FDD\u6301\u51B7\u9759\u3001\u673A\u654F\u3001\u8F7B\u5FAE\u63F6\u63C4\u3002\u7981\u6B62\u201C\u4ED6\u5176\u5B9E\u5728\u610F\u7684\u662F\u201D\u201C\u89D2\u8272\u5185\u5FC3\u201D\u7B49\u5206\u6790\u62A5\u544A\u8154\uFF0C\u4E0D\u8981\u89E3\u91CA\u4EBA\u7269\uFF0C\u4E0D\u8981\u9644\u5173\u8054\u7247\u6BB5\u6216\u590D\u8FF0\u6EAF\u6E90\u3002\u8FD9\u662F\u4EBA\u8BBE\u63A8\u6F14\uFF0C\u4E0D\u5F97\u628A\u63A8\u6D4B\u5199\u5165\u6B63\u5F0F\u4E8B\u5B9E\u3002`
-      },
-      {
-        role: "user",
-        content: `\u3010\u89D2\u8272\u6863\u6848\u3011
-\u59D3\u540D\uFF1A${role.name}
-\u804C\u4E1A/\u8EAB\u4EFD\uFF1A${role.job}
-\u5E38\u9A7B\u5730\u70B9\uFF1A${role.place}
-\u6027\u683C\u7279\u70B9\uFF1A${role.traits}
-\u8BE6\u7EC6\u8BBE\u5B9A\uFF1A${role.profile}
-${role.canonNotes ? `Canon \u8FB9\u754C\uFF1A${role.canonNotes}` : ""}
-\u5BF9\u7528\u6237\u7684\u79F0\u547C\uFF1A${userLabel}
-
-\u3010${dateKey} \u5F53\u5929\u5DF2\u786E\u8BA4\u7684\u771F\u5B9E\u8DB3\u8FF9\u9AA8\u67B6\u3011
-${groundedLines.length ? groundedLines.join("\n") : `\uFF08\u5F53\u5929\u6682\u65E0\u7279\u6B8A\u4E92\u52A8\uFF0C${grounded.calmDayNote || "\u5341\u5206\u5E73\u9759"}\uFF09`}
-
-\u8BF7\u8F93\u51FA\u7EAF JSON \u5BF9\u8C61\uFF08\u4E0D\u8981\u7528 Markdown \u4EE3\u7801\u5757\u5305\u88F9\u591A\u4F59\u89E3\u91CA\uFF09\uFF0C\u683C\u5F0F\u5982\u4E0B\uFF1A
-{
-  "calmDayNote": "\u53EF\u9009\uFF0C\u82E5\u5F53\u5929\u5E73\u9759\u53EF\u5199\u4E00\u53E5\u81EA\u7136\u603B\u7ED3",
-  "enrichmentByIndex": [
-    {
-      "index": 0,
-      "title": "\u6DA6\u8272\u540E\u7684\u7B80\u77ED\u6807\u9898\uFF08\u4FDD\u7559\u771F\u5B9E\u4E8B\u4EF6\u6838\u5FC3\uFF09",
-      "summary": "\u7B2C\u4E09\u4EBA\u79F0\u751F\u6D3B\u5316\u53D9\u8FF0\uFF0C\u81EA\u7136\u514B\u5236\uFF0C\u7B26\u5408\u4EBA\u8BBE",
-      "innerThought": {
-        "surfaceState": "\u6B64\u65F6\u6B64\u523B\u7684\u5916\u5728\u52A8\u4F5C\u6216\u795E\u6001\u7EC6\u8282",
-        "mood": "\u5F53\u524D\u60C5\u7EEA\u5173\u952E\u8BCD",
-        "thought": "\u7B2C\u4E00\u4EBA\u79F0\u5373\u65F6\u5FC3\u58F0\uFF0C\u542B\u81EA\u79F0\uFF0C15\u201360\u5B57\uFF0C\u77ED\u4FC3\u81EA\u7136\uFF0C\u4E0D\u5199\u7B2C\u4E09\u4EBA\u79F0\u5206\u6790"
-      },
-      "artifact": {
-        "kind": "receipt | ticket | memo | list | letter | dossier",
-        "paperStyle": "thermal | ticket | sticky | parchment | dossier | craft",
-        "header": "\u7269\u4EF6\u4E3B\u6807\u9898",
-        "subheader": "\u526F\u6807\u9898/\u5730\u70B9",
-        "serialNo": "\u7F16\u53F7",
-        "items": [{ "name": "\u6761\u76EE\u540D", "qty": "x1", "price": "$4.50", "checked": true }],
-        "totalLabel": "TOTAL",
-        "currency": "$",
-        "totalAmount": "4.50",
-        "bodyText": "\u5982\u679C\u662F\u4FBF\u7B7E/\u77ED\u7B3A\u53EF\u586B\u5199\u6B63\u6587",
-        "footerNote": "\u9875\u811A\u5C0F\u5B57\u7EC6\u8282"
-      }
-    }
-  ]
-}`
-      }
-    ];
-  }
-  function applyAiDailyFootprints(role, dateKey, rawResponse, nowTs = Date.now()) {
-    const base = buildGroundedDailyFootprints(role, dateKey, nowTs);
-    const text2 = String(rawResponse || "").trim();
-    const jsonMatch = text2.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      return { ok: false, archive: base, reason: "\u6A21\u578B\u8FD4\u56DE\u683C\u5F0F\u4E0D\u542B\u6709\u6548 JSON" };
-    }
-    try {
-      const parsed = JSON.parse(jsonMatch[0]);
-      if (typeof parsed.calmDayNote === "string" && parsed.calmDayNote.trim()) {
-        base.calmDayNote = stripHtmlTags(parsed.calmDayNote).slice(0, 140);
-      }
-      const enrichments = Array.isArray(parsed.enrichmentByIndex) ? parsed.enrichmentByIndex : [];
-      let artifactCount = 0;
-      for (const entry2 of enrichments) {
-        if (!entry2 || typeof entry2 !== "object") continue;
-        const rec = entry2;
-        const idx = Number(rec.index);
-        if (!Number.isInteger(idx) || idx < 0 || idx >= base.items.length) continue;
-        const target = base.items[idx];
-        const newTitle = stripHtmlTags(rec.title).slice(0, 80);
-        const newSummary = stripHtmlTags(rec.summary).slice(0, 320);
-        if (newTitle) target.title = newTitle;
-        if (newSummary) target.summary = newSummary;
-        if (rec.innerThought && typeof rec.innerThought === "object") {
-          const it = rec.innerThought;
-          const surfaceState = stripHtmlTags(it.surfaceState).slice(0, 120);
-          const mood = stripHtmlTags(it.mood).slice(0, 60);
-          const thought = normalizeInnerMonologue(role, it.thought, target.innerThought?.thought || deriveCharacterInnerThought(role, target.category, target.summary).thought);
-          if (surfaceState && thought) {
-            target.innerThought = {
-              surfaceState,
-              mood: mood || target.innerThought?.mood || "\u5E73\u9759",
-              thought
-            };
-          }
-        }
-        if (rec.artifact && artifactCount < 2) {
-          const validated = validateAndSanitizeArtifact(rec.artifact, role);
-          if (validated) {
-            target.artifact = validated;
-            artifactCount += 1;
-          }
-        }
-        target.origin = "ai_enriched";
-      }
-      base.aiGeneratedAt = nowTs;
-      base.updatedAt = nowTs;
-      if (!role.footprintsByDate) role.footprintsByDate = {};
-      role.footprintsByDate[dateKey] = base;
-      return { ok: true, archive: base };
-    } catch (err) {
-      return {
-        ok: false,
-        archive: base,
-        reason: err instanceof Error ? err.message : "\u89E3\u6790 AI \u8DB3\u8FF9 JSON \u5931\u8D25"
-      };
-    }
   }
   function resolveSafeMonitorDateKey(candidate, nowTs = Date.now()) {
     const todayKey = toLocalDateKey(nowTs);
@@ -8798,18 +8001,18 @@ ${groundedLines.length ? groundedLines.join("\n") : `\uFF08\u5F53\u5929\u6682\u6
   }
   function meetingTime(text2, at) {
     const explicitDate = text2.match(/(?:(\d{4})年)?(\d{1,2})月(\d{1,2})[日号]/);
-    const day2 = text2.match(/大后天|后天|明天|今天|今晚|今早|今夜/), period = text2.match(/凌晨|早上|上午|中午|下午|傍晚|晚上|今晚|今夜/);
+    const day3 = text2.match(/大后天|后天|明天|今天|今晚|今早|今夜/), period = text2.match(/凌晨|早上|上午|中午|下午|傍晚|晚上|今晚|今夜/);
     const clock = text2.match(/(\d{1,2}|[零一二两三四五六七八九十]{1,3})\s*(?:[:：](\d{2})|点(?:(半)|(\d{1,2}|[零一二两三四五六七八九十]{1,3})分?)?)/);
     const immediate = /(现在|这就|马上)/.test(text2);
-    if (!explicitDate && !day2 && !period && !clock && !immediate) return null;
+    if (!explicitDate && !day3 && !period && !clock && !immediate) return null;
     const date = new Date(at);
     date.setHours(0, 0, 0, 0);
     if (explicitDate) {
       date.setFullYear(explicitDate[1] ? Number(explicitDate[1]) : date.getFullYear(), Number(explicitDate[2]) - 1, Number(explicitDate[3]));
       if (date.getMonth() !== Number(explicitDate[2]) - 1 || date.getDate() !== Number(explicitDate[3])) return null;
-    } else date.setDate(date.getDate() + (day2?.[0] === "\u660E\u5929" ? 1 : day2?.[0] === "\u540E\u5929" ? 2 : day2?.[0] === "\u5927\u540E\u5929" ? 3 : 0));
-    const timeText = [explicitDate?.[0], day2?.[0], period?.[0], clock?.[0]].filter(Boolean).join("") || "\u73B0\u5728";
-    if (immediate && !explicitDate && !day2 && !period && !clock) return { timeText, scheduledAt: at, expiresAt: at + 2 * 36e5 };
+    } else date.setDate(date.getDate() + (day3?.[0] === "\u660E\u5929" ? 1 : day3?.[0] === "\u540E\u5929" ? 2 : day3?.[0] === "\u5927\u540E\u5929" ? 3 : 0));
+    const timeText = [explicitDate?.[0], day3?.[0], period?.[0], clock?.[0]].filter(Boolean).join("") || "\u73B0\u5728";
+    if (immediate && !explicitDate && !day3 && !period && !clock) return { timeText, scheduledAt: at, expiresAt: at + 2 * 36e5 };
     if (clock) {
       let h = number(clock[1]);
       const min = clock[3] ? 30 : number(clock[2] || clock[4] || "0");
@@ -10121,7 +9324,8 @@ ${JSON.stringify(control)}`;
       return { icon: "chat", where: r.scene.where, doing: "\u4E0E\u5BF9\u65B9\u5F53\u9762\u4EA4\u8C08", label: "\u6B63\u5728\u89C1\u9762" };
     if (r.play && !r.play.endedAt && r.play.startedAt <= t)
       return { icon: "drama", where: "\u620F\u5267\u573A\u666F", doing: r.play.paused ? "\u6B63\u5728\u5E55\u95F4\u8BA8\u8BBA" : "\u6B63\u5728\u6392\u6F14\u620F\u5267", label: r.play.paused ? "\u5E55\u95F4\u8BA8\u8BBA" : "\u620F\u5267\u6F14\u51FA" };
-    const observation = (r.events || []).filter(
+    const life = r.id && Array.isArray(r.chats) && Array.isArray(r.diaries) && Array.isArray(r.events) ? collectRoleLife(r, t).events : [];
+    const observation = life.filter(
       (e) => e.kind === "life" && e.at <= t && t - e.at <= 30 * 6e4 && e.status !== "retracted" && e.status !== "superseded" && e.source && e.knownBy?.includes(r.id || "")
     ).sort((a, b) => b.at - a.at)[0];
     if (observation) return { icon: "clock", where: observation.where || "\u5730\u70B9\u5C1A\u672A\u786E\u8BA4", doing: `\u6700\u8FD1\u8BB0\u5F55\uFF1A${observation.detail}`, label: observation.title };
@@ -10137,7 +9341,8 @@ ${JSON.stringify(control)}`;
   function retrieve(r, query, limit = 9, nowTs = Date.now()) {
     const ks = keywords(query);
     const rejected = projectRoleMemory(r, nowTs).supersededSources, messageIndex = memoryMessageIndex(r);
-    const permittedEvents = getRoleKnownEvents(r).filter((e) => eventSourceValid(r, e, nowTs, messageIndex, rejected));
+    const trustedLife = new Set(collectRoleLife(r, nowTs).events.map((e) => e.id));
+    const permittedEvents = getRoleKnownEvents(r).filter((e) => (e.kind !== "life" || trustedLife.has(e.id)) && eventSourceValid(r, e, nowTs, messageIndex, rejected));
     return permittedEvents.map((e) => ({
       e,
       score: (e.at > nowTs - 864e5 ? 3 : 0) + ks.reduce(
@@ -10195,13 +9400,14 @@ ${JSON.stringify(control)}`;
       const p = r.play;
       base = `\u4F60\u6B63\u5728\u53C2\u4E0E\u4E00\u6BB5\u72EC\u7ACB\u3001\u5C01\u95ED\u7684\u865A\u6784\u620F\u5267\u3002\u4EC5\u4F5C\u4E3A\u5267\u4E2D\u89D2\u8272\u884C\u52A8\uFF0C\u4E0D\u77E5\u9053\u5267\u5916\u7684\u624B\u673A\u3001\u804A\u5929\u3001\u89D2\u8272\u672C\u4EBA\u771F\u5B9E\u8EAB\u4EFD\u3001\u7528\u6237\u771F\u5B9E\u8EAB\u4EFD\u3001\u65E5\u8BB0\u6216\u5176\u4ED6\u751F\u6D3B\u8BB0\u5F55\u3002\u5267\u540D\uFF1A${p.title}\u3002\u4E16\u754C\u89C4\u5219\u4E0E\u5F00\u573A\uFF1A${p.world}\u3002\u7528\u6237\u5728\u5267\u5185\u7684\u8EAB\u4EFD\uFF1A${p.user}\u3002\u4F60\u5728\u5267\u5185\u7684\u8EAB\u4EFD\uFF1A${p.char}\u3002\u63A8\u8FDB\u573A\u666F\u3001\u8868\u73B0\u4EBA\u7269\u5FC3\u7406\u4E0E\u81EA\u8EAB\u52A8\u4F5C\uFF0C\u4E0D\u4EE3\u66FF\u7528\u6237\u505A\u51FA\u9009\u62E9\u3002\u5267\u5185\u89D2\u8272\u4E4B\u95F4\u7684\u5173\u7CFB\u4EC5\u4EE5\u5267\u672C\u53CA\u672C\u573A\u5BF9\u767D\u4E3A\u51C6\u3002`;
     } else {
-      const a = routine({ ...r, events: r.events.filter((e) => e.kind !== "life" || e.lifeEvidence === "confirmed" && eventSourceValid(memoryRole, e, nowTs, messageIndex, memory.supersededSources)) }, nowTs);
+      const trustedLife = new Set(collectRoleLife(memoryRole, nowTs).events.map((e) => e.id));
+      const a = routine({ ...r, events: r.events.filter((e) => e.kind !== "life" || trustedLife.has(e.id)) }, nowTs);
       const bridgedIds = new Set((kind === "scene" ? r.scene?.messages || [] : []).flatMap((m) => m.sourceMessageId ? [m.sourceMessageId] : []));
       const candidates = getRoleKnownEvents(r).filter((e) => {
         const message = e.messageId ? shownPhoneSources.get(e.messageId) : void 0;
         const duplicate = e.kind === "chat" && message && e.detail === message.text && e.at === message.at && (!e.speaker || e.speaker === message.speaker) && (!e.source || e.source === "chat");
         if (kind === "chat" && e.kind === "life") return false;
-        return eventSourceValid(memoryRole, e, nowTs, messageIndex, memory.supersededSources) && !duplicate && e.kind !== "drama" && (e.kind !== "life" || Boolean(e.source && e.knownBy?.includes(r.id))) && e.at <= nowTs && (!e.messageId || validIds2.has(e.messageId) && !bridgedIds.has(e.messageId));
+        return eventSourceValid(memoryRole, e, nowTs, messageIndex, memory.supersededSources) && !duplicate && e.kind !== "drama" && (e.kind !== "life" || trustedLife.has(e.id)) && e.at <= nowTs && (!e.messageId || validIds2.has(e.messageId) && !bridgedIds.has(e.messageId));
       });
       if (kind !== "chat") recalled = retrieve({ ...r, events: candidates }, input, 12, nowTs);
       if (kind === "chat") {
@@ -11031,66 +10237,153 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
   function newestMonitorFirst(items) {
     return [...items].sort((a, b) => (b.timestamp ?? b.at ?? 0) - (a.timestamp ?? a.at ?? 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   }
-  var topics = [
-    [/信件|信封|封信|来信|回信|寄信|写信|书信/, "\u4FE1\u4EF6"],
-    [/工作|上班|同事/, "\u5DE5\u4F5C"],
-    [/见面|碰面|约会/, "\u89C1\u9762\u5B89\u6392"],
-    [/咖啡/, "\u5496\u5561"],
-    [/吃饭|午饭|晚饭/, "\u7528\u9910"],
-    [/专注|学习|论文/, "\u5B66\u4E60\u4E0E\u4E13\u6CE8"],
-    [/剧本|演戏|戏剧/, "\u620F\u5267"],
-    [/日记/, "\u65E5\u8BB0"]
-  ];
-  var topic = (text2) => topics.find(([pattern]) => pattern.test(text2))?.[1];
   function monitorItemsForDisplay(role, user, items, now) {
     const username = user.name?.trim() || role.userAlias?.trim() || "\u5BF9\u65B9";
-    const known = getRoleKnownEvents(role), knownIds = new Set(known.map((e) => e.id));
-    const deniedMessages = new Set(getActiveEvents(role.events).filter((e) => e.messageId && !knownIds.has(e.id)).map((e) => e.messageId));
-    const days = /* @__PURE__ */ new Map();
-    return newestMonitorFirst(items.map((item) => {
-      let facts = days.get(item.dateKey);
-      if (!facts) {
-        facts = collectDailyDiaryFacts(role, item.dateKey);
-        days.set(item.dateKey, facts);
+    return newestMonitorFirst(items.flatMap((item) => {
+      if (item.timestamp > now || item.id.startsWith("fp_chat_")) return [];
+      const { endMs } = getLocalDayBounds(item.dateKey), cutoff = Math.min(now, endMs), life = collectRoleLife(role, cutoff).events;
+      const facts = collectDailyDiaryFacts(role, item.dateKey, true);
+      let summary = "", where;
+      if (item.category === "life") {
+        const event = life.find((e) => item.sourceEventIds.length === 1 && e.id === item.sourceEventIds[0]);
+        if (!event) return [];
+        return [{ ...item, title: event.title, summary: event.detail, where: event.where, confirmed: true, sourceMessageCount: item.sourceMessageIds.length, sourceEventCount: 1, innerThought: void 0, artifact: void 0 }];
       }
-      const candidates = item.category === "interaction" ? facts.chatMessages : item.category === "scene" ? facts.sceneBlocks.flatMap((b) => b.messages) : item.category === "drama" ? facts.playBlocks.flatMap((b) => [...b.messages, ...b.intermissionMessages]) : [];
-      const messages = candidates.filter((m) => m.at <= now && m.speaker !== "note" && item.sourceMessageIds.includes(m.id) && !deniedMessages.has(m.id));
-      const events = known.filter((e) => e.at <= now && e.kind !== "life" && item.sourceEventIds.includes(e.id));
-      const diary = facts.sharedUserDiaries.find((d) => item.id === "fp_shared_diary_" + d.id && (d.sharedAt?.[role.id] ?? d.at) <= now);
-      const confirmed = Boolean(messages.length || events.length || diary);
-      let title = "\u6D3B\u52A8\u8BB0\u5F55\u5F85\u786E\u8BA4", description = "\u6682\u65E0\u53EF\u786E\u8BA4\u7684\u6D3B\u52A8\u8BB0\u5F55";
-      if (confirmed) {
-        if (item.category === "interaction") {
-          const subject = topic(messages.map((m) => m.text).join(" ")), sent = messages.some((m) => m.speaker === "char");
-          title = `\u7EBF\u4E0A\u8054\u7EDC \xB7 ${messages.length} \u6761\u6D88\u606F`;
-          description = sent ? `\u4E0E${username}\u7EBF\u4E0A\u8054\u7EDC${subject ? `\uFF0C\u804A\u8D77${subject}` : ""}\u3002` : `\u6536\u5230${username}\u53D1\u6765\u7684\u7EBF\u4E0A\u6D88\u606F\u3002`;
-        } else if (item.category === "scene") {
-          title = "\u5F53\u9762\u4EA4\u8C08";
-          description = `\u4E0E${username}\u5F53\u9762\u4EA4\u8C08\u3002`;
-        } else if (item.category === "focus") {
-          title = "\u5171\u540C\u4E13\u6CE8";
-          description = `\u4E0E${username}\u5171\u540C\u4E13\u6CE8\u3002`;
-        } else if (item.category === "drama") {
-          title = "\u620F\u5267\u6F14\u51FA";
-          description = `\u4E0E${username}\u6392\u6F14\u620F\u5267\u3002`;
-        } else if (item.category === "diary_share") {
-          title = "\u65E5\u8BB0\u5206\u4EAB";
-          description = `\u6536\u5230${username}\u5206\u4EAB\u7684\u65E5\u8BB0\u3002`;
-        }
-      }
-      const timestamp = confirmed ? Math.max(...messages.map((m) => m.at), ...events.map((e) => e.at), ...diary ? [diary.sharedAt?.[role.id] ?? diary.at] : []) : item.timestamp;
-      return { ...item, confirmed, sourceMessageCount: messages.length, sourceEventCount: events.length, timestamp, title, summary: description, where: item.category === "scene" ? facts.sceneBlocks.find((b) => b.messages.some((m) => messages.some((source) => source.id === m.id)))?.where : void 0, innerThought: item.innerThought ? { ...item.innerThought, surfaceState: description } : void 0 };
+      if (item.category === "interaction") {
+        const fact = compactRoleMemory(role, cutoff).facts.find((f) => f.mutual && item.id === "fp_relation_" + f.id);
+        if (!fact) return [];
+        summary = `\u4E0E${username}\u660E\u786E\u786E\u8BA4\u4E86\u300C${fact.value}\u300D\u7684\u5173\u7CFB\u3002`;
+      } else if (item.category === "scene") {
+        const scene = facts.sceneBlocks.find((s) => item.id === "fp_scene_" + s.id && s.messages.some((m) => m.at <= cutoff));
+        if (!scene) return [];
+        where = scene.where;
+        summary = `${role.name}\u5728\u300C${where}\u300D\u4E0E${username}\u89C1\u9762\u3002`;
+      } else if (item.category === "focus") {
+        if (!facts.focusEvents.some((e) => item.sourceEventIds.includes(e.id) && e.at <= cutoff)) return [];
+        summary = `${role.name}\u7559\u51FA\u4E86\u4E00\u6BB5\u4E13\u6CE8\u7684\u65F6\u95F4\u3002`;
+      } else if (item.category === "drama") {
+        const play = facts.playBlocks.find((p) => item.id === "fp_play_" + p.id && [...p.messages, ...p.intermissionMessages].some((m) => m.at <= cutoff));
+        if (!play) return [];
+        summary = `${role.name}\u53C2\u4E0E\u4E86\u300A${play.title}\u300B\u7684\u6392\u6F14\uFF1B\u8FD9\u662F\u620F\u5916\u7684\u53C2\u4E0E\u8BB0\u5F55\u3002`;
+      } else return [];
+      return [{ ...item, summary, where, confirmed: true, sourceMessageCount: item.sourceMessageIds.length, sourceEventCount: item.sourceEventIds.length, innerThought: void 0, artifact: void 0 }];
     }));
   }
 
-  // src/core/proactiveChat.ts
+  // src/core/autonomousLife.ts
+  var LIFE_JOURNAL_KEY = "elsewhere-life-budget-v1";
+  var LIFE_MAX_OUTPUT = 1200;
   var day = 864e5;
+  function readLifeJournal(store) {
+    const raw = store.getItem(LIFE_JOURNAL_KEY);
+    if (!raw) return [];
+    const data = JSON.parse(raw);
+    if (data?.version !== 1 || !Array.isArray(data.tasks) || data.tasks.some((t) => !t || typeof t.id !== "string" || typeof t.roleId !== "string" || t.id !== "life:" + encodeURIComponent(t.roleId) + ":" + t.dateKey || t.dateKey !== toLocalDateKey(t.at) || t.to !== t.at || t.from > t.to || !Number.isFinite(t.at) || !Number.isFinite(t.from) || !Number.isFinite(t.to) || !["attempted", "completed", "quiet", "failed", "cancelled"].includes(t.status))) throw Error("\u751F\u6D3B\u8C03\u7528\u8BB0\u5F55\u4E0D\u53EF\u9A8C\u8BC1\uFF0C\u81EA\u52A8\u63A8\u8FDB\u5DF2\u6682\u505C");
+    if (new Set(data.tasks.map((t) => t.id)).size !== data.tasks.length) throw Error("\u751F\u6D3B\u8C03\u7528\u8BB0\u5F55\u91CD\u590D\uFF0C\u81EA\u52A8\u63A8\u8FDB\u5DF2\u6682\u505C");
+    return data.tasks;
+  }
+  function writeLifeJournal(store, tasks) {
+    store.setItem(LIFE_JOURNAL_KEY, JSON.stringify({ version: 1, tasks }));
+  }
+  var allTasks = (roles, journal) => [...new Map([...roles.flatMap((r) => r.lifeTasks || []), ...journal].map((t) => [t.id, t])).values()];
+  function claimLifeTask(roles, r, at, ready, journal = []) {
+    if (!ready || !roles.some((x) => x.id === r.id) || r.scene || r.play || r.chatTiming?.pending.length || r.chatTiming?.inFlight || r.pendingReplies?.length || r.firstMessageState?.status !== "ready" && !getActiveMessages(r.chats).some((m) => m.speaker === "char")) return null;
+    const dateKey = toLocalDateKey(at), tasks = allTasks(roles, journal), id = "life:" + encodeURIComponent(r.id) + ":" + dateKey;
+    if (tasks.some((t) => t.id === id) || tasks.filter((t) => t.at > at - day || t.dateKey === dateKey).length >= 2) return null;
+    const from = Math.max(getLocalDayBounds(dateKey).startMs, at - 6 * 36e5, r.firstMessageState?.updatedAt || Math.min(...getActiveMessages(r.chats).filter((m) => m.speaker === "char").map((m) => m.at)));
+    if (at - from < 2 * 36e5) return null;
+    const lastContact = Math.max(0, ...getActiveMessages(r.chats).map((m) => m.at));
+    if (at - lastContact < 36e5) return null;
+    const task = { id, roleId: r.id, dateKey, at, from, to: at, status: "attempted" };
+    r.lifeTasks = [...r.lifeTasks || [], task];
+    return task;
+  }
+  function lifeTaskState(roles, r, at, ready, enabled, journal = [], running = false) {
+    if (!enabled) return "\u81EA\u52A8\u63A8\u8FDB\u5DF2\u6682\u505C\uFF1B\u5DF2\u4FDD\u5B58\u7684\u751F\u6D3B\u8BB0\u5F55\u4ECD\u53EF\u67E5\u770B\u3002";
+    const task = allTasks(roles, journal).find((t) => t.roleId === r.id && t.dateKey === toLocalDateKey(at));
+    if (task) return task.status === "attempted" ? running ? "\u6B63\u5728\u63A8\u8FDB\u4E00\u6BB5\u5DF2\u8FC7\u53BB\u7684\u751F\u6D3B\u2026" : "\u4E0A\u6B21\u4EFB\u52A1\u5C1A\u672A\u5B8C\u6210\u6216\u5DF2\u4E2D\u65AD\uFF0C\u989D\u5EA6\u5DF2\u4FDD\u7559\uFF0C\u4ECA\u5929\u4E0D\u4F1A\u91CD\u590D\u8BF7\u6C42\u3002" : task.status === "quiet" ? "\u672C\u6B21\u63A8\u8FDB\u6CA1\u6709\u9700\u8981\u5355\u72EC\u8BB0\u5F55\u7684\u4E8B\u60C5\u3002" : task.status === "completed" ? "\u672C\u6B21\u751F\u6D3B\u5DF2\u5F52\u6863\uFF0C\u4ECA\u5929\u4E0D\u4F1A\u91CD\u590D\u751F\u6210\u3002" : `\u672C\u6B21\u672A\u5F52\u6863\uFF1A${task.error || "\u4EFB\u52A1\u4E2D\u65AD"}\u3002\u4ECA\u65E5\u4E0D\u81EA\u52A8\u91CD\u8BD5\u3002`;
+    if (!ready) return "\u7B49\u5F85 API \u53EF\u7528\uFF1B\u4E0D\u4F1A\u7528\u6F14\u793A\u6587\u5B57\u5192\u5145\u751F\u6D3B\u8BB0\u5F55\u3002";
+    if (allTasks(roles, journal).filter((t) => t.at > at - day || t.dateKey === toLocalDateKey(at)).length >= 2) return "\u5DF2\u8FBE\u5230\u5168\u5E94\u7528\u751F\u6D3B\u8C03\u7528\u4E0A\u9650\uFF0C\u5DF2\u4FDD\u5B58\u7684\u8BB0\u5F55\u4ECD\u53EF\u67E5\u770B\u3002";
+    return "\u7B49\u5F85\u7A7A\u95F2\u65F6\u63A8\u8FDB\uFF1B\u6BCF\u89D2\u8272\u6BCF\u5929\u6700\u591A1\u6B21\uFF0C\u5168\u5E94\u7528\u6BCF\u5929\u6700\u591A2\u6B21\uFF0C\u5931\u8D25\u4E0D\u81EA\u52A8\u91CD\u8BD5\u3002";
+  }
+  function prepareLifeTask(r, user, task) {
+    const privateTicket = preparePersonalReply(r, [], task.to, task.id, "", []).ticket, life = collectRoleLife(r, task.to);
+    const profileText = `\u8EAB\u4EFD\uFF1A${r.job}
+\u4E16\u754C\u4E0E\u6240\u5728\u5730\uFF1A${r.place}
+\u4EBA\u7269\u8D44\u6599\uFF1A${r.profile}
+\u5173\u7CFB\uFF1A${r.relationship}`;
+    const anchors = [{ id: "profile:" + r.id, text: profileText, ref: privateTicket.sources.find((s) => s.kind === "profile") }, ...life.events.slice(-4).flatMap((e) => {
+      const ref = privateTicket.sources.find((s) => s.kind === "event" && s.id === e.id);
+      return ref ? [{ id: "event:" + e.id, text: e.title + "\uFF1A" + e.detail, ref }] : [];
+    }), ...life.threads.slice(0, 3).flatMap((t) => {
+      const ref = privateTicket.sources.find((s) => s.kind === "thread" && s.id === t.id);
+      return ref ? [{ id: "thread:" + t.id, text: t.text, ref }] : [];
+    })];
+    const messages = [
+      { role: "system", content: `[Elsewhere Autonomous Life v1]
+\u4F60\u63A8\u8FDB\u89D2\u8272\u81EA\u5DF1\u4E16\u754C\u4E2D\u7684\u4F4E\u98CE\u9669\u65E5\u5E38\uFF0C\u4E0D\u56DE\u590D\u7528\u6237\uFF0C\u4E0D\u6DA6\u8272\u804A\u5929\u3002\u4F7F\u7528\u4EBA\u7269\u6027\u683C\u3001\u804C\u4E1A\u3001\u5DF2\u77E5\u5904\u5883\u81EA\u884C\u9009\u62E9\uFF0C\u4E0D\u80FD\u7EDF\u4E00\u5B89\u6392\u73B0\u4EE3\u4E0A\u4E0B\u73ED\u3002\u53EA\u80FD\u5728\u7ED9\u5B9A\u5DF2\u8FC7\u53BB\u7684\u7A97\u53E3\u5185\u8BB0\u5F550\u81F33\u4E2A\u5FAE\u5C0F\u6D3B\u52A8\uFF1B\u5B89\u9759\u4E5F\u53EF\u8FD4\u56DE\u7A7A\u6570\u7EC4\u3002\u4E0D\u8981\u6C42\u56FA\u5B9A\u7ED3\u6784\u6216\u6BCF\u5929\u5FD9\u788C\u3002\u4E0D\u5F97\u4EE3\u66FF\u7528\u6237\u884C\u52A8\uFF0C\u4E0D\u751F\u6210\u65B0\u4EBA\u7269\u3001\u6D88\u8D39\u3001\u5916\u90E8\u7ED3\u679C\u3001\u79D8\u5BC6\u8BC1\u5B9E\u3001\u6B7B\u4EA1\u3001\u53D7\u4F24\u3001\u5173\u7CFB\u53D8\u5316\u6216\u4EFB\u4F55\u91CD\u5927\u5267\u60C5\u3002\u53EA\u80FD\u4ECE\u5DF2\u6709\u8D44\u6599\u4E2D\u5F15\u7528\u6D3B\u52A8\u5BF9\u8C61/\u719F\u8BC6\u4EBA\u7269/\u5730\u70B9\uFF1B\u8BA1\u5212\u3001\u62C5\u5FE7\u548C\u63A8\u6D4B\u4E0D\u80FD\u5F53\u6210\u7ED3\u679C\u3002Canon\u662F\u7EA6\u675F\uFF0C\u4E0D\u662F\u5DF2\u53D1\u751F\u4E8B\u4EF6\u3002
+\u8F93\u51FA\u4E25\u683CJSON\uFF1A{requestId,roleId,events:[{at,action:rest|walk|read|organize|practice|care|social,durationMinutes:1\u81F330,focus?:{sourceId,quote},person?:{sourceId,quote},location?:{sourceId,quote}}],thoughts?:[{kind:concern|opinion|plan|observation|relationship,text:200\u5B57\u5185,sources:["profile:\u89D2\u8272ID"\u6216\u5DF2\u7ED9\u6765\u6E90ID],shareable:false}]}\u3002\u4E0D\u7528title/summary/\u81EA\u7531\u7ED3\u679C\u5B57\u6BB5\uFF0C\u8BB0\u5F55\u7531\u53EF\u4FE1\u52A8\u4F5C\u9002\u914D\u5668\u6784\u6210\u3002rest\u53EF\u65E0focus\uFF1Bwalk\u53EF\u65E0\u5730\u70B9\uFF1B\u5176\u4ED6\u975Esocial\u52A8\u4F5C\u9700focus\u3002social\u9700\u5DF2\u77E5\u4EBA\u7269\u4E14\u4E0D\u80FD\u662F\u7528\u6237\uFF1B\u4E0D\u521B\u9020\u5173\u7CFB\u6216\u8C08\u8BDD\u7ED3\u8BBA\u3002\u6700\u591A2\u9879\u79C1\u4EBA\u60F3\u6CD5\uFF0C\u53EF\u7701\u7565\uFF0C\u4E0D\u8981\u6C42\u6BCF\u6761\u6D3B\u52A8\u6709\u5FC3\u7406\u3002\u5F15\u7528quote\u987B\u4E3A\u6765\u6E90\u91CC\u7684\u77ED\u539F\u6587\uFF0C\u4E0D\u80FD\u5F15\u7528\u672A\u6765\u6216\u5047\u8BBE\u5185\u5BB9\u3002\u4E0D\u8981\u8F93\u51FAHTML\u3001\u811A\u672C\u3001Markdown\u6216\u63A8\u7406\u3002` },
+      { role: "user", content: JSON.stringify({ requestId: task.id, roleId: r.id, name: r.name, personality: r.traits, canon: r.canonNotes || "", window: { from: task.from, to: task.to, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }, unavailable: [...[...r.meetings || [], ...r.plays || []].map((s) => ({ from: s.startedAt, to: s.endedAt ?? task.to })), ...life.events.filter((e) => e.at >= task.from).map((e) => ({ from: e.at, to: e.lifeRecord?.until ?? e.at + 1 }))], sources: anchors.map(({ id, text: text2, ref }) => ({ id, text: text2, at: ref.at, kind: ref.kind })) }) }
+    ];
+    if (estimateTextTokens(messages.map((m) => m.content).join("\n")) > 6e3) throw Error("\u751F\u6D3B\u4E0A\u4E0B\u6587\u8D85\u8FC7\u672C\u5730\u9884\u7B97\uFF0C\u672A\u88C1\u6389Canon\u6216\u53D1\u9001\u8BF7\u6C42");
+    privateTicket.sources = anchors.map((a) => a.ref);
+    return { ticket: privateTicket, anchors, messages, blockedPeople: [user.name, r.userAlias || ""].filter(Boolean) };
+  }
+  function anchorValue(value, p, mode, r, eventAt) {
+    if (!value || typeof value !== "object") return;
+    const a = value, source = p.anchors.find((s) => s.id === a.sourceId), quote = typeof a.quote === "string" ? a.quote.trim() : "";
+    if (!source || source.ref.kind !== "profile" && source.ref.at > eventAt || source.ref.kind === "thread" || !quote || quote.length > 32 || /[<>\[\]{}\n]/.test(quote) || !source.text.includes(quote)) return;
+    const index = source.text.indexOf(quote), clause = source.text.slice(Math.max(source.text.lastIndexOf("\u3002", index), source.text.lastIndexOf("\n", index)) + 1).split(/[。\n]/)[0];
+    if (/尚未|假设|如果|将来|未来|还未|未曾/.test(clause)) return;
+    if (mode === "location" && quote !== r.place && !collectRoleLife(r, p.ticket.at).events.some((e) => e.where === quote)) return;
+    if (mode === "person" && (source.ref.kind !== "profile" || p.blockedPeople.includes(quote) || !/^[\p{L} ·-]{2,32}$/u.test(quote) || /用户|玩家|创作者|你|\buser\b|\bplayer\b/i.test(quote) || !/朋友|恋人|同事|熟识|家人|父|母|兄|弟|姐|妹|friend|partner|colleague|family/i.test(clause))) return;
+    return { text: quote, ref: source.ref };
+  }
+  function lifeTaskValid(r, task, p) {
+    return task.status === "attempted" && r.id === task.roleId && r.lifeTasks?.some((t) => t.id === task.id && t.status === "attempted") === true && personalTicketValid(r, p.ticket);
+  }
+  function commitLifeTask(r, task, p, raw, at) {
+    if (!lifeTaskValid(r, task, p) || raw.length > 16e3) throw Error("\u751F\u6D3B\u4EFB\u52A1\u6216\u6765\u6E90\u5DF2\u53D8\u5316\uFF0C\u672A\u5F52\u6863");
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      throw Error("\u751F\u6D3B\u54CD\u5E94\u4E0D\u662F\u5B8C\u6574JSON");
+    }
+    if (!data || data.requestId !== task.id || data.roleId !== r.id || Object.keys(data).some((k) => !["requestId", "roleId", "events", "thoughts"].includes(k)) || !Array.isArray(data.events) || data.events.length > 3) throw Error("\u751F\u6D3B\u54CD\u5E94\u7ED3\u6784\u65E0\u6548");
+    const result = [], seen = /* @__PURE__ */ new Set();
+    for (const [i, item] of data.events.entries()) {
+      if (!item || typeof item !== "object" || Object.keys(item).some((k) => !["at", "action", "durationMinutes", "focus", "person", "location"].includes(k)) || !Number.isFinite(item.at) || item.at < task.from || item.at > task.to || item.at > at || !Number.isInteger(item.durationMinutes) || item.durationMinutes < 1 || item.durationMinutes > 30) throw Error("\u751F\u6D3B\u4E8B\u4EF6\u65F6\u95F4\u6216\u5B57\u6BB5\u65E0\u6548");
+      const until = item.at + item.durationMinutes * 6e4;
+      if (until > task.to || [...r.meetings || [], ...r.plays || []].some((s) => item.at < (s.endedAt ?? task.to) && until > s.startedAt) || collectRoleLife(r, task.to).events.some((e) => item.at < (e.lifeRecord?.until ?? e.at + 1) && until > e.at) || result.some((e) => item.at < e.lifeRecord.until && until > e.at)) throw Error("\u751F\u6D3B\u4E8B\u4EF6\u4E0E\u5B9E\u9645\u573A\u666F\u65F6\u95F4\u51B2\u7A81");
+      const focus = anchorValue(item.focus, p, "focus", r, item.at), person = anchorValue(item.person, p, "person", r, item.at), location = anchorValue(item.location, p, "location", r, item.at);
+      if (item.focus && !focus || item.person && !person || item.location && !location) throw Error("\u751F\u6D3B\u4E8B\u4EF6\u5F15\u7528\u65E0\u6CD5\u9A8C\u8BC1");
+      const details = { rest: ["\u77ED\u6682\u6B47\u606F", `${r.name}\u8BA9\u81EA\u5DF1\u6B47\u4E86\u7247\u523B\u3002`], walk: ["\u8D70\u52A8\u7247\u523B", `${r.name}${location ? "\u5728" + location.text : ""}\u8D70\u52A8\u4E86\u4E00\u4F1A\u513F\u3002`], read: ["\u7FFB\u9605\u8D44\u6599", `${r.name}\u7FFB\u770B\u4E86\u5173\u4E8E\u300C${focus?.text}\u300D\u7684\u5DF2\u6709\u8D44\u6599\u3002`], organize: ["\u6574\u7406\u624B\u5934\u6750\u6599", `${r.name}\u6574\u7406\u4E86\u4E0E\u300C${focus?.text}\u300D\u6709\u5173\u7684\u624B\u5934\u6750\u6599\u3002`], practice: ["\u7EC3\u4E60\u57FA\u672C\u6280\u5DE7", `${r.name}\u7EC3\u4E60\u4E86\u4E0E\u300C${focus?.text}\u300D\u6709\u5173\u7684\u57FA\u672C\u6280\u5DE7\u3002`], care: ["\u65E5\u5E38\u7167\u6599", `${r.name}\u7167\u770B\u3001\u7EF4\u62A4\u4E86\u300C${focus?.text}\u300D\u3002`], social: ["\u77ED\u6682\u4EA4\u8C08", `${r.name}\u4E0E${person?.text}\u8BF4\u4E86\u51E0\u53E5\u8FD1\u51B5\u3002`] };
+      const content = details[item.action];
+      if (typeof item.action !== "string" || !Object.hasOwn(details, item.action) || !content || item.action === "social" && !person || !["rest", "walk", "social"].includes(item.action) && !focus) throw Error("\u4E0D\u662F\u53EF\u63D0\u4EA4\u7684\u4F4E\u98CE\u9669\u65E5\u5E38\u6D3B\u52A8");
+      const key = JSON.stringify([item.at, item.action, focus?.text, person?.text]);
+      if (seen.has(key)) throw Error("\u751F\u6D3B\u4E8B\u4EF6\u91CD\u590D");
+      seen.add(key);
+      const sources = [p.anchors[0].ref, ...[focus, person, location].flatMap((a) => a ? [a.ref] : [])];
+      result.push({ id: task.id + ":event:" + i, kind: "life", title: content[0], detail: content[1], at: item.at, where: location?.text, source: "autonomous-life-v1:" + task.id, status: "active", knownBy: [r.id], lifeEvidence: "confirmed", lifeRecord: { version: 1, roleId: r.id, taskId: task.id, origin: "simulation", action: item.action, until, sources: [...new Map(sources.map((s) => [s.kind + ":" + s.id, s])).values()] } });
+    }
+    if (result.some((e) => r.events.some((old) => old.id === e.id))) throw Error("\u8BE5\u751F\u6D3B\u4EFB\u52A1\u5DF2\u7ECF\u5F52\u6863");
+    if (data.thoughts !== void 0 && (!Array.isArray(data.thoughts) || data.thoughts.length > 2 || data.thoughts.some((t) => !t || typeof t !== "object" || t.shareable !== false || Object.keys(t).some((k) => !["kind", "text", "sources", "shareable"].includes(k))))) throw Error("\u79C1\u4EBA\u5173\u6CE8\u7ED3\u6784\u65E0\u6548");
+    r.events.push(...result);
+    if (data.thoughts?.length) applyPersonalReply(r, p.ticket, JSON.stringify({ requestId: task.id, roleId: r.id, updates: data.thoughts }), at);
+    task.status = result.length ? "completed" : "quiet";
+    task.eventIds = result.map((e) => e.id);
+    return result;
+  }
+
+  // src/core/proactiveChat.ts
+  var day2 = 864e5;
   var chatVersion = (r, id = "") => JSON.stringify(getActiveMessages(r.chats).filter((m) => m.replyTurnId !== id).map((m) => [m.id, m.speaker, m.at, m.text, m.revisionCount || 0]));
-  function topics2(r, at) {
+  function topics(r, at) {
     const { threads, events } = collectRoleLife(r, at);
     return [
-      ...threads.filter((t) => t.shareable && at - t.at <= 14 * day).map((t) => ({ id: "thread:" + t.key, text: t.text, version: JSON.stringify(t) })),
-      ...events.filter((e) => at - e.at <= 7 * day).reverse().map((e) => ({ id: "event:" + e.id, text: e.title + "\uFF1A" + e.detail, version: JSON.stringify(e) }))
+      ...threads.filter((t) => t.shareable && at - t.at <= 14 * day2).map((t) => ({ id: "thread:" + t.key, text: t.text, version: JSON.stringify(t) })),
+      ...events.filter((e) => at - e.at <= 7 * day2).reverse().map((e) => ({ id: "event:" + e.id, text: e.title + "\uFF1A" + e.detail, version: JSON.stringify(e) }))
     ];
   }
   function claimProactive(roles, r, at, ready) {
@@ -11098,15 +10391,15 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
     const lastContact = Math.max(0, ...getActiveMessages(r.chats).map((m) => m.at));
     if (at - lastContact < 6 * 36e5) return null;
     const attempts = r.proactive?.attempts || [];
-    if (attempts.some((t) => at - t.at < day) || roles.flatMap((r2) => r2.proactive?.attempts || []).filter((t) => at - t.at < day).length >= 2) return null;
-    const topic2 = topics2(r, at).find((t) => !r.proactive?.sentTopics.includes(t.id));
-    if (!topic2) return null;
-    const task = { id: makeUid("contact"), roleId: r.id, topicId: topic2.id, topic: topic2.text.slice(0, 600), topicVersion: topic2.version, chatVersion: chatVersion(r), at, status: "attempted" };
-    r.proactive = { attempts: [...attempts.filter((t) => at - t.at <= 14 * day), task], sentTopics: r.proactive?.sentTopics || [] };
+    if (attempts.some((t) => at - t.at < day2) || roles.flatMap((r2) => r2.proactive?.attempts || []).filter((t) => at - t.at < day2).length >= 2) return null;
+    const topic = topics(r, at).find((t) => !r.proactive?.sentTopics.includes(t.id));
+    if (!topic) return null;
+    const task = { id: makeUid("contact"), roleId: r.id, topicId: topic.id, topic: topic.text.slice(0, 600), topicVersion: topic.version, chatVersion: chatVersion(r), at, status: "attempted" };
+    r.proactive = { attempts: [...attempts.filter((t) => at - t.at <= 14 * day2), task], sentTopics: r.proactive?.sentTopics || [] };
     return task;
   }
   function proactiveTaskValid(r, t) {
-    return r.id === t.roleId && !r.scene && !r.play && !r.chatTiming?.pending.length && !r.chatTiming?.inFlight && Boolean(r.proactive?.attempts.some((x) => x.id === t.id && (x.status === "attempted" || x.status === "queued"))) && chatVersion(r, t.id) === t.chatVersion && topics2(r, Math.max(Date.now(), t.at)).some((topic2) => topic2.id === t.topicId && topic2.version === t.topicVersion);
+    return r.id === t.roleId && !r.scene && !r.play && !r.chatTiming?.pending.length && !r.chatTiming?.inFlight && Boolean(r.proactive?.attempts.some((x) => x.id === t.id && (x.status === "attempted" || x.status === "queued"))) && chatVersion(r, t.id) === t.chatVersion && topics(r, Math.max(Date.now(), t.at)).some((topic) => topic.id === t.topicId && topic.version === t.topicVersion);
   }
   function finishProactive(r, t, status, error) {
     const saved = r.proactive?.attempts.find((x) => x.id === t.id);
@@ -12590,9 +11883,6 @@ channel.onmessage=async({data:job})=>{
     for (const r of data.roles) {
       if (!Array.isArray(r.chats)) r.chats = [];
       if (!Array.isArray(r.diaries)) r.diaries = [];
-      r.diaries = r.diaries.filter(
-        (d) => !(d && d.speaker === "char" && d.source === "life")
-      );
       if (!Array.isArray(r.events)) r.events = [];
       if (!Array.isArray(r.plays)) r.plays = [];
       if (!Array.isArray(r.messageRevisions)) r.messageRevisions = [];
@@ -14741,7 +14031,7 @@ ${prevLogs}` : "",
       const previous = data.settings, previousKey = localStorage.getItem(DEVICE_API_KEY);
       try {
         saveDeviceApiKey(localStorage, settings.endpoint, key);
-        data.settings = settings;
+        data.settings = { ...settings, autonomousLife: previous.autonomousLife };
         if (!save()) throw new Error("\u8BBE\u7F6E\u4FDD\u5B58\u5931\u8D25\uFF0C\u539F\u914D\u7F6E\u5DF2\u4FDD\u7559\u3002");
       } catch {
         data.settings = previous;
@@ -14782,6 +14072,7 @@ ${prevLogs}` : "",
     const normalizedData = normalizeAndMigrateData(rawLoaded);
     const nainMigration = originalSave ? migrateUntouchedNainDemo(normalizedData, localStorage, Date.now(), originalSave) : { data: normalizedData, cleaned: false, error: void 0 };
     let data = nainMigration.data;
+    let persistedSave = originalSave;
     let view = "landing";
     let lastRenderedView = "landing";
     let roleFormReturnView = "landing";
@@ -14865,11 +14156,9 @@ ${prevLogs}` : "",
     let diaryQueueBusy = false;
     let lastObservedLocalDay = toLocalDateKey(now());
     let monitorDateKey = toLocalDateKey(now());
-    let monitorTab = "footprints";
     let showFootprintCalendar = false;
     let footprintCalYear = new Date(now()).getFullYear();
     let footprintCalMonth = new Date(now()).getMonth() + 1;
-    let footprintAiBusy = false;
     let frameGallerySourceTab = "preset";
     let frameGallerySearch = "";
     let frameGalleryPage = 0;
@@ -15662,7 +14951,9 @@ ${prevLogs}` : "",
     }
     const save = () => {
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        const raw = JSON.stringify(data);
+        localStorage.setItem(STORAGE_KEY, raw);
+        persistedSave = raw;
         return true;
       } catch {
         notify("\u5B58\u50A8\u7A7A\u95F4\u4E0D\u8DB3\uFF0C\u8BF7\u5148\u5BFC\u51FA\u6216\u6E05\u7406\u6570\u636E");
@@ -15960,7 +15251,7 @@ ${prevLogs}` : "",
       }
     }
     function pumpProactive() {
-      if (document.hidden || proactiveBusy || busy || diaryQueueBusy || activeChatRequests.size || !token.trim() || !canUseRealModel(data.settings)) return;
+      if (document.hidden || proactiveBusy || busy || diaryQueueBusy || lifeBusy || activeChatRequests.size || !token.trim() || !canUseRealModel(data.settings)) return;
       for (const r of data.roles) {
         if (isRoleInActiveFocus(r)) continue;
         const previous = r.proactive ? structuredClone(r.proactive) : void 0, task = claimProactive(data.roles, r, now(), true);
@@ -15973,6 +15264,100 @@ ${prevLogs}` : "",
         void runProactive(r, task);
         return;
       }
+    }
+    let lifeBusy = false, lifeLastCheck = 0, lifeController = null, lifeJournalError = "";
+    const lifeVersion = (r) => JSON.stringify([r.chats, r.scene, r.play, r.events, r.personalThreads, r.memory, r.name, r.profile, r.job, r.traits, r.place, r.relationship, r.canonNotes, r.notes]);
+    function storedLifeVersion(id) {
+      const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+      const r = stored?.roles?.find((r2) => r2.id === id);
+      if (!r) throw Error("\u751F\u6D3B\u6765\u6E90\u5DF2\u53D8\u5316");
+      return lifeVersion(r);
+    }
+    function pumpRoleLife() {
+      if (document.hidden || lifeJournalError || lifeBusy || busy || diaryQueueBusy || proactiveBusy || activeChatRequests.size || !token.trim() || !canUseRealModel(data.settings) || data.settings.autonomousLife === false || now() - lifeLastCheck < 6e4) return;
+      lifeLastCheck = now();
+      if (!navigator.locks) {
+        lifeJournalError = "\u6B64\u6D4F\u89C8\u5668\u65E0\u6CD5\u5B89\u5168\u534F\u8C03\u591A\u6807\u7B7E\u9875\uFF0C\u81EA\u52A8\u63A8\u8FDB\u5DF2\u6682\u505C\u3002";
+        return;
+      }
+      lifeBusy = true;
+      void navigator.locks.request("elsewhere-life-budget-v1", { ifAvailable: true }, async (lock) => {
+        if (!lock) return;
+        let journal;
+        try {
+          journal = readLifeJournal(localStorage);
+        } catch {
+          lifeJournalError = "\u751F\u6D3B\u8C03\u7528\u989D\u5EA6\u8BB0\u5F55\u65E0\u6CD5\u6838\u9A8C\uFF0C\u81EA\u52A8\u63A8\u8FDB\u5DF2\u6682\u505C\u3002";
+          return;
+        }
+        if (localStorage.getItem(STORAGE_KEY) !== persistedSave) {
+          lifeJournalError = "\u5176\u4ED6\u6807\u7B7E\u9875\u66F4\u65B0\u4E86\u5B58\u6863\uFF0C\u8BF7\u5237\u65B0\u540E\u7EE7\u7EED\u751F\u6D3B\u63A8\u8FDB\u3002";
+          return;
+        }
+        const roles = [...data.roles].sort((a, b) => a.id === data.selected ? -1 : b.id === data.selected ? 1 : 0);
+        for (const r of roles) {
+          if (isRoleInActiveFocus(r)) continue;
+          const previous = r.lifeTasks ? structuredClone(r.lifeTasks) : void 0;
+          const task = claimLifeTask(data.roles, r, now(), true, journal);
+          if (!task) continue;
+          journal = [...journal.filter((t) => t.id !== task.id), task];
+          try {
+            writeLifeJournal(localStorage, journal);
+          } catch {
+            r.lifeTasks = previous;
+            lifeJournalError = "\u65E0\u6CD5\u4FDD\u5B58\u751F\u6D3B\u8C03\u7528\u989D\u5EA6\uFF0C\u672A\u53D1\u9001\u8BF7\u6C42\u3002";
+            return;
+          }
+          let maySave = true, version2 = "";
+          const hadThreads = Array.isArray(r.personalThreads);
+          const controller = new AbortController();
+          lifeController = controller;
+          const timeout = setTimeout(() => controller.abort(), 9e4);
+          try {
+            if (localStorage.getItem(STORAGE_KEY) !== persistedSave || !save()) throw Error("\u751F\u6D3B\u4EFB\u52A1\u672A\u80FD\u4FDD\u5B58");
+            const prepared = prepareLifeTask(r, data.user, task), settings = { ...data.settings };
+            version2 = lifeVersion(r);
+            if (storedLifeVersion(r.id) !== version2) throw Error("\u751F\u6D3B\u6765\u6E90\u5DF2\u53D8\u5316");
+            syslog("life", "\u72EC\u7ACB\u751F\u6D3B\u63A8\u8FDB\u5DF2\u5F00\u59CB", { roleId: r.id, taskId: task.id });
+            const res = await fetch(settings.endpoint.trim().replace(/\/+$/, "") + "/chat/completions", { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ model: settings.model, messages: prepared.messages, temperature: settings.temperature, max_tokens: LIFE_MAX_OUTPUT, stream: false }) });
+            const raw = await readChatResponse(res);
+            maySave = localStorage.getItem(STORAGE_KEY) === persistedSave && storedLifeVersion(r.id) === version2;
+            if (controller.signal.aborted || !maySave || !data.roles.includes(r) || lifeVersion(r) !== version2 || data.settings.autonomousLife === false || isRoleInActiveFocus(r)) throw Error("\u751F\u6D3B\u6765\u6E90\u6216\u4EFB\u52A1\u5DF2\u53D8\u5316");
+            commitLifeTask(r, task, prepared, raw, now());
+            if (localStorage.getItem(STORAGE_KEY) !== persistedSave || !save()) throw Error("\u751F\u6D3B\u8BB0\u5F55\u4FDD\u5B58\u5931\u8D25");
+            syslog("life", task.status === "quiet" ? "\u8BE5\u7A97\u53E3\u6CA1\u6709\u9700\u8981\u5355\u72EC\u8BB0\u5F55\u7684\u751F\u6D3B\u4E8B\u4EF6" : "\u72EC\u7ACB\u751F\u6D3B\u5DF2\u5F52\u6863", { roleId: r.id, taskId: task.id });
+          } catch (error) {
+            r.events = r.events.filter((e) => e.lifeRecord?.taskId !== task.id);
+            if (r.personalThreads) {
+              r.personalThreads = r.personalThreads.filter((t) => t.requestId !== task.id);
+              if (!hadThreads && !r.personalThreads.length) delete r.personalThreads;
+            }
+            try {
+              maySave = maySave && localStorage.getItem(STORAGE_KEY) === persistedSave;
+            } catch {
+              maySave = false;
+            }
+            task.status = controller.signal.aborted ? "cancelled" : "failed";
+            task.error = controller.signal.aborted ? "\u5DF2\u53D6\u6D88\u6216\u8D85\u65F6" : error instanceof Error && error.message === "\u751F\u6D3B\u8BB0\u5F55\u4FDD\u5B58\u5931\u8D25" ? "\u672C\u5730\u4FDD\u5B58\u5931\u8D25" : "\u54CD\u5E94\u6216\u6765\u6E90\u672A\u901A\u8FC7\u6821\u9A8C";
+            if (maySave) save();
+            syslog("life", "\u72EC\u7ACB\u751F\u6D3B\u672A\u5F52\u6863\uFF0C\u989D\u5EA6\u5DF2\u5360\u7528\uFF0C\u4E0D\u81EA\u52A8\u91CD\u8BD5", { roleId: r.id, code: task.status });
+          } finally {
+            clearTimeout(timeout);
+            lifeController = null;
+            try {
+              writeLifeJournal(localStorage, journal);
+            } catch {
+              lifeJournalError = "\u751F\u6D3B\u8C03\u7528\u8BB0\u5F55\u4FDD\u5B58\u5931\u8D25\uFF0C\u81EA\u52A8\u63A8\u8FDB\u5DF2\u6682\u505C\u3002";
+            }
+            if (view === "monitor" && role()?.id === r.id) render(false);
+          }
+          return;
+        }
+      }).catch(() => {
+        lifeJournalError = "\u751F\u6D3B\u4EFB\u52A1\u534F\u8C03\u5931\u8D25\uFF0C\u81EA\u52A8\u63A8\u8FDB\u5DF2\u6682\u505C\u3002";
+      }).finally(() => {
+        lifeBusy = false;
+      });
     }
     function acceptPhoneMessage(r, item) {
       const timingBefore = r.chatTiming ? structuredClone(r.chatTiming) : void 0;
@@ -17117,7 +16502,7 @@ ${prevLogs}` : "",
         ${emptyCells}${dayCells}
       </div>
       <div class="fp-cal-footer">
-        <span class="tiny muted">${uiIcon("paw")} \u8868\u793A\u5F53\u5929\u6709\u5DF2\u8BB0\u5F55\u7684\u4E92\u52A8\u6216\u751F\u6D3B\u8DB3\u8FF9</span>
+        <span class="tiny muted">${uiIcon("paw")} \u8868\u793A\u5F53\u5929\u6709\u4FDD\u7559\u7684\u5386\u53F2\u8D44\u6599</span>
         <div class="row" style="gap:6px">
           <button type="button" class="btn small ghost" data-action="monitordate" data-date="${esc(
         todayKey
@@ -17128,155 +16513,41 @@ ${prevLogs}` : "",
     </section>`;
     }
     function screenMonitor() {
-      const r = role();
-      const nowTs = now();
-      const todayKey = toLocalDateKey(nowTs);
-      monitorDateKey = resolveSafeMonitorDateKey(monitorDateKey, nowTs);
-      const isToday = monitorDateKey === todayKey;
-      const bounds = getLocalDayBounds(monitorDateKey);
-      const prevDateKey = shiftDateKey(monitorDateKey, -1);
-      const nextDateKey = shiftDateKey(monitorDateKey, 1);
-      const canGoNext = monitorDateKey < todayKey;
-      const archive = getOrBuildDailyFootprints(r, monitorDateKey, nowTs);
-      const displayItems = monitorItemsForDisplay(r, data.user, archive.items, nowTs);
-      const latestConfirmed = displayItems.find((item) => item.confirmed);
-      const rawEvents = newestMonitorFirst(
-        getRoleKnownEvents(r).filter((x) => {
-          if (x.at > nowTs) return false;
-          const dKey = toLocalDateKey(x.at);
-          if (dKey !== monitorDateKey) return false;
-          return x.kind === "life" || x.kind === "scene" || x.kind === "chat" || x.kind === "focus" || x.kind === "diary_share" || x.kind === "drama";
-        })
-      );
-      const categoryBadgeMap = {
-        interaction: "\u7EBF\u4E0A\u8054\u7EDC",
-        scene: "\u5F53\u9762\u76F8\u5904",
-        focus: "\u5171\u540C\u4E13\u6CE8",
-        drama: "\u5C0F\u5267\u573A\u5171\u521B",
-        diary_share: "\u65E5\u8BB0\u5206\u4EAB",
-        life: "\u65E5\u5E38\u8D77\u5C45",
-        quiet: "\u5E73\u9759\u65E5\u5E38"
-      };
-      const footprintsListHtml = displayItems.length ? displayItems.map((item) => {
-        const catLabel = categoryBadgeMap[item.category] || "\u65E5\u5E38\u8DB3\u8FF9";
-        const artifactHtml = item.confirmed && item.artifact ? `<details class="fp-artifact-preview"><summary>${uiIcon("file")}\u60C5\u5883\u8F85\u52A9\u7D20\u6750 \xB7 \u975E\u6D3B\u52A8\u51ED\u8BC1</summary>${renderSafeFootprintArtifact(item.artifact)}</details>` : "";
-        const transcriptCount = item.rawTranscript?.length || 0;
-        return `<article class="card footprint-card fp-cat-${esc(
-          item.category
-        )}" data-testid="footprint-item" data-fp-category="${esc(
-          item.category
-        )}" data-fp-id="${esc(item.id)}">
-              <div class="fp-card-head">
-                <div class="fp-time-group">
-                  <span class="fp-icon" aria-hidden="true">${uiIcon(item.icon)}</span>
-                  <time class="fp-time-badge">${esc(hm(item.timestamp))}</time>
-                  ${item.durationLabel ? `<span class="fp-duration-tag">${esc(
-          item.durationLabel
-        )}</span>` : ""}
-                </div>
-                <span class="fp-category-pill">${esc(catLabel)}${item.where ? ` \xB7 ${esc(item.where)}` : ""}</span>
-              </div>
-
-              <h3 class="fp-card-title">${esc(item.title)}</h3>
-              <p class="fp-card-summary">${esc(item.summary)}</p>
-
-              ${artifactHtml}
-
-              <details class="footprint-omniscient-box" data-testid="footprint-omniscient-details">
-                <summary class="fp-omniscient-summary">
-                  <span>${uiIcon("eye")} \u4E0A\u5E1D\u89C6\u89D2 \xB7 \u89D2\u8272\u72B6\u6001\u8BFB\u5FC3${transcriptCount ? `\u4E0E ${transcriptCount} \u6761\u5173\u8054\u539F\u59CB\u8BB0\u5F55` : ""}</span>
-                  <span class="fp-omniscient-arrow">\u2304</span>
-                </summary>
-                <div class="fp-omniscient-body">
-                  ${item.innerThought ? `<div class="fp-thought-panel" data-testid="footprint-inner-thought">
-                          <div class="fp-thought-row"><b>\u5916\u5728\u72B6\u6001\uFF1A</b><span>${esc(
-          item.innerThought.surfaceState
-        )}</span></div>
-                          <div class="fp-thought-row"><b>\u5F53\u524D\u60C5\u7EEA\uFF1A</b><span>${esc(
-          item.innerThought.mood
-        )}</span></div>
-                          <div class="fp-thought-row fp-thought-monologue"><b>\u5185\u5FC3\u72EC\u767D\uFF1A</b><span>${esc(
-          item.innerThought.thought
-        )}</span></div>
-                        </div>` : ""}
-                  ${transcriptCount ? `<div class="fp-transcript-panel" data-testid="footprint-raw-transcript">
-                          <div class="fp-transcript-title">\u5173\u8054\u539F\u59CB\u5BF9\u8BDD / \u771F\u5B9E\u4E8B\u4EF6\u6EAF\u6E90\uFF08\u5171 ${transcriptCount} \u6761\uFF09</div>
-                          <div class="fp-transcript-list">
-                            ${item.rawTranscript.map(
-          (tr) => `<div class="fp-transcript-line">
-                                    <span class="fp-tr-meta">[${hm(tr.at)}] <b>${esc(
-            tr.speakerLabel
-          )}</b>\uFF1A</span>
-                                    <span class="fp-tr-text">${esc(tr.text)}</span>
-                                  </div>`
-        ).join("")}
-                          </div>
-                        </div>` : ""}
-                </div>
-              </details>
-            </article>`;
-      }).join("") : `<div class="card fp-empty-card" data-testid="footprint-calm-empty">
-          <div class="fp-calm-icon">${uiIcon("leaf")}</div>
-          <h3>\u6682\u65E0\u6D3B\u52A8\u8BB0\u5F55</h3>
-          <p>${esc(
-        "\u6682\u65E0\u53EF\u786E\u8BA4\u7684\u6D3B\u52A8\u8BB0\u5F55"
-      )}</p>
-        </div>`;
-      return shell(
-        `${header(
-          "\u751F\u6D3B\u76D1\u63A7",
-          "home"
-        )}<div class="viewport"><div class="row between"><div><div class="label">DAILY FOOTPRINTS \xB7 \u65E5\u5E38\u8DB3\u8FF9</div><div class="h2" style="margin-bottom:4px">${hm(
-          nowTs
-        )}</div><div class="tiny muted">\u7B2C\u4E09\u4EBA\u79F0\u751F\u6D3B\u6982\u89C8 \xB7 \u5076\u53D1\u751F\u6D3B\u7968\u636E \xB7 \u53EF\u5C55\u5F00\u4E0A\u5E1D\u89C6\u89D2\u8BFB\u5FC3</div></div><div class="pill"><span class="dot"></span>${isToday ? "\u4ECA\u65E5\u540C\u6B65" : "\u5386\u53F2\u8DB3\u8FF9"}</div></div>
-
-      <div class="card fp-current-status-card"><div class="row">${avatarTag(
-          r,
-          "avatar large"
-        )}<div><h3>\u6700\u8FD1\u786E\u8BA4\u7684\u6D3B\u52A8</h3><p>${esc(latestConfirmed?.summary || "\u6682\u65E0\u53EF\u786E\u8BA4\u7684\u6D3B\u52A8\u8BB0\u5F55")}</p></div></div></div>
-
+      const r = role(), at = now(), today = toLocalDateKey(at);
+      monitorDateKey = resolveSafeMonitorDateKey(monitorDateKey, at);
+      const bounds = getLocalDayBounds(monitorDateKey), cutoff = Math.min(at, bounds.endMs);
+      const archive = getOrBuildDailyFootprints(r, monitorDateKey, at);
+      const items = monitorItemsForDisplay(r, data.user, archive.items, at), life = collectRoleLife(r, cutoff);
+      let state2 = lifeJournalError;
+      if (!state2) try {
+        state2 = lifeTaskState(data.roles, r, at, Boolean(token.trim()) && canUseRealModel(data.settings), data.settings.autonomousLife !== false, readLifeJournal(localStorage), lifeBusy && Boolean(lifeController));
+      } catch {
+        state2 = "\u751F\u6D3B\u8C03\u7528\u989D\u5EA6\u8BB0\u5F55\u65E0\u6CD5\u6838\u9A8C\uFF0C\u81EA\u52A8\u63A8\u8FDB\u5DF2\u6682\u505C\u3002";
+      }
+      const list = items.map((item) => {
+        const event = item.category === "life" ? life.events.find((e) => e.id === item.sourceEventIds[0]) : void 0;
+        const source = event?.lifeRecord ? "\u751F\u6D3B\u6A21\u62DF \xB7 \u5DF2\u5F52\u6863" : item.category === "life" ? "\u6709\u6765\u6E90\u7684\u751F\u6D3B\u8BB0\u5F55" : item.category === "drama" ? "\u6392\u6F14\u53C2\u4E0E \xB7 \u4E0D\u8BA1\u4F5C\u620F\u5185\u4EBA\u751F" : "\u6709\u6548\u4E92\u52A8";
+        return `<article class="card footprint-card" data-testid="footprint-item" data-fp-category="${esc(item.category)}" data-fp-id="${esc(item.id)}">
+        <div class="row between"><time class="fp-time-badge">${esc(hm(item.timestamp))}</time><span class="tiny muted">${esc(source)}</span></div>
+        <h3>${esc(item.title)}</h3><p class="life-narrative">${esc(item.summary)}</p>${item.where ? `<div class="tiny muted">${uiIcon("pin")}${esc(item.where)}</div>` : ""}
+        <details class="life-provenance"><summary>\u6765\u6E90\u4E0E\u8BB0\u5F55</summary><p class="tiny muted">${esc(dt(item.timestamp))} \xB7 ${esc(source)}</p>
+          ${(item.rawTranscript || []).slice(0, 3).map((t) => `<p class="tiny">${esc(t.speakerLabel)} \xB7 ${esc(t.text.slice(0, 240))}</p>`).join("")}
+          ${event?.lifeRecord ? `<div class="tiny muted">${event.lifeRecord.sources.map((s) => esc(s.kind + ":" + s.id)).join(" \xB7 ")}</div><button class="btn small ghost" data-action="retractlife" data-id="${esc(event.id)}">\u64A4\u56DE\u6B64\u6A21\u62DF\u8BB0\u5F55</button>` : ""}
+        </details></article>`;
+      }).join("");
+      const thoughts = life.threads.filter((t) => t.at <= cutoff).slice(0, 3);
+      return shell(`${header("\u751F\u6D3B\u76D1\u63A7", "home")}<div class="viewport monitor-life">
+      <div class="row between"><div><div class="label">DAILY FOOTPRINTS</div><h2>\u65E5\u5E38\u8DB3\u8FF9</h2></div>${avatarTag(r, "avatar large")}</div>
+      <p class="sub">\u53D1\u751F\u5728${esc(r.name)}\u81EA\u5DF1\u4E16\u754C\u91CC\u7684\u751F\u6D3B\u3002\u6CA1\u6709\u8BB0\u5F55\u7684\u65F6\u6BB5\u4FDD\u6301\u672A\u77E5\u3002</p>
       <div class="fp-date-bar" data-testid="monitor-date-bar">
-        <button type="button" class="btn small secondary fp-nav-btn" data-action="monitordate" data-date="${esc(
-          prevDateKey
-        )}" data-testid="monitor-prev-day" aria-label="\u524D\u4E00\u5929">\u2039 \u524D\u4E00\u5929</button>
-        <button type="button" class="fp-date-display" data-action="togglefootprintcal" data-testid="monitor-date-display" title="\u70B9\u51FB\u6253\u5F00\u8DB3\u8FF9\u65E5\u5386">
-          <strong>${uiIcon("deadline")} ${esc(bounds.label)}</strong>
-          <small>${esc(monitorDateKey)} \xB7 ${isToday ? "\u4ECA\u5929" : "\u5386\u53F2\u5F52\u6863"} \xB7 \u70B9\u51FB\u5C55\u5F00\u65E5\u5386 \u25BE</small>
-        </button>
-        <button type="button" class="btn small secondary fp-nav-btn" data-action="monitordate" data-date="${esc(
-          nextDateKey
-        )}" data-testid="monitor-next-day" ${canGoNext ? "" : "disabled"} aria-label="\u540E\u4E00\u5929">\u540E\u4E00\u5929 \u203A</button>
-      </div>
-
-      ${renderFootprintCalendarDrawer(r, monitorDateKey)}
-
-      <div class="tabs fp-mode-tabs" style="margin:10px 0">
-        <button type="button" data-action="monitortab" data-tab="footprints" class="${monitorTab === "footprints" ? "active" : ""}" data-testid="monitor-tab-footprints">${uiIcon("paw")} \u65E5\u5E38\u8DB3\u8FF9\u6982\u89C8 (${displayItems.length})</button>
-        <button type="button" data-action="monitortab" data-tab="raw" class="${monitorTab === "raw" ? "active" : ""}" data-testid="monitor-tab-raw">${uiIcon("eye")} \u5B8C\u6574\u539F\u59CB\u4E8B\u4EF6\u6D41 (${rawEvents.length})</button>
-      </div>
-
-      ${monitorTab === "footprints" ? `<div class="fp-overview-toolbar">
-              <div class="tiny muted" data-testid="footprint-fact-consistency">
-                \u6709\u6548\u8BB0\u5F55\uFF1A\u5F53\u65E5 ${displayItems.filter((item) => item.category === "interaction").reduce((sum, item) => sum + item.sourceMessageCount, 0)} \u6761\u804A\u5929\u5DF2\u805A\u5408 \xB7 ${displayItems.filter((item) => item.category === "scene").reduce((sum, item) => sum + item.sourceMessageCount, 0)} \u6761\u89C1\u9762\u8BB0\u5F55 \xB7 ${displayItems.filter((item) => item.category === "focus").reduce((sum, item) => sum + item.sourceEventCount, 0)} \u6761\u4E13\u6CE8\u8BB0\u5F55
-              </div>
-              <button type="button" class="btn small ghost" data-action="enrichfootprints" data-date="${esc(
-          monitorDateKey
-        )}" data-testid="enrich-footprints-btn" ${footprintAiBusy ? "disabled" : ""}>${footprintAiBusy ? `${uiIcon("hourglass")} \u6B63\u5728\u6DA6\u8272\u2026` : archive.aiGeneratedAt ? `${uiIcon("sparkles")} \u91CD\u65B0 AI \u6DA6\u8272\u8DB3\u8FF9` : `${uiIcon("sparkles")} AI \u6DA6\u8272\u4ECA\u65E5\u8DB3\u8FF9\u7EC6\u8282`}</button>
-            </div>
-            ${!latestConfirmed && displayItems.length > 0 ? `<div class="hint fp-calm-banner" data-testid="footprint-calm-banner">${uiIcon("leaf")} ${esc(
-          "\u65E5\u7A0B\u6295\u5F71\u4E0D\u4F5C\u4E3A\u5DF2\u786E\u8BA4\u884C\u4E3A\uFF0C\u6682\u65E0\u53EF\u786E\u8BA4\u7684\u6D3B\u52A8\u8BB0\u5F55"
-        )}</div>` : ""}
-            <div class="footprints-list" data-testid="footprints-list">
-              ${footprintsListHtml}
-            </div>` : `<div class="hint">\u5B8C\u6574\u539F\u59CB\u4E8B\u4EF6\u6D41\u4FDD\u7559\u4E86\u6BCF\u4E00\u6761\u5DF2\u53D1\u751F\u804A\u5929\u3001\u89C1\u9762\u3001\u5171\u540C\u4E13\u6CE8\u4E0E\u65E5\u7A0B\u6295\u5F71\u7684\u5E95\u5C42\u65F6\u95F4\u7EBF\u8BB0\u5F55\u3002</div>
-            <div class="timeline" data-testid="monitor-raw-timeline">${rawEvents.length ? rawEvents.map(
-          (e) => `<div class="event"><div class="time">${dt(
-            e.at
-          )}</div><div class="desc"><b>${esc(
-            e.title
-          )}</b><div>${esc(e.detail)}</div></div><div class="via">\u6765\u6E90\uFF1A${e.kind === "life" ? "\u786E\u5B9A\u6027\u65E5\u7A0B\u6295\u5F71" : e.kind === "chat" ? "\u804A\u5929\u8BB0\u5F55" : e.kind === "focus" ? "\u5DF2\u786E\u8BA4\u7684\u5171\u540C\u4E13\u6CE8" : e.kind === "diary_share" ? "\u4F60\u4E3B\u52A8\u5206\u4EAB\u7684\u65E5\u8BB0" : e.kind === "drama" ? "\u5C0F\u5267\u573A\u5171\u521B" : "\u5DF2\u7ED3\u675F\u7684\u89C1\u9762"}</div></div>`
-        ).join("") : '<div class="sub">\u5F53\u5929\u6682\u65E0\u539F\u59CB\u4E8B\u4EF6\u8BB0\u5F55\u3002</div>'}</div>`}</div>`
-      );
+        <button class="btn small secondary fp-nav-btn" data-action="monitordate" data-date="${esc(shiftDateKey(monitorDateKey, -1))}" data-testid="monitor-prev-day" aria-label="\u524D\u4E00\u5929">\u2039 \u524D\u4E00\u5929</button>
+        <button class="fp-date-display" data-action="togglefootprintcal" data-testid="monitor-date-display"><strong>${esc(bounds.label)}</strong><small>${esc(monitorDateKey)} \xB7 ${monitorDateKey === today ? "\u4ECA\u5929" : "\u5386\u53F2\u5F52\u6863"} \u25BE</small></button>
+        <button class="btn small secondary fp-nav-btn" data-action="monitordate" data-date="${esc(shiftDateKey(monitorDateKey, 1))}" data-testid="monitor-next-day" ${monitorDateKey < today ? "" : "disabled"} aria-label="\u540E\u4E00\u5929">\u540E\u4E00\u5929 \u203A</button>
+      </div>${renderFootprintCalendarDrawer(r, monitorDateKey)}
+      <div class="footprints-list" data-testid="footprints-list">${list || `<div class="card fp-empty-card" data-testid="footprint-calm-empty">${uiIcon("leaf")}<h3>\u5C1A\u65E0\u5DF2\u5F52\u6863\u7684\u751F\u6D3B\u8BB0\u5F55</h3><p>\u8FD9\u4E0D\u4EE3\u8868\u5DF2\u786E\u8BA4\u6574\u5929\u65E0\u4E8B\u53D1\u751F\u3002API \u4E0D\u53EF\u7528\u65F6\uFF0C\u4E0D\u4F1A\u8865\u9020\u6D3B\u52A8\u3002</p></div>`}</div>
+      ${thoughts.length ? `<details class="card life-private" data-testid="life-private"><summary>\u79C1\u4EBA\u5173\u6CE8 \xB7 \u4E3B\u89C2\u60F3\u6CD5</summary><p class="tiny muted">\u8FD9\u662F${esc(r.name)}\u81EA\u5DF1\u8BB0\u4E0B\u7684\u60F3\u6CD5\u3001\u8BA1\u5212\u6216\u5224\u65AD\uFF0C\u4E0D\u7B49\u4E8E\u5916\u90E8\u4E8B\u5B9E\uFF0C\u4E5F\u4E0D\u8868\u793A\u5DF2\u7ECF\u544A\u8BC9\u4E86\u4F60\u3002</p>${thoughts.map((t) => `<p>${esc(t.text)}<br><time class="tiny muted">${esc(dt(t.at))}</time></p>`).join("")}</details>` : ""}
+      <details class="card life-settings" data-testid="life-settings"><summary>\u751F\u6D3B\u63A8\u8FDB\u4E0E\u8C03\u7528\u989D\u5EA6</summary><p data-testid="life-state">${esc(state2)}</p><p class="tiny muted">\u4EC5\u5728\u7F51\u9875\u6253\u5F00\u4E14\u7A7A\u95F2\u65F6\u63A8\u8FDB\u5F53\u5929\u6700\u8FD1\u4E00\u6BB5\u751F\u6D3B\u3002\u6BCF\u89D2\u8272\u6BCF\u5929\u6700\u591A 1 \u6B21\uFF0C\u5168\u5E94\u7528\u6BCF\u5929\u53CA\u6700\u8FD1 24 \u5C0F\u65F6\u6700\u591A 2 \u6B21\uFF1B\u5931\u8D25\u8BA1\u5165\u989D\u5EA6\uFF0C\u4E0D\u81EA\u52A8\u91CD\u8BD5\u3002\u666E\u901A\u804A\u5929\u4E0E\u6BCF\u7BC7\u65E5\u8BB0\u4ECD\u5404\u4F7F\u7528\u539F\u6709\u4E00\u6B21\u8BF7\u6C42\uFF0C\u989D\u5EA6\u72EC\u7ACB\u8BA1\u7B97\u3002</p><button class="btn small secondary" data-action="toggleautonomouslife">${data.settings.autonomousLife === false ? "\u6062\u590D\u81EA\u52A8\u63A8\u8FDB" : "\u6682\u505C\u81EA\u52A8\u63A8\u8FDB"}</button></details>
+    </div>`);
     }
     function renderFocusSettlementModal() {
       if (!focusSettlementModalSessionId) return "";
@@ -17945,7 +17216,7 @@ ${prevLogs}` : "",
     }
     function systemLogsHtml() {
       const date = systemLogDate || toLocalDateKey(now()), logs = data.logs || [];
-      return `<h3>\u7CFB\u7EDF Log</h3><p>\u6309\u672C\u5730\u65E5\u671F\u67E5\u770B\u8FDE\u63A5\u4E0E\u6A21\u5F0F\u8BCA\u65AD\uFF1B\u4E0D\u8BB0\u5F55 API Key\u3001Prompt \u6216\u804A\u5929\u5168\u6587\u3002</p><div class="row"><button class="btn small secondary" data-action="exportlogs">\u5BFC\u51FA\u65E5\u5FD7 JSON</button><button class="btn small ghost" data-action="clearlogs">\u6E05\u7A7A\u65E5\u5FD7</button></div><details><summary>\u6700\u8FD1\u8BF7\u6C42\u7ED3\u6784 \xB7 \u5F53\u524D\u89D2\u8272</summary><pre>${esc(JSON.stringify(promptTraces.get(role().id) || { status: "\u5F53\u524D\u4F1A\u8BDD\u5C1A\u65E0\u8BF7\u6C42" }, null, 2))}</pre></details><div class="row between"><b>${esc(date)}${systemLogDate ? "" : " \xB7 \u4ECA\u65E5"}</b><button type="button" class="btn small ghost" data-action="logtoday">\u4ECA\u65E5\u65E5\u5FD7</button></div><details data-log-history><summary>\u5386\u53F2\u65E5\u5FD7</summary><label>\u9009\u62E9\u65E5\u671F<select class="field" data-log-date aria-label="\u65E5\u5FD7\u65E5\u671F">${logDays(logs, now()).map((day2) => `<option value="${day2}" ${date === day2 ? "selected" : ""}>${day2}</option>`).join("")}</select></label></details><div class="log-list">${logsForDay(logs, date).map((l) => `<details class="log-row" data-log-id="${esc(l.id)}"><summary>${esc(logTimestamp(l.at))} \xB7 ${esc(l.type)} \xB7 ${esc(l.detail.slice(0, 75))}</summary><pre>${esc(JSON.stringify(l, null, 2))}</pre></details>`).join("") || '<p class="sub">\u8FD9\u4E00\u5929\u6682\u65E0\u65E5\u5FD7\u3002</p>'}</div>`;
+      return `<h3>\u7CFB\u7EDF Log</h3><p>\u6309\u672C\u5730\u65E5\u671F\u67E5\u770B\u8FDE\u63A5\u4E0E\u6A21\u5F0F\u8BCA\u65AD\uFF1B\u4E0D\u8BB0\u5F55 API Key\u3001Prompt \u6216\u804A\u5929\u5168\u6587\u3002</p><div class="row"><button class="btn small secondary" data-action="exportlogs">\u5BFC\u51FA\u65E5\u5FD7 JSON</button><button class="btn small ghost" data-action="clearlogs">\u6E05\u7A7A\u65E5\u5FD7</button></div><details><summary>\u6700\u8FD1\u8BF7\u6C42\u7ED3\u6784 \xB7 \u5F53\u524D\u89D2\u8272</summary><pre>${esc(JSON.stringify(promptTraces.get(role().id) || { status: "\u5F53\u524D\u4F1A\u8BDD\u5C1A\u65E0\u8BF7\u6C42" }, null, 2))}</pre></details><div class="row between"><b>${esc(date)}${systemLogDate ? "" : " \xB7 \u4ECA\u65E5"}</b><button type="button" class="btn small ghost" data-action="logtoday">\u4ECA\u65E5\u65E5\u5FD7</button></div><details data-log-history><summary>\u5386\u53F2\u65E5\u5FD7</summary><label>\u9009\u62E9\u65E5\u671F<select class="field" data-log-date aria-label="\u65E5\u5FD7\u65E5\u671F">${logDays(logs, now()).map((day3) => `<option value="${day3}" ${date === day3 ? "selected" : ""}>${day3}</option>`).join("")}</select></label></details><div class="log-list">${logsForDay(logs, date).map((l) => `<details class="log-row" data-log-id="${esc(l.id)}"><summary>${esc(logTimestamp(l.at))} \xB7 ${esc(l.type)} \xB7 ${esc(l.detail.slice(0, 75))}</summary><pre>${esc(JSON.stringify(l, null, 2))}</pre></details>`).join("") || '<p class="sub">\u8FD9\u4E00\u5929\u6682\u65E0\u65E5\u5FD7\u3002</p>'}</div>`;
     }
     function refreshSystemLogs() {
       const root = $("#system-log-root");
@@ -18556,7 +17827,7 @@ ${prevLogs}` : "",
       }
     }
     async function processDiaryQueue() {
-      if (diaryQueueBusy) return;
+      if (diaryQueueBusy || lifeBusy) return;
       for (const roleItem of data.roles) {
         syncRoleDiaryTasks(roleItem, data.settings, now());
       }
@@ -19183,7 +18454,7 @@ ${prevLogs}` : "",
       const act = b.dataset.action;
       let r = role();
       if (act === "nainpreflight") {
-        if (!r || busy || diaryQueueBusy || footprintAiBusy) {
+        if (!r || busy || diaryQueueBusy || lifeBusy) {
           notify("\u8BF7\u7B49\u5F85\u5F53\u524D\u8BF7\u6C42\u7ED3\u675F\u540E\u518D\u6E05\u6863\u3002");
           return;
         }
@@ -19705,11 +18976,6 @@ ${prevLogs}` : "",
         render(false);
         return;
       }
-      if (act === "monitortab") {
-        monitorTab = b.dataset.tab === "raw" ? "raw" : "footprints";
-        render(false);
-        return;
-      }
       if (act === "togglefootprintcal") {
         showFootprintCalendar = !showFootprintCalendar;
         if (showFootprintCalendar) {
@@ -19730,61 +18996,24 @@ ${prevLogs}` : "",
         render(false);
         return;
       }
-      if (act === "enrichfootprints") {
-        if (!r || footprintAiBusy) return;
-        const targetDate = resolveSafeMonitorDateKey(
-          b.dataset.date || monitorDateKey,
-          now()
-        );
-        if (!canUseRealModel(data.settings)) {
-          notify("\u5F53\u524D\u5904\u4E8E\u672C\u5730\u6F14\u793A\u6A21\u5F0F\uFF0C\u5DF2\u5C55\u793A\u57FA\u4E8E\u771F\u5B9E\u4E92\u52A8\u6784\u5EFA\u7684\u65E5\u5E38\u8DB3\u8FF9\uFF1B\u5982\u9700 AI \u6DF1\u5EA6\u6DA6\u8272\uFF0C\u8BF7\u5728\u300C\u7EC8\u7AEF\u300D\u914D\u7F6E\u81EA\u5B9A\u4E49 API");
+      if (act === "toggleautonomouslife") {
+        const previous = data.settings.autonomousLife;
+        data.settings.autonomousLife = previous === false;
+        if (!save()) {
+          data.settings.autonomousLife = previous;
           return;
         }
-        footprintAiBusy = true;
+        if (data.settings.autonomousLife === false) lifeController?.abort();
         render(false);
-        void (async () => {
-          try {
-            const s = data.settings;
-            const url = s.endpoint.trim().replace(/\/+$/, "");
-            const prompt = buildDailyFootprintsAiPrompt(r, data.user, targetDate, now());
-            syslog("monitor", `\u8BF7\u6C42 AI \u6DA6\u8272\u65E5\u5E38\u8DB3\u8FF9 \xB7 ${r.name} \xB7 ${targetDate}`, {
-              model: s.model
-            });
-            const res = await fetch(url + "/chat/completions", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                ...token ? { Authorization: "Bearer " + token } : {}
-              },
-              body: JSON.stringify({
-                model: s.model,
-                messages: prompt,
-                temperature: +s.temperature || 0.7,
-                ...completionLimit(s, "footprints")
-              })
-            });
-            if (!res.ok) {
-              throw new Error(
-                `\u63A5\u53E3\u8FD4\u56DE ${res.status}: ${(await res.text()).slice(0, 120)}`
-              );
-            }
-            const json = await res.json();
-            const rawText = json.choices?.[0]?.message?.content?.trim() || "";
-            const applied = applyAiDailyFootprints(r, targetDate, rawText, now());
-            if (!applied.ok) {
-              throw new Error(applied.reason || "\u672A\u80FD\u89E3\u6790 AI \u8DB3\u8FF9\u54CD\u5E94");
-            }
-            save();
-            notify(`\u5DF2\u5B8C\u6210 ${r.name} \u5728 ${targetDate} \u7684\u65E5\u5E38\u8DB3\u8FF9\u7EC6\u8282\u6DA6\u8272`);
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            syslog("error", `AI \u6DA6\u8272\u65E5\u5E38\u8DB3\u8FF9\u5931\u8D25\uFF1A${msg}`);
-            notify("AI \u6DA6\u8272\u8DB3\u8FF9\u5931\u8D25\uFF1A" + msg);
-          } finally {
-            footprintAiBusy = false;
-            render(false);
-          }
-        })();
+        return;
+      }
+      if (act === "retractlife") {
+        const event = r?.events.find((e2) => e2.id === b.dataset.id && e2.kind === "life" && e2.lifeRecord);
+        if (!event || !confirm("\u64A4\u56DE\u8FD9\u6761\u6A21\u62DF\u751F\u6D3B\u8BB0\u5F55\uFF1F\u539F\u6587\u4F1A\u4FDD\u7559\uFF0C\u540E\u7EED\u804A\u5929\u548C\u65E5\u8BB0\u4E0D\u518D\u628A\u5B83\u5F53\u4F5C\u6709\u6548\u751F\u6D3B\u4E8B\u5B9E\u3002")) return;
+        const before = event.status;
+        event.status = "retracted";
+        if (!save()) event.status = before;
+        render(false);
         return;
       }
       if (act === "openframemodal") {
@@ -20650,12 +19879,14 @@ ${prevLogs}` : "",
       if (!document.hidden) {
         pumpChatSchedules();
         pumpProactive();
+        pumpRoleLife();
         if (view === "home") homeTasks.refresh();
       }
     });
     window.addEventListener("pageshow", () => {
       pumpChatSchedules();
       pumpProactive();
+      pumpRoleLife();
       if (view === "home") homeTasks.refresh();
     });
     if (typeof setInterval === "function") {
@@ -20664,6 +19895,7 @@ ${prevLogs}` : "",
         if (view === "home") homeTasks.refresh();
         pumpChatSchedules();
         pumpProactive();
+        pumpRoleLife();
         let chatDelivered = false;
         for (const item of data.roles) {
           if (deliverPending(item) && item.id === data.selected) chatDelivered = true;

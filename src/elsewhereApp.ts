@@ -11,12 +11,13 @@ import {ConversationCompileError,requestMessages,promptStructure,type Conversati
 import {loadRequestPreset} from './core/fruit/library';
 import type {FruitPreset} from './core/fruit/types';
 import {createNovelTasks,commitNovelReply,prepareNovelRegeneration,readNovelResponse,novelSamplingParameters,type NovelKind} from './core/novelGeneration';
-import {monitorItemsForDisplay,newestMonitorFirst} from './core/monitorPresentation';
+import {monitorItemsForDisplay} from './core/monitorPresentation';
 import {uiIcon,plainUiLabel} from './uiIcons';
 import {chatTiming,setChatFocused,enqueueChat,prepareChatDue,claimChatBatch,chatBatchValid,chatRevisionKey,completeChatBatch,failChatBatch,recoverChatTiming,retryChatTiming,reviseChatTiming,sourceStillValid} from './core/chatScheduler';
 import {compileChatBatchPrompt,buildPhoneRegeneration,readChatResponse} from './core/chatBatchPrompt';
 import {describeChatVoice,chatVoiceSummary} from './core/chatVoice';
-import {preparePersonalReply,splitPersonalReply,applyPersonalReply,personalTicketValid} from './core/roleLife';
+import {preparePersonalReply,splitPersonalReply,applyPersonalReply,personalTicketValid,collectRoleLife} from './core/roleLife';
+import {claimLifeTask,prepareLifeTask,commitLifeTask,readLifeJournal,writeLifeJournal,lifeTaskState,LIFE_MAX_OUTPUT,type LifeTask} from './core/autonomousLife';
 import {syncRoleMemory} from './core/memory';
 import {claimProactive,proactiveTaskValid,finishProactive,recordProactiveDelivery,recoverProactive,proactiveInstruction,parseProactiveReply,type ProactiveTask} from './core/proactiveChat';
 import {createChatVoiceDialog} from './chatVoiceView';
@@ -79,11 +80,8 @@ import {
   isAllowedFrameSource,
 } from './core/avatarFrames';
 import {
-  applyAiDailyFootprints,
-  buildDailyFootprintsAiPrompt,
   buildFootprintCalendarMonth,
   getOrBuildDailyFootprints,
-  renderSafeFootprintArtifact,
   resolveSafeMonitorDateKey,
 } from './core/footprints';
 import {
@@ -93,7 +91,6 @@ import {
   createUserDiary,
   getCharacterDiaryDateKey,
   getLocalDayBounds,
-  getRoleKnownEvents,
   hasCharacterDiaryForDate,
   isDiarySharedWithRole,
   markDiaryTaskFailed,
@@ -155,7 +152,7 @@ export function initElsewhereApp(): void {
     const previous=data.settings,previousKey=localStorage.getItem(DEVICE_API_KEY);
     try {
       saveDeviceApiKey(localStorage,settings.endpoint,key);
-      data.settings=settings;
+      data.settings={...settings,autonomousLife:previous.autonomousLife};
       if(!save())throw new Error('设置保存失败，原配置已保留。');
     } catch {
       data.settings=previous;
@@ -195,6 +192,7 @@ export function initElsewhereApp(): void {
   const normalizedData=normalizeAndMigrateData(rawLoaded);
   const nainMigration=originalSave?migrateUntouchedNainDemo(normalizedData,localStorage,Date.now(),originalSave):{data:normalizedData,cleaned:false,error:undefined};
   let data: AppData = nainMigration.data;
+  let persistedSave=originalSave;
 
   let view = 'landing';
   let lastRenderedView = 'landing';
@@ -277,11 +275,9 @@ export function initElsewhereApp(): void {
 
   // Track A state: Monitor Daily Footprints date, tab, calendar drawer, and AI enrichment state
   let monitorDateKey = toLocalDateKey(now());
-  let monitorTab: 'footprints' | 'raw' = 'footprints';
   let showFootprintCalendar = false;
   let footprintCalYear = new Date(now()).getFullYear();
   let footprintCalMonth = new Date(now()).getMonth() + 1;
-  let footprintAiBusy = false;
 
   // Track B, UI 02 & UI 03-A state: Preset & Custom Avatar Frame Modal Picker
   let frameGallerySourceTab: 'preset' | 'custom' = 'preset';
@@ -1369,7 +1365,7 @@ export function initElsewhereApp(): void {
 
   const save = (): boolean => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      const raw=JSON.stringify(data);localStorage.setItem(STORAGE_KEY, raw);persistedSave=raw;
       return true;
     } catch {
       notify('存储空间不足，请先导出或清理数据');
@@ -1617,7 +1613,7 @@ export function initElsewhereApp(): void {
     }
   }
   function pumpProactive():void {
-    if(document.hidden||proactiveBusy||busy||diaryQueueBusy||activeChatRequests.size||!token.trim()||!canUseRealModel(data.settings))return;
+    if(document.hidden||proactiveBusy||busy||diaryQueueBusy||lifeBusy||activeChatRequests.size||!token.trim()||!canUseRealModel(data.settings))return;
     for(const r of data.roles){
       if(isRoleInActiveFocus(r))continue;
       const previous=r.proactive?structuredClone(r.proactive):undefined,task=claimProactive(data.roles,r,now(),true);
@@ -1625,6 +1621,63 @@ export function initElsewhereApp(): void {
       if(!save()){r.proactive=previous;return;}
       proactiveBusy=true;void runProactive(r,task);return;
     }
+  }
+
+  // The journal is only a durable cost ledger; formal life remains in role.events.
+  let lifeBusy=false,lifeLastCheck=0,lifeController:AbortController|null=null,lifeJournalError='';
+  const lifeVersion=(r:RoleData)=>JSON.stringify([r.chats,r.scene,r.play,r.events,r.personalThreads,r.memory,r.name,r.profile,r.job,r.traits,r.place,r.relationship,r.canonNotes,r.notes]);
+  function storedLifeVersion(id:string):string {
+    const stored=JSON.parse(localStorage.getItem(STORAGE_KEY)||'null') as AppData|null;
+    const r=stored?.roles?.find(r=>r.id===id);if(!r)throw Error('生活来源已变化');return lifeVersion(r);
+  }
+  function pumpRoleLife():void {
+    if(document.hidden||lifeJournalError||lifeBusy||busy||diaryQueueBusy||proactiveBusy||activeChatRequests.size||!token.trim()||!canUseRealModel(data.settings)||data.settings.autonomousLife===false||now()-lifeLastCheck<60000)return;
+    lifeLastCheck=now();
+    if(!navigator.locks){lifeJournalError='此浏览器无法安全协调多标签页，自动推进已暂停。';return;}
+    lifeBusy=true;
+    void navigator.locks.request('elsewhere-life-budget-v1',{ifAvailable:true},async lock=>{
+      if(!lock)return;
+      let journal:LifeTask[];try{journal=readLifeJournal(localStorage);}catch{lifeJournalError='生活调用额度记录无法核验，自动推进已暂停。';return;}
+      if(localStorage.getItem(STORAGE_KEY)!==persistedSave){lifeJournalError='其他标签页更新了存档，请刷新后继续生活推进。';return;}
+      const roles=[...data.roles].sort((a,b)=>(a.id===data.selected?-1:b.id===data.selected?1:0));
+      for(const r of roles){
+        if(isRoleInActiveFocus(r))continue;
+        const previous=r.lifeTasks?structuredClone(r.lifeTasks):undefined;
+        const task=claimLifeTask(data.roles,r,now(),true,journal);if(!task)continue;
+        journal=[...journal.filter(t=>t.id!==task.id),task];
+        try{writeLifeJournal(localStorage,journal);}catch{r.lifeTasks=previous;lifeJournalError='无法保存生活调用额度，未发送请求。';return;}
+        let maySave=true,version='';const hadThreads=Array.isArray(r.personalThreads);
+        const controller=new AbortController();lifeController=controller;
+        const timeout=setTimeout(()=>controller.abort(),90000);
+        try{
+          if(localStorage.getItem(STORAGE_KEY)!==persistedSave||!save())throw Error('生活任务未能保存');
+          const prepared=prepareLifeTask(r,data.user,task),settings={...data.settings};version=lifeVersion(r);
+          if(storedLifeVersion(r.id)!==version)throw Error('生活来源已变化');
+          syslog('life','独立生活推进已开始',{roleId:r.id,taskId:task.id});
+          const res=await fetch(settings.endpoint.trim().replace(/\/+$/,'')+'/chat/completions',{method:'POST',signal:controller.signal,headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({model:settings.model,messages:prepared.messages,temperature:settings.temperature,max_tokens:LIFE_MAX_OUTPUT,stream:false})});
+          const raw=await readChatResponse(res);
+          maySave=localStorage.getItem(STORAGE_KEY)===persistedSave&&storedLifeVersion(r.id)===version;
+          if(controller.signal.aborted||!maySave||!data.roles.includes(r)||lifeVersion(r)!==version||data.settings.autonomousLife===false||isRoleInActiveFocus(r))throw Error('生活来源或任务已变化');
+          commitLifeTask(r,task,prepared,raw,now());
+          if(localStorage.getItem(STORAGE_KEY)!==persistedSave||!save())throw Error('生活记录保存失败');
+          syslog('life',task.status==='quiet'?'该窗口没有需要单独记录的生活事件':'独立生活已归档',{roleId:r.id,taskId:task.id});
+        }catch(error){
+          r.events=r.events.filter(e=>e.lifeRecord?.taskId!==task.id);
+          if(r.personalThreads){r.personalThreads=r.personalThreads.filter(t=>t.requestId!==task.id);if(!hadThreads&&!r.personalThreads.length)delete r.personalThreads;}
+          try{maySave=maySave&&localStorage.getItem(STORAGE_KEY)===persistedSave;}catch{maySave=false;}
+          task.status=controller.signal.aborted?'cancelled':'failed';
+          // Never log a model body or arbitrary transport error into diagnostics.
+          task.error=controller.signal.aborted?'已取消或超时':error instanceof Error&&error.message==='生活记录保存失败'?'本地保存失败':'响应或来源未通过校验';
+          if(maySave)save();
+          syslog('life','独立生活未归档，额度已占用，不自动重试',{roleId:r.id,code:task.status});
+        }finally{
+          clearTimeout(timeout);lifeController=null;
+          try{writeLifeJournal(localStorage,journal);}catch{lifeJournalError='生活调用记录保存失败，自动推进已暂停。';}
+          if(view==='monitor'&&role()?.id===r.id)render(false);
+        }
+        return;
+      }
+    }).catch(()=>{lifeJournalError='生活任务协调失败，自动推进已暂停。';}).finally(()=>{lifeBusy=false;});
   }
 
   function acceptPhoneMessage(r:RoleData,item:ChatMessage):boolean {
@@ -3096,7 +3149,7 @@ export function initElsewhereApp(): void {
         ${emptyCells}${dayCells}
       </div>
       <div class="fp-cal-footer">
-        <span class="tiny muted">${uiIcon('paw')} 表示当天有已记录的互动或生活足迹</span>
+        <span class="tiny muted">${uiIcon('paw')} 表示当天有保留的历史资料</span>
         <div class="row" style="gap:6px">
           <button type="button" class="btn small ghost" data-action="monitordate" data-date="${esc(
             todayKey
@@ -3108,244 +3161,37 @@ export function initElsewhereApp(): void {
   }
 
   function screenMonitor(): string {
-    const r = role()!;
-    const nowTs = now();
-    const todayKey = toLocalDateKey(nowTs);
-    monitorDateKey = resolveSafeMonitorDateKey(monitorDateKey, nowTs);
-    const isToday = monitorDateKey === todayKey;
-    const bounds = getLocalDayBounds(monitorDateKey);
-    const prevDateKey = shiftDateKey(monitorDateKey, -1);
-    const nextDateKey = shiftDateKey(monitorDateKey, 1);
-    const canGoNext = monitorDateKey < todayKey;
-
-    const archive = getOrBuildDailyFootprints(r, monitorDateKey, nowTs);
-    const displayItems=monitorItemsForDisplay(r,data.user,archive.items,nowTs);
-    const latestConfirmed=displayItems.find(item=>item.confirmed);
-
-    const rawEvents = newestMonitorFirst(getRoleKnownEvents(r)
-      .filter((x) => {
-        if (x.at > nowTs) return false;
-        const dKey = toLocalDateKey(x.at);
-        if (dKey !== monitorDateKey) return false;
-        return (
-          x.kind === 'life' ||
-          x.kind === 'scene' ||
-          x.kind === 'chat' ||
-          x.kind === 'focus' ||
-          x.kind === 'diary_share' ||
-          x.kind === 'drama'
-        );
-      })
-      );
-
-    const categoryBadgeMap: Record<string, string> = {
-      interaction: '线上联络',
-      scene: '当面相处',
-      focus: '共同专注',
-      drama: '小剧场共创',
-      diary_share: '日记分享',
-      life: '日常起居',
-      quiet: '平静日常',
-    };
-
-    const footprintsListHtml = displayItems.length
-      ? displayItems
-          .map((item) => {
-            const catLabel = categoryBadgeMap[item.category] || '日常足迹';
-            const artifactHtml = item.confirmed&&item.artifact
-              ? `<details class="fp-artifact-preview"><summary>${uiIcon('file')}情境辅助素材 · 非活动凭证</summary>${renderSafeFootprintArtifact(item.artifact)}</details>`
-              : '';
-            const transcriptCount = item.rawTranscript?.length || 0;
-
-            return `<article class="card footprint-card fp-cat-${esc(
-              item.category
-            )}" data-testid="footprint-item" data-fp-category="${esc(
-              item.category
-            )}" data-fp-id="${esc(item.id)}">
-              <div class="fp-card-head">
-                <div class="fp-time-group">
-                  <span class="fp-icon" aria-hidden="true">${uiIcon(item.icon)}</span>
-                  <time class="fp-time-badge">${esc(hm(item.timestamp))}</time>
-                  ${
-                    item.durationLabel
-                      ? `<span class="fp-duration-tag">${esc(
-                          item.durationLabel
-                        )}</span>`
-                      : ''
-                  }
-                </div>
-                <span class="fp-category-pill">${esc(catLabel)}${
-              item.where ? ` · ${esc(item.where)}` : ''
-            }</span>
-              </div>
-
-              <h3 class="fp-card-title">${esc(item.title)}</h3>
-              <p class="fp-card-summary">${esc(item.summary)}</p>
-
-              ${artifactHtml}
-
-              <details class="footprint-omniscient-box" data-testid="footprint-omniscient-details">
-                <summary class="fp-omniscient-summary">
-                  <span>${uiIcon('eye')} 上帝视角 · 角色状态读心${
-                    transcriptCount ? `与 ${transcriptCount} 条关联原始记录` : ''
-                  }</span>
-                  <span class="fp-omniscient-arrow">⌄</span>
-                </summary>
-                <div class="fp-omniscient-body">
-                  ${
-                    item.innerThought
-                      ? `<div class="fp-thought-panel" data-testid="footprint-inner-thought">
-                          <div class="fp-thought-row"><b>外在状态：</b><span>${esc(
-                            item.innerThought.surfaceState
-                          )}</span></div>
-                          <div class="fp-thought-row"><b>当前情绪：</b><span>${esc(
-                            item.innerThought.mood
-                          )}</span></div>
-                          <div class="fp-thought-row fp-thought-monologue"><b>内心独白：</b><span>${esc(
-                            item.innerThought.thought
-                          )}</span></div>
-                        </div>`
-                      : ''
-                  }
-                  ${
-                    transcriptCount
-                      ? `<div class="fp-transcript-panel" data-testid="footprint-raw-transcript">
-                          <div class="fp-transcript-title">关联原始对话 / 真实事件溯源（共 ${transcriptCount} 条）</div>
-                          <div class="fp-transcript-list">
-                            ${item
-                              .rawTranscript!.map(
-                                (tr) =>
-                                  `<div class="fp-transcript-line">
-                                    <span class="fp-tr-meta">[${hm(tr.at)}] <b>${esc(
-                                    tr.speakerLabel
-                                  )}</b>：</span>
-                                    <span class="fp-tr-text">${esc(tr.text)}</span>
-                                  </div>`
-                              )
-                              .join('')}
-                          </div>
-                        </div>`
-                      : ''
-                  }
-                </div>
-              </details>
-            </article>`;
-          })
-          .join('')
-      : `<div class="card fp-empty-card" data-testid="footprint-calm-empty">
-          <div class="fp-calm-icon">${uiIcon('leaf')}</div>
-          <h3>暂无活动记录</h3>
-          <p>${esc(
-            '暂无可确认的活动记录'
-          )}</p>
-        </div>`;
-
-    return shell(
-      `${header(
-        '生活监控',
-        'home'
-      )}<div class="viewport"><div class="row between"><div><div class="label">DAILY FOOTPRINTS · 日常足迹</div><div class="h2" style="margin-bottom:4px">${hm(
-        nowTs
-      )}</div><div class="tiny muted">第三人称生活概览 · 偶发生活票据 · 可展开上帝视角读心</div></div><div class="pill"><span class="dot"></span>${
-        isToday ? '今日同步' : '历史足迹'
-      }</div></div>
-
-      <div class="card fp-current-status-card"><div class="row">${avatarTag(
-        r,
-        'avatar large'
-      )}<div><h3>最近确认的活动</h3><p>${esc(latestConfirmed?.summary||'暂无可确认的活动记录')}</p></div></div></div>
-
+    const r=role()!,at=now(),today=toLocalDateKey(at);
+    monitorDateKey=resolveSafeMonitorDateKey(monitorDateKey,at);
+    const bounds=getLocalDayBounds(monitorDateKey),cutoff=Math.min(at,bounds.endMs);
+    const archive=getOrBuildDailyFootprints(r,monitorDateKey,at);
+    const items=monitorItemsForDisplay(r,data.user,archive.items,at),life=collectRoleLife(r,cutoff);
+    let state=lifeJournalError;
+    if(!state)try{state=lifeTaskState(data.roles,r,at,Boolean(token.trim())&&canUseRealModel(data.settings),data.settings.autonomousLife!==false,readLifeJournal(localStorage),lifeBusy&&Boolean(lifeController));}catch{state='生活调用额度记录无法核验，自动推进已暂停。';}
+    const list=items.map(item=>{
+      const event=item.category==='life'?life.events.find(e=>e.id===item.sourceEventIds[0]):undefined;
+      const source=event?.lifeRecord?'生活模拟 · 已归档':item.category==='life'?'有来源的生活记录':item.category==='drama'?'排演参与 · 不计作戏内人生':'有效互动';
+      return `<article class="card footprint-card" data-testid="footprint-item" data-fp-category="${esc(item.category)}" data-fp-id="${esc(item.id)}">
+        <div class="row between"><time class="fp-time-badge">${esc(hm(item.timestamp))}</time><span class="tiny muted">${esc(source)}</span></div>
+        <h3>${esc(item.title)}</h3><p class="life-narrative">${esc(item.summary)}</p>${item.where?`<div class="tiny muted">${uiIcon('pin')}${esc(item.where)}</div>`:''}
+        <details class="life-provenance"><summary>来源与记录</summary><p class="tiny muted">${esc(dt(item.timestamp))} · ${esc(source)}</p>
+          ${(item.rawTranscript||[]).slice(0,3).map(t=>`<p class="tiny">${esc(t.speakerLabel)} · ${esc(t.text.slice(0,240))}</p>`).join('')}
+          ${event?.lifeRecord?`<div class="tiny muted">${event.lifeRecord.sources.map(s=>esc(s.kind+':'+s.id)).join(' · ')}</div><button class="btn small ghost" data-action="retractlife" data-id="${esc(event.id)}">撤回此模拟记录</button>`:''}
+        </details></article>`;
+    }).join('');
+    const thoughts=life.threads.filter(t=>t.at<=cutoff).slice(0,3);
+    return shell(`${header('生活监控','home')}<div class="viewport monitor-life">
+      <div class="row between"><div><div class="label">DAILY FOOTPRINTS</div><h2>日常足迹</h2></div>${avatarTag(r,'avatar large')}</div>
+      <p class="sub">发生在${esc(r.name)}自己世界里的生活。没有记录的时段保持未知。</p>
       <div class="fp-date-bar" data-testid="monitor-date-bar">
-        <button type="button" class="btn small secondary fp-nav-btn" data-action="monitordate" data-date="${esc(
-          prevDateKey
-        )}" data-testid="monitor-prev-day" aria-label="前一天">‹ 前一天</button>
-        <button type="button" class="fp-date-display" data-action="togglefootprintcal" data-testid="monitor-date-display" title="点击打开足迹日历">
-          <strong>${uiIcon('deadline')} ${esc(bounds.label)}</strong>
-          <small>${esc(monitorDateKey)} · ${
-            isToday ? '今天' : '历史归档'
-          } · 点击展开日历 ▾</small>
-        </button>
-        <button type="button" class="btn small secondary fp-nav-btn" data-action="monitordate" data-date="${esc(
-          nextDateKey
-        )}" data-testid="monitor-next-day" ${
-          canGoNext ? '' : 'disabled'
-        } aria-label="后一天">后一天 ›</button>
-      </div>
-
-      ${renderFootprintCalendarDrawer(r, monitorDateKey)}
-
-      <div class="tabs fp-mode-tabs" style="margin:10px 0">
-        <button type="button" data-action="monitortab" data-tab="footprints" class="${
-          monitorTab === 'footprints' ? 'active' : ''
-        }" data-testid="monitor-tab-footprints">${uiIcon('paw')} 日常足迹概览 (${
-          displayItems.length
-        })</button>
-        <button type="button" data-action="monitortab" data-tab="raw" class="${
-          monitorTab === 'raw' ? 'active' : ''
-        }" data-testid="monitor-tab-raw">${uiIcon('eye')} 完整原始事件流 (${
-          rawEvents.length
-        })</button>
-      </div>
-
-      ${
-        monitorTab === 'footprints'
-          ? `<div class="fp-overview-toolbar">
-              <div class="tiny muted" data-testid="footprint-fact-consistency">
-                有效记录：当日 ${displayItems.filter(item=>item.category==='interaction').reduce((sum,item)=>sum+item.sourceMessageCount,0)} 条聊天已聚合 · ${
-                  displayItems.filter(item=>item.category==='scene').reduce((sum,item)=>sum+item.sourceMessageCount,0)
-                } 条见面记录 · ${displayItems.filter(item=>item.category==='focus').reduce((sum,item)=>sum+item.sourceEventCount,0)} 条专注记录
-              </div>
-              <button type="button" class="btn small ghost" data-action="enrichfootprints" data-date="${esc(
-                monitorDateKey
-              )}" data-testid="enrich-footprints-btn" ${
-                footprintAiBusy ? 'disabled' : ''
-              }>${
-                footprintAiBusy
-                  ? `${uiIcon('hourglass')} 正在润色…`
-                  : archive.aiGeneratedAt
-                  ? `${uiIcon('sparkles')} 重新 AI 润色足迹`
-                  : `${uiIcon('sparkles')} AI 润色今日足迹细节`
-              }</button>
-            </div>
-            ${
-              !latestConfirmed && displayItems.length > 0
-                ? `<div class="hint fp-calm-banner" data-testid="footprint-calm-banner">${uiIcon('leaf')} ${esc(
-                    '日程投影不作为已确认行为，暂无可确认的活动记录'
-                  )}</div>`
-                : ''
-            }
-            <div class="footprints-list" data-testid="footprints-list">
-              ${footprintsListHtml}
-            </div>`
-          : `<div class="hint">完整原始事件流保留了每一条已发生聊天、见面、共同专注与日程投影的底层时间线记录。</div>
-            <div class="timeline" data-testid="monitor-raw-timeline">${
-              rawEvents.length
-                ? rawEvents
-                    .map(
-                      (e) =>
-                        `<div class="event"><div class="time">${dt(
-                          e.at
-                        )}</div><div class="desc"><b>${esc(
-                          e.title
-                        )}</b><div>${esc(e.detail)}</div></div><div class="via">来源：${
-                          e.kind === 'life'
-                            ? '确定性日程投影'
-                            : e.kind === 'chat'
-                            ? '聊天记录'
-                            : e.kind === 'focus'
-                            ? '已确认的共同专注'
-                            : e.kind === 'diary_share'
-                            ? '你主动分享的日记'
-                            : e.kind === 'drama'
-                            ? '小剧场共创'
-                            : '已结束的见面'
-                        }</div></div>`
-                    )
-                    .join('')
-                : '<div class="sub">当天暂无原始事件记录。</div>'
-            }</div>`
-      }</div>`
-    );
+        <button class="btn small secondary fp-nav-btn" data-action="monitordate" data-date="${esc(shiftDateKey(monitorDateKey,-1))}" data-testid="monitor-prev-day" aria-label="前一天">‹ 前一天</button>
+        <button class="fp-date-display" data-action="togglefootprintcal" data-testid="monitor-date-display"><strong>${esc(bounds.label)}</strong><small>${esc(monitorDateKey)} · ${monitorDateKey===today?'今天':'历史归档'} ▾</small></button>
+        <button class="btn small secondary fp-nav-btn" data-action="monitordate" data-date="${esc(shiftDateKey(monitorDateKey,1))}" data-testid="monitor-next-day" ${monitorDateKey<today?'':'disabled'} aria-label="后一天">后一天 ›</button>
+      </div>${renderFootprintCalendarDrawer(r,monitorDateKey)}
+      <div class="footprints-list" data-testid="footprints-list">${list||`<div class="card fp-empty-card" data-testid="footprint-calm-empty">${uiIcon('leaf')}<h3>尚无已归档的生活记录</h3><p>这不代表已确认整天无事发生。API 不可用时，不会补造活动。</p></div>`}</div>
+      ${thoughts.length?`<details class="card life-private" data-testid="life-private"><summary>私人关注 · 主观想法</summary><p class="tiny muted">这是${esc(r.name)}自己记下的想法、计划或判断，不等于外部事实，也不表示已经告诉了你。</p>${thoughts.map(t=>`<p>${esc(t.text)}<br><time class="tiny muted">${esc(dt(t.at))}</time></p>`).join('')}</details>`:''}
+      <details class="card life-settings" data-testid="life-settings"><summary>生活推进与调用额度</summary><p data-testid="life-state">${esc(state)}</p><p class="tiny muted">仅在网页打开且空闲时推进当天最近一段生活。每角色每天最多 1 次，全应用每天及最近 24 小时最多 2 次；失败计入额度，不自动重试。普通聊天与每篇日记仍各使用原有一次请求，额度独立计算。</p><button class="btn small secondary" data-action="toggleautonomouslife">${data.settings.autonomousLife===false?'恢复自动推进':'暂停自动推进'}</button></details>
+    </div>`);
   }
 
   function renderFocusSettlementModal(): string {
@@ -4859,7 +4705,7 @@ export function initElsewhereApp(): void {
   }
 
   async function processDiaryQueue(): Promise<void> {
-    if (diaryQueueBusy) return;
+    if (diaryQueueBusy || lifeBusy) return;
     for (const roleItem of data.roles) {
       syncRoleDiaryTasks(roleItem, data.settings, now());
     }
@@ -5460,7 +5306,7 @@ export function initElsewhereApp(): void {
     let r = role();
 
     if(act==='nainpreflight'){
-      if(!r||busy||diaryQueueBusy||footprintAiBusy){notify('请等待当前请求结束后再清档。');return;}
+      if(!r||busy||diaryQueueBusy||lifeBusy){notify('请等待当前请求结束后再清档。');return;}
       if(!window.confirm(`仅清理当前奈恩的互动：${r.chats.length} 条聊天、${r.diaries.length} 篇日记、${r.events.length} 条事件，以及见面／戏剧／足迹状态。若有真实记录请取消。角色资料与其他角色保留；先创建恢复副本。本操作仅执行一次，确认继续？`))return;
       const result=resetNainStart(data,r.id,localStorage,now());
       data=result.data;
@@ -5940,11 +5786,6 @@ export function initElsewhereApp(): void {
       render(false);
       return;
     }
-    if (act === 'monitortab') {
-      monitorTab = b.dataset.tab === 'raw' ? 'raw' : 'footprints';
-      render(false);
-      return;
-    }
     if (act === 'togglefootprintcal') {
       showFootprintCalendar = !showFootprintCalendar;
       if (showFootprintCalendar) {
@@ -5965,62 +5806,16 @@ export function initElsewhereApp(): void {
       render(false);
       return;
     }
-    if (act === 'enrichfootprints') {
-      if (!r || footprintAiBusy) return;
-      const targetDate = resolveSafeMonitorDateKey(
-        b.dataset.date || monitorDateKey,
-        now()
-      );
-      if (!canUseRealModel(data.settings)) {
-        notify('当前处于本地演示模式，已展示基于真实互动构建的日常足迹；如需 AI 深度润色，请在「终端」配置自定义 API');
-        return;
-      }
-      footprintAiBusy = true;
-      render(false);
-      void (async () => {
-        try {
-          const s = data.settings;
-          const url = s.endpoint.trim().replace(/\/+$/, '');
-          const prompt = buildDailyFootprintsAiPrompt(r!, data.user, targetDate, now());
-          syslog('monitor', `请求 AI 润色日常足迹 · ${r!.name} · ${targetDate}`, {
-            model: s.model,
-          });
-          const res = await fetch(url + '/chat/completions', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(token ? { Authorization: 'Bearer ' + token } : {}),
-            },
-            body: JSON.stringify({
-              model: s.model,
-              messages: prompt,
-              temperature: +s.temperature || 0.7,
-              ...completionLimit(s,'footprints'),
-            }),
-          });
-          if (!res.ok) {
-            throw new Error(
-              `接口返回 ${res.status}: ${(await res.text()).slice(0, 120)}`
-            );
-          }
-          const json = await res.json();
-          const rawText = json.choices?.[0]?.message?.content?.trim() || '';
-          const applied = applyAiDailyFootprints(r!, targetDate, rawText, now());
-          if (!applied.ok) {
-            throw new Error(applied.reason || '未能解析 AI 足迹响应');
-          }
-          save();
-          notify(`已完成 ${r!.name} 在 ${targetDate} 的日常足迹细节润色`);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          syslog('error', `AI 润色日常足迹失败：${msg}`);
-          notify('AI 润色足迹失败：' + msg);
-        } finally {
-          footprintAiBusy = false;
-          render(false);
-        }
-      })();
-      return;
+    if(act==='toggleautonomouslife'){
+      const previous=data.settings.autonomousLife;data.settings.autonomousLife=previous===false;
+      if(!save()){data.settings.autonomousLife=previous;return;}
+      if(data.settings.autonomousLife===false)lifeController?.abort();
+      render(false);return;
+    }
+    if(act==='retractlife'){
+      const event=r?.events.find(e=>e.id===b.dataset.id&&e.kind==='life'&&e.lifeRecord);
+      if(!event||!confirm('撤回这条模拟生活记录？原文会保留，后续聊天和日记不再把它当作有效生活事实。'))return;
+      const before=event.status;event.status='retracted';if(!save())event.status=before;render(false);return;
     }
     if (act === 'openframemodal') {
       const ownerType = b.dataset.owner === 'user' ? 'user' : 'role';
@@ -6890,8 +6685,8 @@ export function initElsewhereApp(): void {
     void processDiaryQueue();
   }
 
-  document.addEventListener('visibilitychange',()=>{captureMeetingDraft();if(!document.hidden){pumpChatSchedules();pumpProactive();if(view==='home')homeTasks.refresh();}});
-  window.addEventListener('pageshow',()=>{pumpChatSchedules();pumpProactive();if(view==='home')homeTasks.refresh();});
+  document.addEventListener('visibilitychange',()=>{captureMeetingDraft();if(!document.hidden){pumpChatSchedules();pumpProactive();pumpRoleLife();if(view==='home')homeTasks.refresh();}});
+  window.addEventListener('pageshow',()=>{pumpChatSchedules();pumpProactive();pumpRoleLife();if(view==='home')homeTasks.refresh();});
 
   if (typeof setInterval === 'function') {
     setInterval(() => {
@@ -6899,6 +6694,7 @@ export function initElsewhereApp(): void {
       if(view==='home')homeTasks.refresh();
       pumpChatSchedules();
       pumpProactive();
+      pumpRoleLife();
       let chatDelivered=false;for(const item of data.roles){if(deliverPending(item)&&item.id===data.selected)chatDelivered=true;}
       let update = syncFocusMoments() || chatDelivered;
       update = completeFocusIfDue() || update;

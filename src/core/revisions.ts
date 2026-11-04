@@ -102,6 +102,8 @@ export function editMessage(
       detail: newText,
       messageId: msg.id,
       sourceRevision: (msg.revisionCount || 0) + 1,
+      // Editing the source is not confirmation that a derived life activity happened.
+      ...(ev.kind==='life'?{lifeEvidence:undefined,lifeRecord:undefined}:{}),
       status: 'active',
     });
   }

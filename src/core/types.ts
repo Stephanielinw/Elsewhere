@@ -2,6 +2,7 @@ import type {NovelDocument} from './novelDocument';
 import type {PersonalThread,PersonalTicket,PersonalSource} from './roleLife';
 import type {ProactiveState} from './proactiveChat';
 import type {RoleMemoryLedger} from './memory';
+import type {LifeTask,LifeRecord} from './autonomousLife';
 export type ThemeName = 'blue' | 'green' | 'pink' | 'coffee' | 'night';
 
 export type MessageKind = 'chat' | 'sticker' | 'photo' | 'voice' | 'packet' | 'scene' | 'play';
@@ -59,6 +60,7 @@ export interface MessageRevisionRecord {
 }
 
 export interface EventRecord {
+  lifeRecord?:LifeRecord;
   sourceRevision?: number;
   lifeEvidence?: 'confirmed';
   sceneChange?: {requestId:string;sceneId:string;sources:MeetingPlan['sources'];before:Pick<SceneData,'where'|'agreement'|'locationEvidence'>;after:Pick<SceneData,'where'|'agreement'|'locationEvidence'>};
@@ -353,6 +355,7 @@ export interface CustomAvatarFrame {
 }
 
 export interface RoleData {
+  lifeTasks?:LifeTask[];
   memory?: RoleMemoryLedger;
   proactive?: ProactiveState;
   personalThreads?: PersonalThread[];
@@ -530,6 +533,7 @@ export interface SystemLogRecord {
 }
 
 export interface ApiSettings {
+  autonomousLife?:boolean;
   mode: 'demo' | 'api';
   endpoint: string;
   model: string;

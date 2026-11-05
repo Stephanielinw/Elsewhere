@@ -1,4 +1,4 @@
-import type {ChatMessage,MeetingPlan,RoleData,SceneData} from './types';
+import type {ChatMessage,EncounterPhase,MeetingPlan,RoleData,SceneData} from './types';
 import type {ConversationContext} from './conversationPrompt';
 import {getActiveEvents,getActiveMessages} from './revisions';
 import {parseFruitOutput} from './fruit/output';
@@ -12,16 +12,26 @@ export function arrivalPlaceMatches(actual:string|undefined,where:string):boolea
  return !actual||/^(?:约好的地方|约定的地方|这里|这儿|那里|那儿)$/.test(actual)||actual===where||/^(门口|入口|楼下|前门)$/.test(actual)&&where.endsWith(actual);
 }
 
+const remotePresence=/远远|远处|老远|隔着|隔岸|(?:还|仍)在对岸|视频|屏幕|照片|还在路上|(?:没(?:有)?|尚未|未)靠岸|(?:还|仍)没上岸/;
+export const PHONE_ENCOUNTER_CONTEXT_MS=15*60000;
+
 export function counterpartPresence(text:string){
  const words=scenePhoneWords(text);
- const unavailable=/我(?:还没|没有|未)(?:到|来)|我不在|取消|别来了|不能见面|不想见面|不方便(?:接待|见)|回去吧|不愿(?:接待|见)|如果|假如|台词|回忆|远远|远处|隔着/.test(words);
- return {unavailable,reciprocal:/(?:^|[。！!\n])(?:我(?:也|已经|终于)?)?(?:看见|看到|见到)你了|你(?:已经)?(?:到了|来了)|你就在我(?:面前|身边|旁边)/.test(words),nearby:/把手给我|握住|伸手|就在(?:我|你)(?:面前|身旁|身边|旁边)|站稳|扶着|面对面|走到(?:我|你)身边|坐在(?:我|你)(?:旁边|对面)/.test(words)};
+ const remote=remotePresence.test(words);
+ const unavailable=remote||/我(?:还没|没有|未)(?:到|来)|我不在|取消|别来了|不能见面|不想见面|不方便(?:接待|见)|回去吧|不愿(?:接待|见)|如果|假如|台词|回忆/.test(words);
+ const reciprocal=/(?:^|[，,。！？!?；;\n])\s*(?:我(?:也|已经|终于)?)?(?:看见|看到|见到)你了|你(?:已经)?(?:到了|来了)|你就在我(?:面前|身边|旁边)/.test(words);
+ const immediate=!/明天|后天|改天|下次|稍后|待会|晚点|等.{0,12}(?:以后|之后|再)/.test(words);
+ const approaching=immediate&&
+  /(?:^|[，,。！？!?；;\n])\s*我(?:这就|马上(?:就)?|现在(?:就)?|正在|正要|已经在)(?:(?:朝|向|往)你(?:那边)?(?:走|跑)(?:过去|过来|去|来)?|(?:走|跑)到你(?:身边|面前|旁边)|去你那边)/.test(words);
+ const nearby=immediate&&/把手给我|就在(?:我|你)(?:面前|身旁|身边|旁边)|已经面对面|走到(?:我|你)身边了|坐在(?:我|你)(?:旁边|对面)/.test(words);
+ const interacting=immediate&&/我(?:已经|正在)?当面(?:跟|和|对)你(?:说|交谈|打招呼)|我们(?:已经|正在)当面(?:聊天|交谈|说话)/.test(words);
+ return {unavailable,remote,reciprocal,nearby,approaching,interacting};
 }
 
 /** A semantic event may understand unfamiliar wording; locally obvious non-arrivals still fail closed. */
 export function arrivalEvidence(text:string):'arrival'|'sighting'|'unknown'|'invalid' {
  const words=scenePhoneWords(text);
- if(!words||/(如果|假如|要是|玩笑|台词|转述|他说|她说|昨天|前天|上次|回忆|梦里|明天|后天|可能|也许|还没|未到|没到|没有到|快到|就到|将到|会到|等我到|到了再|准备|打算|不想见|不能见|不见了|取消|远远|远处|隔着|还在路上|在船上|视频|照片|屏幕)/.test(words)||/^(他|她|他们|她们|朋友|同事)|我(?:不是|没有)/.test(words))return 'invalid';
+ if(!words||remotePresence.test(words)||/(如果|假如|要是|玩笑|台词|转述|他说|她说|昨天|前天|上次|回忆|梦里|明天|后天|可能|也许|还没|未到|没到|没有到|快到|就到|将到|会到|等我到|到了再|准备|打算|不想见|不能见|不见了|取消|在船上)/.test(words)||/^(他|她|他们|她们|朋友|同事)|我(?:不是|没有)/.test(words))return 'invalid';
  if(/^(?:我(?:已经|刚刚|刚)?(?:到|抵达)|已经到了|到啦|到了)/.test(words)&&/(到了|到啦|抵达|到达|到.{1,32}了)/.test(words)||/^我(?:已经|就)?在你(?:面前|旁边|身旁|身边)|^我(?:已经)?(?:站在|走到).{0,32}(?:你面前|你身边|你旁边|约好的地方)/.test(words))return 'arrival';
  if(/^我(?:已经|终于|也)?(?:看见|看到|见到)你了|^我(?:已经|就)?在你(?:面前|旁边|身旁|身边)|^我们(?:终于)?见面了/.test(words))return 'sighting';
  return 'unknown';
@@ -30,12 +40,42 @@ export function arrivalEvidence(text:string):'arrival'|'sighting'|'unknown'|'inv
 type Purpose='proposal'|'acceptance'|'refusal'|'cancellation'|'arrival'|'movement'|'departure';
 type Evidence={id:string;quote:string;purpose:Purpose};
 type Source={id:string;text:string;at:number;speaker:'me'|'char';revisionCount:number;scope:'phone'|'scene'};
-export type SceneObservation={roleId:string;key:string;now:number;scene:{id:string;where:string;startedAt:number;locationUpdatedAt:number;verified:boolean}|null;sources:Source[];facts:{id:string;text:string;layer:string;at:number}[];plan:MeetingPlan|null;inputIds?:string[]};
-export type SceneDecision={observation:SceneObservation;action:'none'|'plan'|'arrive'|'locate'|'move'|'reconcile'|'leave';plan?:MeetingPlan;arrival?:Source;location?:{name:string;origin:'agreement'|'generated'|'movement'|'unknown';sources:Source[]}};
+export type SceneObservation={roleId:string;key:string;now:number;scene:{id:string;where:string;startedAt:number;locationUpdatedAt:number;verified:boolean}|null;sources:Source[];facts:{id:string;text:string;layer:string;at:number}[];plan:MeetingPlan|null;inputIds?:string[];replyIds?:string[]};
+const encounterStates=['remote','planned','approaching','together','separated'] as const;
+type EncounterState=typeof encounterStates[number];
+export type SceneDecision={observation:SceneObservation;action:'none'|'plan'|'arrive'|'locate'|'move'|'reconcile'|'leave';plan?:MeetingPlan;arrival?:Source;entryPhase?:EncounterPhase;encounter?:{state:EncounterState;reason?:string};location?:{name:string;origin:'agreement'|'generated'|'movement'|'unknown';sources:Source[]}};
+
+function phoneReplies(o:SceneObservation,arrival:Source):Source[] {
+ return o.sources.filter(s=>s.scope==='phone'&&s.speaker==='char'&&s.at>=arrival.at&&(!o.replyIds||o.replyIds.includes(s.id)));
+}
+
+// Existing clear negatives are a veto. Positive semantic evidence never uses the phrase matcher.
+function presenceConflict(o:SceneObservation,arrival:Source,replies:Source[],presence:ReturnType<typeof counterpartPresence>,sighting:boolean,approaching:boolean):string|undefined {
+ const recent=o.sources.filter(s=>s.scope==='phone'&&s.at<arrival.at&&arrival.at-s.at<=PHONE_ENCOUNTER_CONTEXT_MS);
+ const remote=(s:Source)=>remotePresence.test(scenePhoneWords(s.text))||approaching&&/(?:还|仍)在船上/.test(scenePhoneWords(s.text));
+ const separated=(['me','char'] as const).some(speaker=>{
+  const lastPosition=[...recent].reverse().find(s=>s.speaker===speaker&&(remote(s)||arrivalEvidence(s.text)==='arrival'||/^我(?:已经|刚)?(?:上岸|下船)了/.test(scenePhoneWords(s.text))));
+  return lastPosition&&remote(lastPosition);
+ });
+ if(presence.remote||approaching&&replies.some(remote)||sighting&&separated)return 'handoff-remote-or-in-transit';
+ if(presence.unavailable)return 'handoff-counterpart-unavailable';
+}
+
+export function phoneEncounterPresence(o:SceneObservation,arrival:Source) {
+ const replies=phoneReplies(o,arrival);
+ const presence=counterpartPresence(replies.map(s=>s.text).join('\n'));
+ const sighting=arrivalEvidence(arrival.text)==='sighting';
+ const code=presenceConflict(o,arrival,replies,presence,sighting,presence.approaching);
+ if(code)return {replies,code};
+ if(sighting&&!presence.reciprocal)return {replies,code:'handoff-no-mutual-presence'};
+ if(sighting&&!(presence.approaching||presence.nearby||presence.interacting))return {replies,code:'handoff-no-immediate-approach'};
+ const phase:EncounterPhase=presence.interacting?'interacting':presence.approaching?'approaching':'nearby';
+ return {replies,phase,reciprocal:presence.reciprocal};
+}
 const decisions=new WeakSet<SceneDecision>();
 const genericPlaces=new Set(['咖啡馆','街区','工作地点','小餐馆','住处','书店','地点待确认','地点尚未确认']);
 export const needsScenePlaceEvidence=(scene:SceneObservation['scene'])=>Boolean(scene&&!scene.verified&&genericPlaces.has(scene.where));
-export const sceneStateKey=(r:RoleData)=>JSON.stringify([r.id,r.name,r.userAlias,r.chats,r.scene&&[r.scene.id,r.scene.startedAt,r.scene.endedAt,r.scene.where,r.scene.agreement,r.scene.locationEvidence,r.scene.messages],r.play?.id,r.meetingPlan,r.events,r.messageRevisions,r.profile,r.canonNotes,r.relationship,r.place,r.traits,r.job,r.notes]);
+export const sceneStateKey=(r:RoleData)=>JSON.stringify([r.id,r.name,r.userAlias,r.chats,r.scene&&[r.scene.id,r.scene.startedAt,r.scene.endedAt,r.scene.where,r.scene.agreement,r.scene.locationEvidence,r.scene.messages,...(r.scene.entryPhase?[r.scene.entryPhase]:[])],r.play?.id,r.meetingPlan,r.events,r.messageRevisions,r.profile,r.canonNotes,r.relationship,r.place,r.traits,r.job,r.notes]);
 function allowedPhone(r:RoleData,at:number){
  const consumed=Math.max(0,...(r.meetings||[]).map(s=>s.startedAt));
  const denied=new Set(getActiveEvents(r.events).filter(e=>e.messageId&&e.knownBy?.length&&!e.knownBy.includes(r.id)).map(e=>e.messageId));
@@ -72,7 +112,7 @@ export function sceneUnderstandingMessages(o:SceneObservation):{role:string;cont
 字段：action=none|plan|arrive|locate|move|reconcile|leave。无变化仅返回 {"action":"none"}。
 plan={status:proposed|confirmed|declined|cancelled,where:字符串或null,timeText:原约定时间或null,scheduledAt:毫秒时间戳或null,expiresAt:毫秒时间戳或null,evidence:[{id:原消息ID,quote:原文,purpose:proposal|acceptance|refusal|cancellation}]}。只有双方明确同意才 confirmed；未说清时间保留null，不能编造。改约需重新获双方同意，使用最后一份有效约定。日期依提供的当前时间和消息发送时间理解。
 location={name:地点或空字符串,basis:agreement|contextual|movement|unknown,evidence:[{id,quote,purpose:movement}]}。明确约定时必须使用其地点。没有地点而双方确实已经自然见面/手动开启现场时，可以依据人物世界观与已知事实生成合理初始地点，basis=contextual（生成设定，不能冒充既有事实）；证据不足则basis=unknown,name=""。已有确定地点只在实际移动时action=move,basis=movement，必须引证本Scene的实际移动原文，不因一个地名或建议而更新。
-arrive 仅在确实到达并且双方同意见面时，需plan以及arrival={id:到达消息ID,quote:完整用户原话,purpose:arrival}。地点按agreement或contextual/unknown。
+arrive 用于确实到达，或双方已确认在同一线下场景且正要靠近。需plan以及arrival={id:用户消息ID,quote:完整用户原话,purpose:arrival}。地点按agreement或contextual/unknown。进入接近阶段不表示行动已完成。
 locate 仅供地点未确认的现有Scene选择初始设定。reconcile 仅供尚未验证的旧通用默认地点，必须有Scene开始之前的双方明确约定plan，location依据agreement；不修改已结束记录，不用后来的聊天回写过去。
 leave 仅限本Scene中用户确实离开的原话，arrival字段purpose=departure。不替用户行动。
 证据仅能引用给定消息；手机证据quote须等于完整原话，小说移动证据可以是完整原句。输出不含Markdown、脚本或HTML。`},
@@ -107,10 +147,81 @@ function readPlan(value:unknown,o:SceneObservation):MeetingPlan {
  if(scheduledAt!==undefined&&(!p.timeText||!refs.some(v=>v.source.text.includes(String(p.timeText)))))throw new Error('约定时间缺少原话依据');
  return {status:status as MeetingPlan['status'],...(p.where!=null?{where:place(p.where)}:{}),...(p.timeText?{timeText:String(p.timeText)}:{}),...(scheduledAt!==undefined?{scheduledAt:scheduledAt as number,expiresAt:expiresAt as number}:{}),proposedBy:proposer,acceptedBy:status==='declined'||status==='cancelled'?[]:acceptedBy,sources:[...new Map(refs.map(v=>[v.source.id,{id:v.source.id,at:v.source.at,text:v.source.text,revisionCount:v.source.revisionCount}])).values()],interpretation:'scene-state-v1'};
 }
+
+const signals=['present','sighting','approaching','nearby','interacting'] as const;
+const remoteReasons=['distance','mediated','en-route','future','past','fiction','declined','cancelled','uncertain'] as const;
+
+function currentPresenceEvidence(value:unknown,o:SceneObservation,speaker:Source['speaker']) {
+ const ref=object(value),signal=signals.find(s=>s===ref.signal);
+ const source=o.sources.find(s=>s.id===ref.id&&s.scope==='phone'&&s.speaker===speaker);
+ const current=speaker==='me'?ref.id===o.inputIds?.at(-1):o.replyIds?.includes(String(ref.id));
+ const quote=ref.quote;
+ if(!current||!source||!signal||typeof quote!=='string'||quote.length<2||quote.length>160||quote.trim()!==quote||!scenePhoneWords(source.text).includes(quote)){
+  throw new Error('handoff-semantic-source-invalid');
+ }
+ return {source,signal};
+}
+
+function readPhoneEncounter(value:Record<string,unknown>,o:SceneObservation):SceneDecision {
+ const state=encounterStates.find(s=>s===value.state);
+ if(!state||o.scene||'action'in value||!o.inputIds?.length||!o.replyIds?.length)throw new Error('handoff-semantic-state-invalid');
+ const encounter:NonNullable<SceneDecision['encounter']>={state};
+ if(state==='remote'||state==='planned'||state==='separated'){
+  if(state==='remote'){
+   const reason=remoteReasons.find(r=>r===value.reason);
+   if(!reason)throw new Error('handoff-semantic-reason-invalid');
+   encounter.reason=reason;
+  }
+  const plan=value.plan===undefined?undefined:readPlan(value.plan,o);
+  const status=state==='planned'?'confirmed':state==='remote'
+   ?encounter.reason==='declined'||encounter.reason==='cancelled'?encounter.reason:'proposed'
+   :undefined;
+  if(state==='planned'&&!plan||plan&&plan.status!==status){
+   throw new Error('handoff-semantic-plan-invalid');
+  }
+  if(plan&&!plan.sources.some(s=>o.inputIds?.includes(s.id)||o.replyIds?.includes(s.id)))throw new Error('handoff-semantic-plan-stale');
+  return {observation:o,action:plan?'plan':'none',encounter,plan};
+ }
+
+ if(value.context!=='physical-now'||'plan'in value||'reason'in value||value.appointment!==undefined&&typeof value.appointment!=='boolean')throw new Error('handoff-semantic-context-invalid');
+ const user=currentPresenceEvidence(value.user,o,'me'),actor=currentPresenceEvidence(value.actor,o,'char');
+ if(actor.source.at<user.source.at||o.now-user.source.at>2*3600000)throw new Error('handoff-presence-too-old');
+ const close=(signal:string)=>signal==='nearby'||signal==='interacting';
+ const approaching=state==='approaching';
+ if(approaching?!(user.signal==='approaching'||actor.signal==='approaching'):!(close(user.signal)&&close(actor.signal)))throw new Error('handoff-semantic-phase-conflict');
+ if(arrivalEvidence(user.source.text)==='invalid')throw new Error('handoff-not-arrived');
+ const replies=phoneReplies(o,user.source);
+ const conflict=presenceConflict(o,user.source,replies,counterpartPresence(replies.map(s=>s.text).join('\n')),user.signal==='sighting',approaching);
+ if(conflict)throw new Error(conflict);
+
+ const appointment=value.appointment?o.plan:undefined;
+ if(value.appointment&&(!appointment||appointment.status!=='confirmed'||!appointment.sources.every(ref=>o.sources.some(s=>s.id===ref.id&&s.at===ref.at&&s.text===ref.text&&s.revisionCount===ref.revisionCount))))throw new Error('handoff-semantic-appointment-invalid');
+ if(appointment&&(appointment.scheduledAt===undefined
+  ?appointment.sources.every(s=>user.source.at-s.at>PHONE_ENCOUNTER_CONTEXT_MS)
+  :o.now<appointment.scheduledAt-30*60000||o.now>(appointment.expiresAt??-Infinity)))throw new Error('handoff-outside-window');
+ const named=place(value.where??'',true);
+ if(named&&appointment?.where&&named!==appointment.where)throw new Error('handoff-place-conflict');
+ if(named&&named!==appointment?.where&&![user.source,actor.source].some(s=>scenePhoneWords(s.text).includes(named)))throw new Error('handoff-place-unverified');
+ const where=named||appointment?.where;
+ if(where&&!arrivalPlaceMatches(explicitArrivalPlace(user.source.text),where))throw new Error('handoff-place-conflict');
+
+ const plan=readPlan({status:'confirmed',where, evidence:[
+  {id:user.source.id,quote:user.source.text,purpose:'proposal'},
+  {id:actor.source.id,quote:actor.source.text,purpose:'acceptance'},
+ ]},o);
+ const sources=[...new Map([...(appointment?.sources||[]),...plan.sources,...replies.map(({id,text,at,revisionCount})=>({id,text,at,revisionCount}))].map(s=>[s.id,s])).values()];
+ const entryPhase=approaching?'approaching':user.signal==='interacting'||actor.signal==='interacting'?'interacting':'nearby';
+ return {observation:o,action:'arrive',encounter,entryPhase,arrival:user.source,
+  plan:{...plan,sources,...(appointment?{timeText:appointment.timeText,scheduledAt:appointment.scheduledAt,expiresAt:appointment.expiresAt}:{})},
+  location:{name:where||'地点待确认',origin:where?'agreement':'unknown',sources:o.sources.filter(s=>sources.some(ref=>ref.id===s.id))}};
+}
+
 export function parseSceneDecision(raw:string,o:SceneObservation):SceneDecision {
  if(raw.length>64000)throw new Error('场景状态响应过长');
  let input=raw.trim();if(input.startsWith('```json')&&input.endsWith('```'))input=input.slice(7,-3).trim();
- const value=object(JSON.parse(input)),action=value.action;if(!['none','plan','arrive','locate','move','reconcile','leave'].includes(String(action)))throw new Error('场景动作无效');
+ const value=object(JSON.parse(input));
+ if('state'in value){const d=readPhoneEncounter(value,o);decisions.add(d);return d;}
+ const action=value.action;if(!['none','plan','arrive','locate','move','reconcile','leave'].includes(String(action)))throw new Error('场景动作无效');
  const d:SceneDecision={observation:o,action:action as SceneDecision['action']};
  if(action==='none'){decisions.add(d);return d;}
  if(value.plan!==undefined)d.plan=readPlan(value.plan,o);
@@ -125,13 +236,19 @@ export function parseSceneDecision(raw:string,o:SceneObservation):SceneDecision 
    const inputs=o.sources.filter(s=>s.scope==='phone'&&s.speaker==='me'&&o.inputIds!.includes(s.id));
    if(inputs.slice(inputs.findIndex(s=>s.id===d.arrival!.id)+1).some(s=>arrivalEvidence(s.text)==='invalid'))throw new Error('同批后续消息否认了已经到达');
   }
-  if(action==='arrive'&&counterpartPresence(o.sources.filter(s=>s.scope==='phone'&&s.speaker==='char'&&s.at>=d.arrival!.at).map(s=>s.text).join('\n')).unavailable)throw new Error('对方尚未到达或拒绝当前碰面');
   if(action==='arrive'&&arrivalEvidence(d.arrival.text)==='unknown'&&!/我|我们|咱们|\bI\b|\bwe\b/i.test(d.arrival.text))throw new Error('缺少用户本人的当前在场陈述');
-  if(action==='arrive'&&arrivalEvidence(d.arrival.text)==='sighting'){
-   const replies=o.sources.filter(s=>s.scope==='phone'&&s.speaker==='char'&&s.at>=d.arrival!.at).map(s=>s.text).join('\n'),presence=counterpartPresence(replies);
-   if(presence.unavailable||!presence.reciprocal||!presence.nearby)throw new Error('仅看见对方不足以确认近距离碰面');
-  }
   if(action==='arrive'&&arrivalEvidence(d.arrival.text)==='invalid')throw new Error('到达原话仍在途中、远观或不是当前真实行动');
+  if(action==='arrive'){
+   const presence=phoneEncounterPresence(o,d.arrival);
+   if(presence.code)throw new Error(presence.code);
+   d.entryPhase=presence.replies.length?presence.phase:undefined;
+   if(d.entryPhase==='approaching'&&d.plan?.scheduledAt===undefined&&d.plan?.sources.some(s=>d.arrival!.at-s.at>PHONE_ENCOUNTER_CONTEXT_MS))throw new Error('相遇引用了过旧的无时间约定');
+   if(d.entryPhase&&d.plan?.status==='confirmed'){
+    const sources=new Map(d.plan.sources.map(s=>[s.id,s]));
+    for(const {id,text,at,revisionCount} of [d.arrival,...presence.replies])sources.set(id,{id,text,at,revisionCount});
+    d.plan.sources=[...sources.values()];
+   }
+  }
   if(action==='arrive'&&o.plan&&(o.plan.status==='declined'||o.plan.status==='cancelled')){
    const boundary=o.sources.filter(s=>o.plan!.sources.some(ref=>ref.id===s.id)).sort((a,b)=>b.at-a.at||o.sources.indexOf(b)-o.sources.indexOf(a))[0];
    const renewal=o.sources.filter(s=>d.plan?.sources.some(ref=>ref.id===s.id)&&boundary&&(s.at>boundary.at||s.at===boundary.at&&o.sources.indexOf(s)>o.sources.indexOf(boundary)));

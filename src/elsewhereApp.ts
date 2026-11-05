@@ -1453,7 +1453,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       delete item.sceneReply;
       const outcome=ticket.sceneId===null?resolvePhoneSceneReply(r,data.user,ticket,replies,now()):{decision:resolveSceneReply(r,data.user,ticket,replies,now()),code:'scene-event-valid',diagnostic:'scene-event-valid'};
       const decision=outcome.decision;
-      if(outcome.diagnostic!=='scene-event-valid')syslog('scene-state','场景事件诊断',{roleId:r.id,requestId:ticket.requestId,code:outcome.diagnostic,handoff:outcome.code});
+      if(outcome.diagnostic!=='scene-event-valid'||ticket.sceneId===null)syslog('scene-state','场景事件诊断',{roleId:r.id,requestId:ticket.requestId,code:outcome.diagnostic,handoff:outcome.code});
       if(!decision){if(!save())throw new Error('状态确认保存失败');return;}
       retryable=true;
       traceStorage('scene-save-started');
@@ -5008,7 +5008,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     text: string
   ): Promise<void> {
     const r = role();
-    if(kind==='chat'&&r&&text.trim()&&!isArrival(r,text)){
+    if(kind==='chat'&&r&&text.trim()&&(data.settings.mode==='api'||!isArrival(r,text))){
       const item:ChatMessage={id:uid(),speaker:'me',text:text.trim(),at:now(),kind:'chat',status:'active',quote:quotingMessage||null};
       if(acceptPhoneMessage(r,item)){
         chatDraft='';const input=$<HTMLTextAreaElement>('#message-input');if(input)input.value='';render(false);

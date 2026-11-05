@@ -3,10 +3,18 @@ const root=process.cwd(),out=path.join(root,'artifacts/test-results/STORAGE-RECO
 const wait=async(fn,phase)=>{const until=Date.now()+8000;while(Date.now()<until){if(await fn())return;await new Promise(r=>setTimeout(r,20));}throw Error('Timeout at '+phase);};
 (async()=>{const {defaults,createRole,normalizeAndMigrateData}=await import(pathToFileURL(path.join(root,'src/core/defaults.ts'))),b=await chromium.launch({headless:true,...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})}),results=[],errors=[],contexts=[];let current;const deadline=setTimeout(()=>{console.error('Suite deadline; last completed:',results.at(-1)?.case);void b.close();process.exitCode=1;},180000);
 function fixture(){const d=defaults(),r=createRole('合成守望者','','守望者','谨慎','虚构海岛');r.id='actor';r.chats=[{id:'near',speaker:'me',text:'我想可能马上就要到了，我还在船上。',at:at-300000},{id:'waiting',speaker:'char',text:'我已经到海岸边了，我就在这里等你，你慢着点上岸。',at:at-200000}];r.events=[];r.diaries=[];r.diaryTasks=[];r.meetings=[];r.lifeAt=at;r.lastDiaryCheckDay='2026-11-04';r.firstMessageState={status:'ready',updatedAt:at};r.chatTiming={version:1,focused:true,generation:0,pending:[],quietUntil:0};d.roles=[r];d.selected=r.id;d.settings={...d.settings,autonomousLife:false,mode:'api',endpoint:'https://mock.example.invalid/v1',model:'mock'};return normalizeAndMigrateData(d);}
-async function setup({raw=JSON.stringify(fixture()),mode='',key=false}={}){
+async function setup({raw=JSON.stringify(fixture()),mode='',key=false,reply='看见你了。\n你站稳些，把手给我，这里礁石滑。',sceneEvent}={}){
  const c=await b.newContext({...devices['iPhone 13'],viewport:{width:390,height:844},timezoneId:'America/Los_Angeles'});contexts.push(c);const wire=[],timeline=[];let seedDocument=true,release;const gate=new Promise(r=>release=r);
  await c.addInitScript(()=>{window.__elsewhereStorageTrace=[];const get=Storage.prototype.getItem,set=Storage.prototype.setItem;let uncertain=false;window.__nativeSave=()=>get.call(localStorage,'elsewhere-v01');window.__storageDoc=crypto.randomUUID();Storage.prototype.getItem=function(k){if(k==='elsewhere-v01'){if(window.name==='read-error'||uncertain)throw Error('synthetic unavailable');if(window.name==='read-null')return null;}return get.call(this,k);};Storage.prototype.setItem=function(k,v){if(k!=='elsewhere-v01')return set.call(this,k,v);let scene=false;try{scene=JSON.parse(v)?.roles?.some(r=>r.scene);}catch{}if(window.name==='write-error'||scene&&window.name==='scene-write-fail'){window.__failedWrites=(window.__failedWrites||0)+1;throw Error('synthetic quota');}set.call(this,k,v);if(scene&&window.name==='scene-write-after')throw Error('synthetic error after commit');if(scene&&window.name==='scene-uncertain')uncertain=true;};});
- await c.route('**/*',async route=>{const req=route.request(),u=new URL(req.url());if(req.isNavigationRequest()&&req.frame()===req.frame().page().mainFrame()&&seedDocument){seedDocument=false;return route.fulfill({contentType:'text/html',body:'<!doctype html><body><div id="app" data-storage-state="fixture">Isolated fixture bootstrap</div></body>'});}if(u.hostname==='mock.example.invalid'){if(req.method()==='OPTIONS')return route.fulfill({status:204,headers:{'access-control-allow-origin':'*','access-control-allow-methods':'POST','access-control-allow-headers':'*'}});wire.push({kind:'phone'});await gate;return route.fulfill({json:{choices:[{message:{role:'assistant',content:'看见你了。\n你站稳些，把手给我，这里礁石滑。'},finish_reason:'stop'}]},headers:{'access-control-allow-origin':'*'}}).catch(()=>{});}if(u.protocol==='file:'||u.hostname==='127.0.0.1')return route.continue();throw Error('unexpected remote request: '+u.origin);});
+ await c.route('**/*',async route=>{const req=route.request(),u=new URL(req.url());if(req.isNavigationRequest()&&req.frame()===req.frame().page().mainFrame()&&seedDocument){seedDocument=false;return route.fulfill({contentType:'text/html',body:'<!doctype html><body><div id="app" data-storage-state="fixture">Isolated fixture bootstrap</div></body>'});}if(u.hostname==='mock.example.invalid'){if(req.method()==='OPTIONS')return route.fulfill({status:204,headers:{'access-control-allow-origin':'*','access-control-allow-methods':'POST','access-control-allow-headers':'*'}});wire.push({kind:'phone'});await gate;let content=reply;if(sceneEvent){
+   const messages=req.postDataJSON().messages;
+   const line=messages[0].content.split('\n').find(s=>s.startsWith('{"requestId":')&&s.includes('"currentInputs"'));
+   assert.ok(line,'the one phone request carries the semantic contract');
+   const control=JSON.parse(line),inputId=control.currentInputs.at(-1),ref=control.sources.find(s=>s[0]===inputId);
+   assert.equal(messages[ref[1]-1].role,'user','source index still addresses the actual user message');
+   const event=sceneEvent(inputId,reply);
+   content+='<elsewhere_scene_event>'+JSON.stringify({requestId:control.requestId,roleId:control.roleId,sceneId:null,event})+'</elsewhere_scene_event>';
+  }return route.fulfill({json:{choices:[{message:{role:'assistant',content},finish_reason:'stop'}]},headers:{'access-control-allow-origin':'*'}}).catch(()=>{});}if(u.protocol==='file:'||u.hostname==='127.0.0.1')return route.continue();throw Error('unexpected remote request: '+u.origin);});
  const p=await c.newPage();p.setDefaultTimeout(8000);p.setDefaultNavigationTimeout(8000);p.on('pageerror',e=>errors.push(e.message));await p.clock.install({time:at-60000});await p.clock.pauseAt(at);await p.goto(url);
  // Seed exactly once, after a complete same-origin document; never reseed on null during reload.
  await p.evaluate(({raw,mode,key})=>{if(raw!==null)localStorage.setItem('elsewhere-v01',raw);if(key)localStorage.setItem('elsewhere-device-api-key-v1',JSON.stringify({endpoint:'https://mock.example.invalid/v1',key:'SYNTHETIC_MOCK_KEY'}));window.name=mode;},{raw,mode,key});
@@ -17,7 +25,30 @@ async function setup({raw=JSON.stringify(fixture()),mode='',key=false}={}){
 async function done(name,t){results.push({case:name,posts:t.wire.length,timeline:t.timeline});fs.writeFileSync(path.join(out,label+'-progress.json'),JSON.stringify({results,errors},null,2));await t.c.close();}
 async function chat(t){assert.equal(await t.state(),'ready');await t.p.locator('[data-action=enter]').filter({hasText:'合成守望者'}).click();await t.p.locator('.dock [data-view=chat]').click();}
 async function openSavedScene(t,id){await t.p.locator('[data-action=enter]').filter({hasText:'合成守望者'}).click();await t.p.locator('.home-widget').click();await t.p.locator('#novel-input').waitFor();assert.equal(await t.p.locator('#novel-form').getAttribute('data-scene-id'),id);await t.capture('UI restored the persisted Scene');}
-async function arrive(t,mode='',holdHash=false){await chat(t);await t.p.evaluate(mode=>window.name=mode,mode);for(const text of ['我看见你了！','守望者！']){await t.p.locator('#message-input').fill(text);await t.p.locator('#message-form .send-btn').click();await t.p.clock.runFor(100);}await t.p.clock.fastForward(60001);await t.p.clock.runFor(1000);await wait(()=>t.wire.length===1,'one phone API');if(holdHash)await t.p.evaluate(()=>{const digest=crypto.subtle.digest.bind(crypto.subtle);crypto.subtle.digest=(...args)=>new Promise(resolve=>{window.__releaseDigest=()=>digest(...args).then(resolve);});});t.release();await wait(async()=>(await t.stored()).roles[0].pendingReplies?.length>0,'response persisted');await t.p.clock.runFor(1800);}
+async function arrive(t,mode='',holdHash=false,inputs=['我看见你了！','守望者！']){
+ await chat(t);
+ await t.p.evaluate(mode=>window.name=mode,mode);
+ for(const text of inputs){
+  await t.p.locator('#message-input').fill(text);
+  await t.p.locator('#message-form .send-btn').click();
+  await t.p.clock.runFor(100);
+ }
+ const inputId=(await t.stored()).roles[0].chats.at(-1).id;
+ await t.p.clock.fastForward(60001);
+ await t.p.clock.runFor(1000);
+ await wait(()=>t.wire.length===1,'one phone API');
+ if(holdHash)await t.p.evaluate(()=>{
+  const digest=crypto.subtle.digest.bind(crypto.subtle);
+  crypto.subtle.digest=(...args)=>new Promise(resolve=>{window.__releaseDigest=()=>digest(...args).then(resolve);});
+ });
+ t.release();
+ // A single bubble can be delivered immediately after the outbox write.
+ await wait(async()=>{
+  const r=(await t.stored()).roles[0];
+  return r.pendingReplies?.some(job=>job.replyTo===inputId)||r.chats.some(m=>m.speaker==='char'&&m.replyTo===inputId);
+ },'response persisted for the current input');
+ await t.p.clock.runFor(1800);
+}
 try{
  let t=await setup({raw:null});assert.equal(await t.state(),'empty-unverified');assert.equal(await t.read(),null);assert.equal(t.wire.length,0);await t.p.locator('[data-storage-create]').click();await wait(async()=>await t.state()==='ready','explicit initialization');assert.ok((await t.stored()).roles.length);await done('empty context never auto-writes; explicit first initialization persists',t);
  t=await setup({raw:null});await t.p.evaluate(()=>window.name='write-error');await t.p.locator('[data-storage-create]').click();await wait(async()=>await t.state()==='write-failed','first save definitely failed');assert.equal(await t.read(),null);await t.p.evaluate(()=>window.name='');await t.reload();assert.equal(await t.state(),'empty-unverified','definite failed initialization must not permanently lock a new user out');await t.p.locator('[data-storage-create]').click();await wait(async()=>await t.state()==='ready','retry first initialization');assert.ok(await t.read());await done('a confirmed first-write failure releases only its own intent and remains retryable',t);
@@ -34,6 +65,101 @@ try{
  t=await setup({key:true});await arrive(t,'scene-write-fail');await wait(async()=>await t.p.evaluate(()=>window.__failedWrites>0)&&((await t.stored()).logs||[]).some(l=>l.code==='scene-state-save-failed'),'real failed Scene save plus persistent recovery ticket');let r=(await t.stored()).roles[0];assert.equal(r.scene,null);assert.ok(r.chats.some(m=>m.sceneReply));assert.ok(!r.events.some(e=>e.sceneChange));await t.capture('Scene failed but phone ticket persisted');await t.p.evaluate(()=>window.name='');await t.reload();await wait(async()=>!!(await t.stored()).roles[0].scene,'ticket recovery');const phone=ms=>ms.map(({sceneReply,...m})=>m);assert.deepEqual(phone((await t.stored()).roles[0].chats),phone(r.chats));await openSavedScene(t,(await t.stored()).roles[0].scene.id);assert.equal(t.wire.length,1);await done('unsaved Scene never claimed successful; durable phone ticket restores once',t);
  t=await setup({key:true});await arrive(t,'',true);await wait(async()=>await t.p.evaluate(()=>typeof window.__releaseDigest==='function'),'Scene validation suspended after durable phone delivery');r=(await t.stored()).roles[0];assert.equal(r.scene,null);assert.ok(r.chats.some(m=>m.sceneReply));await t.capture('reload during validation; not relying on previous memory');await t.reload();await wait(async()=>!!(await t.stored()).roles[0].scene,'new page validates stored ticket');assert.equal(t.wire.length,1);await done('refresh during unfinished validation recovers from persisted ticket, no extra API',t);
  t=await setup({key:true});await arrive(t,'scene-uncertain');await wait(async()=>!!(await t.stored()).roles[0].scene,'actual commit under readback failure');await wait(async()=>await t.p.evaluate(()=>window.__elsewhereStorageTrace.some(x=>x.phase==='write-uncertain')),'unknown outcome diagnosed');const id=(await t.stored()).roles[0].scene.id;await t.capture('actual Scene persisted; write outcome unknown to old page');await t.p.evaluate(()=>window.name='');await t.reload();assert.equal((await t.stored()).roles[0].scene.id,id);await openSavedScene(t,id);assert.equal(t.wire.length,1);await done('uncertain commit freezes rollback writes; reload reads actual persisted Scene',t);
+ const approachReply='太好了，我也看见你了。你站在那别动，我这就朝你走过去。';
+ const sighting=['我看见你了！'];
+ const approach=fixture();approach.roles[0].chats=[];
+ const phoneOriginals=role=>role.chats.map(({sceneReply,...m})=>m);
+ for(const fail of [false,true]){
+  t=await setup({raw:JSON.stringify(approach),key:true,reply:approachReply});
+  await arrive(t,fail?'scene-write-fail':'',false,sighting);
+  if(fail){
+   await wait(async()=>((await t.stored()).logs||[]).some(l=>l.code==='scene-state-save-failed'),'approach save failure is confirmed');
+   const before=(await t.stored()).roles[0];
+   assert.equal(before.scene,null);
+   assert.equal(await t.p.locator('#novel-input').count(),0);
+   assert.ok(before.chats.some(m=>m.sceneReply));
+   assert.equal(before.events.filter(e=>e.sceneChange).length,0);
+   await t.p.evaluate(()=>window.name='');
+   await t.reload();
+   await wait(async()=>!!(await t.stored()).roles[0].scene,'approach ticket recovered');
+   assert.deepEqual(phoneOriginals((await t.stored()).roles[0]),phoneOriginals(before));
+  }else{
+   await t.p.locator('#novel-input').waitFor();
+   assert.match(await t.p.locator('.passage.note').first().innerText(),/按原话继续靠近过程/);
+  }
+  const saved=(await t.stored()).roles[0],scene=saved.scene;
+  assert.equal(scene.entryPhase,'approaching');
+  assert.deepEqual(saved.chats.map(m=>m.text),[...sighting,approachReply]);
+  assert.deepEqual(scene.messages.slice(1).map(m=>m.sourceMessageId),saved.chats.map(m=>m.id));
+  assert.match(scene.messages[0].text,/按原话继续靠近过程/);
+  assert.doesNotMatch(scene.messages[0].text,/开始当面交谈|握手|拥抱/);
+  await t.reload();
+  await openSavedScene(t,scene.id);
+  const restored=(await t.stored()).roles[0];
+  assert.deepEqual(restored.scene.messages,scene.messages);
+  assert.equal(restored.scene.entryPhase,'approaching');
+  assert.equal(restored.events.filter(e=>e.sceneChange?.sceneId===scene.id).length,1);
+  assert.deepEqual(phoneOriginals(restored),phoneOriginals(saved));
+  assert.equal(t.wire.length,1);
+  await done(fail?'reported approach rolls back and restores the same turn without a second request':'reported approach switches UI and retains the original phone turn across refresh',t);
+ }
+ const separated=fixture();
+ separated.roles[0].chats=[{id:'aboard',speaker:'me',text:'我还在船上，船没靠岸。',at:at-60000}];
+ t=await setup({raw:JSON.stringify(separated),key:true,reply:approachReply});
+ await arrive(t,'',false,sighting);
+ await wait(async()=>((await t.stored()).logs||[]).some(l=>l.handoff==='handoff-remote-or-in-transit'),'explicit reason for remaining on the phone');
+ assert.equal((await t.stored()).roles[0].scene,null);
+ assert.equal(await t.p.locator('#novel-input').count(),0);
+ await t.p.locator('#message-input').waitFor();
+ assert.equal(t.wire.length,1);
+ await done('reported approach stays on the phone while the user is still aboard',t);
+ for(const [name,world,user,reply,userSignal,actorSignal,state,phase,fail] of [
+  ['airport Spanish','aeropuerto','Ya crucé aduanas. Soy quien levanta el cartel amarillo.','Distingo el cartel; salgo de la fila y voy hacia ti.','sighting','approaching','approaching','approaching',false],
+  ['café Japanese','喫茶店','向かいの椅子に座って、君の注文票を手に取った。','その伝票は僕のだよ。君の正面でカップを置く。','nearby','interacting','together','interacting',false],
+  ['palace English','royal audience chamber','I put my petition on the cushion at your elbow.','I take up the petition and address you from the dais.','nearby','interacting','together','interacting',true],
+ ]){
+  const synthetic=fixture();
+  synthetic.roles[0].place=world;
+  synthetic.roles[0].chats=[];
+  t=await setup({raw:JSON.stringify(synthetic),key:true,reply,sceneEvent:id=>({
+   state,context:'physical-now',user:{id,quote:user,signal:userSignal},actor:{id:'@reply',quote:reply,signal:actorSignal},
+  })});
+  await arrive(t,fail?'scene-write-fail':'',false,[user]);
+  if(fail){
+   await wait(async()=>((await t.stored()).logs||[]).some(l=>l.code==='scene-state-save-failed'),'semantic write rollback');
+   const before=(await t.stored()).roles[0];
+   assert.equal(before.scene,null);
+   assert.equal(await t.p.locator('#novel-input').count(),0);
+   assert.ok(before.chats.some(m=>m.sceneReply));
+   assert.ok(!before.events.some(e=>e.sceneChange));
+   await t.p.evaluate(()=>window.name='');
+   await t.reload();
+   await wait(async()=>!!(await t.stored()).roles[0].scene,'semantic ticket recovery');
+   assert.deepEqual(phoneOriginals((await t.stored()).roles[0]),phoneOriginals(before));
+  }else await t.p.locator('#novel-input').waitFor();
+  const saved=(await t.stored()).roles[0];
+  assert.equal(saved.scene.entryPhase,phase);
+  assert.deepEqual(saved.chats.map(m=>m.text),[user,reply]);
+  assert.deepEqual(saved.scene.messages.slice(1).map(m=>m.text),[user,reply]);
+  assert.ok(((await t.stored()).logs||[]).some(l=>l.handoff==='handoff-semantic-'+state));
+  await t.reload();
+  await openSavedScene(t,saved.scene.id);
+  const restored=(await t.stored()).roles[0];
+  assert.deepEqual(restored.scene,saved.scene);
+  assert.equal(restored.events.filter(e=>e.sceneChange?.sceneId===saved.scene.id).length,1);
+  assert.equal(t.wire.length,1);
+  await done('semantic '+name+' keeps one request and Scene ID'+(fail?' after rollback':''),t);
+ }
+ const reserved=fixture(),reservedRole=reserved.roles[0];
+ reservedRole.chats=[{id:'offer',speaker:'me',text:'现在在南门见面吧。',at:at-180000},{id:'accept',speaker:'char',text:'好，现在在南门见。',at:at-179000}];
+ reservedRole.meetingPlan={interpretation:'scene-state-v1',status:'confirmed',where:'南门',timeText:'现在',scheduledAt:at-179000,expiresAt:at+3600000,proposedBy:'me',acceptedBy:['me','char'],sources:reservedRole.chats.map(({id,at,text})=>({id,at,text,revisionCount:0}))};
+ t=await setup({raw:JSON.stringify(reserved),key:true,reply:'我还没到。今天先取消吧。',sceneEvent:()=>({state:'remote',reason:'cancelled'})});
+ await arrive(t,'',false,['我到了南门。']);
+ await wait(async()=>((await t.stored()).logs||[]).some(l=>l.handoff==='handoff-remote-cancelled'),'semantic denial keeps the appointed arrival on the phone');
+ assert.equal((await t.stored()).roles[0].scene,null);
+ assert.equal(await t.p.locator('#novel-input').count(),0);
+ assert.equal(t.wire.length,1);
+ await done('API appointment does not bypass the counterpart decision',t);
  const a=await setup(),b2=await setup({raw:null});assert.equal(await b2.state(),'empty-unverified');assert.ok(await a.read());assert.equal(await b2.read(),null);await done('separate browser contexts are genuinely isolated, not evidence of data loss',b2);await a.c.close();
  assert.deepEqual(errors,[]);fs.writeFileSync(path.join(out,label+'-browser.json'),JSON.stringify({url,results,errors},null,2));console.log(JSON.stringify({label,passed:results.length,posts:results.reduce((n,r)=>n+r.posts,0),errors}));
 }catch(e){if(current&&!current.p.isClosed()){await current.capture('failure');fs.writeFileSync(path.join(out,label+'-failure.json'),JSON.stringify({message:e.message,timeline:current.timeline,posts:current.wire.length},null,2));}throw e;}finally{clearTimeout(deadline);await b.close();}})().catch(e=>{console.error(e);process.exitCode=1;});

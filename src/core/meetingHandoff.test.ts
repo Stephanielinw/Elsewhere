@@ -1,6 +1,8 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {createRole,defaults} from './defaults';import {meetingPlan,isArrival,commitSceneDecision} from './encounter';import {buildNativeContext,compileNativeConversation} from './prompt';import {createSceneObservation,parseSceneDecision} from './sceneState';import {prepareSceneReply,sceneReplyMatches,resolveSceneReply} from './sceneReply';import {editMessage,retractMessage,prepareRegenerateReply} from './revisions';
 import {encounterHistory} from './encounter';
+import {resolvePhoneSceneReply} from './sceneReply';
+import {createLiveNovelContext} from './novelContext';
 const at=new Date(2026,10,4,14).getTime();
 function fixture(){const data=defaults(),r=createRole('合成岛民','','海岛守望者','谨慎','虚构海岛');r.id='island';r.chats=[];r.events=[];r.diaries=[];r.meetings=[];data.roles=[r];data.selected=r.id;return {r,data};}
 function say(r:ReturnType<typeof fixture>['r'],speaker:'me'|'char',text:string,offset:number){const m={id:'m'+r.chats.length,speaker,text,at:at+offset,status:'active' as const};r.chats.push(m);return m;}
@@ -11,7 +13,85 @@ test('same-turn scene metadata cannot promote nearing, remote sighting, quotes o
  for(const text of ['我可能马上就要到了。','我在船上远远看见你了。','我快到了。','如果我到了就喊你。','“我到了。”','昨天我到了。','我到了，但今天不想见你。']){const f=agreed(text),o=createSceneObservation(f.r,buildNativeContext(f.data,f.r,'chat','',{nowTs:at}));assert.throws(()=>parseSceneDecision(JSON.stringify(arrivalEvent(f)),o),text);}
 });
 test('a later cancellation supersedes an earlier source-valid semantic appointment',()=>{const {r}=agreed();say(r,'char','取消见面，别来了。',-500);assert.equal(meetingPlan(r,at)?.status,'cancelled');assert.equal(isArrival(r,'我到了。',at),false);});
-import {resolvePhoneSceneReply} from './sceneReply';
+const approachReply='太好了，我也看见你了。你站在那别动，我这就朝你走过去。';
+
+async function sighting(reply=approachReply, history: {speaker:'me'|'char';text:string;offset:number}[] = []) {
+ const f=fixture(),{r,data}=f;
+ for(const m of history)say(r,m.speaker,m.text,m.offset);
+ r.meetingPlan=meetingPlan(r,at);
+ const input=say(r,'me','我看见你了！',-1000);
+ const context=buildNativeContext(data,r,'chat','',{nowTs:at});
+ const {ticket}=await prepareSceneReply(r,data.user,createSceneObservation(r,context),compileNativeConversation(data,r,'chat','',{nowTs:at}),{requestId:'sighting',now:at,inputIds:[input.id]});
+ const answer=say(r,'char',reply,0);
+ return {...f,input,replies:[answer],ticket};
+}
+
+test('the reported sighting and immediate approach starts a scene from the original turn',async()=>{
+ const f=await sighting();
+ const result=resolvePhoneSceneReply(f.r,f.data.user,f.ticket,f.replies,at+10);
+ assert.equal(result.code,'handoff-approaching');
+ const originals=structuredClone(f.r.chats);
+ const origin={requestId:f.ticket.requestId,replyIds:f.replies.map(m=>m.id)};
+ assert.throws(()=>commitSceneDecision(f.r,result.decision!,at+10,'rollback',()=>false,origin),/保存失败/);
+ assert.equal(f.r.scene,null);
+ assert.deepEqual(f.r.chats,originals);
+ assert.equal(commitSceneDecision(f.r,result.decision!,at+10,'approach',()=>true,origin),'entered');
+ assert.deepEqual(f.r.chats,originals);
+ assert.deepEqual(f.r.scene!.messages.slice(1).map(m=>[m.text,m.sourceMessageId]),originals.map(m=>[m.text,m.id]));
+ assert.equal(f.r.scene!.entryPhase,'approaching');
+ assert.match(f.r.scene!.messages[0].text,/按原话继续靠近过程/);
+ assert.doesNotMatch(f.r.scene!.messages[0].text,/开始当面交谈|握手|拥抱/);
+ assert.throws(()=>commitSceneDecision(f.r,result.decision!,at+10,'duplicate',()=>true,origin));
+ const context=buildNativeContext(f.data,f.r,'scene','',{nowTs:at+10});
+ const authorContext=createLiveNovelContext(f.data,f.r,'scene',context);
+ for(const c of [context,authorContext])assert.match(JSON.stringify(c),/进入场景时：已互相确认相遇/);
+});
+
+test('a previous appointment or remote sighting from days ago is not part of the new encounter',async()=>{
+ const day=24*3600000;
+ const f=await sighting(approachReply,[
+  {speaker:'me',text:'今天下午两点在北堤见面吧。',offset:-3*day},
+  {speaker:'char',text:'好，就这么定。',offset:-3*day+1000},
+  {speaker:'me',text:'我在船上，视频里看见你了。',offset:-2*day},
+ ]);
+ const result=resolvePhoneSceneReply(f.r,f.data.user,f.ticket,f.replies,at+10);
+ assert.equal(result.code,'handoff-approaching');
+ assert.equal(result.decision?.location?.name,'地点待确认');
+ assert.deepEqual(result.decision?.plan?.sources.map(m=>m.id),[f.input.id,f.replies[0].id]);
+});
+
+test('sighting stays on the phone when the meeting is remote, deferred or not mutual',async()=>{
+ for(const [reply,history] of [
+  ['我也看见你了。',[]],
+  ['我也看见你了，你站稳些。',[]],
+  ['我也看见你了。明天我再朝你走过去。',[]],
+  ['太好了，我也看见你了。隔着河呢，我这就朝你走过去。',[]],
+  ['我也在视频里看见你了。我这就朝你走过去。',[]],
+  ['我也看见你了。如果方便，我就朝你走过去。',[]],
+  [approachReply,[{speaker:'me',text:'我还在船上，船没靠岸。',offset:-60000}]],
+ ] as const){
+  const f=await sighting(reply,[...history]);
+  const result=resolvePhoneSceneReply(f.r,f.data.user,f.ticket,f.replies,at+10);
+  assert.equal(result.decision,undefined,reply);
+  assert.match(result.code,/^handoff-/);
+ }
+});
+
+test('metadata cannot select a later encounter phase and the near and interacting phases remain distinct',async()=>{
+ const f=await sighting();
+ const payload=JSON.stringify({requestId:f.ticket.requestId,roleId:f.r.id,sceneId:null,event:{action:'arrive',entryPhase:'interacting',plan:{status:'confirmed',where:null,evidence:[{id:f.input.id,quote:f.input.text,purpose:'proposal'},{id:'@reply',quote:approachReply,purpose:'acceptance'}]},arrival:{id:f.input.id,quote:f.input.text,purpose:'arrival'},location:{name:'',basis:'unknown',evidence:[]}}});
+ const result=resolvePhoneSceneReply(f.r,f.data.user,{...f.ticket,payload},f.replies,at+10);
+ assert.equal(result.diagnostic,'scene-event-valid');
+ assert.equal(result.decision?.entryPhase,'approaching');
+ for(const [reply,phase] of [
+  ['我也看见你了。我就在你身边。','nearby'],
+  ['我也看见你了。我们已经当面交谈。','interacting'],
+ ]){
+  const g=await sighting(reply);
+  assert.equal(resolvePhoneSceneReply(g.r,g.data.user,g.ticket,g.replies,at+10).decision?.entryPhase,phase);
+ }
+});
+
 async function coast(user='我看见你了！',reply='看见你了。\n你站稳些，把手给我，这里礁石滑。'){
  const f=fixture(),{r,data}=f;say(r,'char','你昨天提到今天要来，海上的情况如何？',-5000);say(r,'me','我想可能马上就要到了，我感觉已经看到海岸了……你来了吗？',-4000);say(r,'char','我已经到海岸边了。你从船上抬起头，能看见那片浅滩和正对着港湾的橄榄林吗？我就在这里等你，你慢着点上岸。',-3000);const input=say(r,'me',user,-2000),name=say(r,'me','Orin!',-1000);
  const context=buildNativeContext(data,r,'chat','',{nowTs:at}),prepared=await prepareSceneReply(r,data.user,createSceneObservation(r,context),compileNativeConversation(data,r,'chat','',{nowTs:at}),{requestId:'handoff',now:at,inputIds:[input.id,name.id]});

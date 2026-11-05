@@ -1,4 +1,4 @@
-import {meetingPlan,encounterHistory} from './encounter';
+import {meetingPlan,encounterHistory,encounterEntryContext} from './encounter';
 import {compileConversationPrompt,requestMessages,type ConversationCompilation,type ConversationContext} from './conversationPrompt';
 import {nativePreset,isNativePreset} from './fruit/nativePreset';
 import {nativeBubbleRule,projectChatVoiceProfile,chatVoiceChoice} from './chatVoice';
@@ -195,7 +195,11 @@ export function buildNativeContext(
       .map((d) => `[${dt(d.at)} 用户主动分享给你的日记] ${kind==='chat'?memoryExcerpt(d.text,input,past?180:80):d.text}`)
       .join('\n');
 
-    base = `你在扮演名为${r.name}的虚构人物（不是AI助手），有独立生活、工作、偏好和主观感受。身份：${r.job}。所在区域与世界观：${r.place}。性格：${r.traits}。人设：${r.profile}。前史节点与未发生剧情边界：${r.canonNotes || '以用户设定为准'}。用户身份设定：${userIdentity}。你和用户目前的关系：${relationshipContext(memoryRole,nowTs,memory)}。此刻地点：${r.scene?.where || a.where}。正在做：${r.scene ? '与用户当面交谈' : kind==='chat'&&a.doing.startsWith('最近记录：')?'最近记录：'+a.label:a.doing}。当前日期时间：${dt(nowTs)}。保持人设一致，但不要机械附和，不替用户决定行为。禁止假装知道没有获悉的私事。所附历史是有来源的部分检索结果，不确定时不要编造。职业与世界设定只约束可能的活动，不代表当下已经发生；不得为所有角色套用固定的统一日程或编造具体行程。`;
+    const phasedScene=kind==='scene'&&r.scene?.entryPhase;
+    const activity=r.scene?(phasedScene?'按有效原话继续见面场景':'与用户当面交谈'):kind==='chat'&&a.doing.startsWith('最近记录：')?'最近记录：'+a.label:a.doing;
+    base = `你在扮演名为${r.name}的虚构人物（不是AI助手），有独立生活、工作、偏好和主观感受。身份：${r.job}。所在区域与世界观：${r.place}。性格：${r.traits}。人设：${r.profile}。前史节点与未发生剧情边界：${r.canonNotes || '以用户设定为准'}。用户身份设定：${userIdentity}。你和用户目前的关系：${relationshipContext(memoryRole,nowTs,memory)}。此刻地点：${r.scene?.where || a.where}。正在做：${activity}。当前日期时间：${dt(nowTs)}。保持人设一致，但不要机械附和，不替用户决定行为。禁止假装知道没有获悉的私事。所附历史是有来源的部分检索结果，不确定时不要编造。职业与世界设定只约束可能的活动，不代表当下已经发生；不得为所有角色套用固定的统一日程或编造具体行程。`;
+    const entry=phasedScene?encounterEntryContext(r,nowTs):undefined;
+    if(entry)base+='\n\n'+entry;
     const plan=kind==='chat'?meetingPlan(r,nowTs):r.scene?.agreement;
     if(plan)base+=`\n\n约见记录（来自有效手机原话，不等于已经见面）：${plan.status}；地点：${plan.where||'未约定'}；时间：${plan.timeText||'未约定'}${plan.scheduledAt!==undefined?'（本地 '+dt(plan.scheduledAt)+'）':''}；来源消息：${plan.sources.map(m=>m.id).join('、')}。角色可以协商或拒绝；不能把提出邀请当成已接受或已到达。`;
     base += `\n\n玩家共享 DDL / 待办（所有角色可见，只能关心提醒，不得擅自改动）：${userTasksSummary(data) || '无'}。`;

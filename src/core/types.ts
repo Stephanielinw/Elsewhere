@@ -159,11 +159,14 @@ export interface SceneReplyTicket {
   payload?:string;
 }
 
+export type EncounterPhase = 'approaching' | 'nearby' | 'interacting';
+
 export interface SceneData {
   id: string;
   startedAt: number;
   endedAt?: number;
   where: string;
+  entryPhase?: EncounterPhase;
   agreement?: MeetingPlan;
   locationEvidence?: {origin:'agreement'|'generated'|'movement'|'unknown'|'manual';at:number;sources:MeetingPlan['sources'];contextIds?:string[]};
   draft?: string;

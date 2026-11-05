@@ -1,6 +1,6 @@
-import type {ChatMessage,MeetingPlan,RoleData,SceneData} from './types';
+import type {ChatMessage,EncounterPhase,MeetingPlan,RoleData,SceneData} from './types';
 import {getActiveEvents,getActiveMessages,makeUid} from './revisions';
-import {structuredMeetingPlan,sceneDecisionStillValid,arrivalEvidence,scenePhoneWords as ownWords,counterpartPresence,explicitArrivalPlace,arrivalPlaceMatches,type SceneDecision} from './sceneState';
+import {structuredMeetingPlan,sceneDecisionStillValid,arrivalEvidence,scenePhoneWords as ownWords,phoneEncounterPresence,PHONE_ENCOUNTER_CONTEXT_MS,explicitArrivalPlace,arrivalPlaceMatches,type SceneDecision,type SceneObservation} from './sceneState';
 
 // The local path requires affirmative user evidence; optional same-call metadata handles other wording.
 const hypothetical=/(如果|假如|要是|开玩笑|逗你|玩笑|台词|转述|他说|她说|我想说|比如)/;
@@ -108,13 +108,28 @@ export function isFarewell(text:string):boolean {
   const words=ownWords(text);
   return !hypothetical.test(words)&&!/(还不|不想|不能|不会|如果|你说|他说|她说)/.test(words)&&/(我(?:先|要|得)?(?:回家|走了|离开|告辞)|再见|我们(?:分开|道别)|下次见)/.test(words);
 }
+
+const entryDescription:Record<EncounterPhase,string>={
+  approaching:'已互相确认相遇。按原话继续靠近过程，各自行动从实际进度开始。',
+  nearby:'已到见面处，双方站位和距离以有效原话为准。接下来的当面互动仍待展开。',
+  interacting:'已开始当面互动，从有效原话继续。',
+};
+
+export function encounterEntryContext(r:RoleData,at:number):string|undefined {
+  const scene=r.scene;
+  if(!scene?.entryPhase||!structuredMeetingPlan({...r,meetingPlan:scene.agreement},at))return;
+  return `进入场景时：${entryDescription[scene.entryPhase]} 续写以最近有效场景行动为准，不把尚未发生的走近、接触或用户行动写成已发生。`;
+}
+
 export function createEncounter(r:RoleData,arrival:ChatMessage|null,at:number,id:string,decision?:SceneDecision):SceneData|null {
   const semantic=decision&&sceneDecisionStillValid(r,decision)&&decision.action==='arrive'&&decision.arrival?.id===arrival?.id;
   if(r.scene||r.play||arrival&&(!getActiveMessages(r.chats).some(m=>m.id===arrival.id&&m.speaker==='me'&&m.text===arrival.text&&m.at===arrival.at)||!semantic&&!isArrival(r,arrival.text,at)))return null;
   const plan=semantic?decision.plan:meetingPlan(r,at),confirmed=plan?.status==='confirmed'&&(semantic||plan.scheduledAt===undefined||at>=plan.scheduledAt-30*60000&&at<=(plan.expiresAt??-Infinity));
   const where=semantic?decision.location!.name:confirmed&&plan.where?plan.where:'地点待确认';
-  return {id,startedAt:at,where,...(confirmed?{agreement:structuredClone(plan),locationEvidence:{origin:'agreement' as const,at,sources:structuredClone(plan.sources)}}:{}),messages:[
-    {id:id+':start',speaker:'note',text:`${where}。你们开始当面交谈。`,at,status:'active'},
+  const entryPhase=semantic?decision.entryPhase:undefined;
+  const opening=entryPhase?entryDescription[entryPhase]:arrival?entryDescription.nearby:'你们开始当面交谈。';
+  return {id,startedAt:at,where,...(entryPhase?{entryPhase}:{}),...(confirmed?{agreement:structuredClone(plan),locationEvidence:{origin:'agreement' as const,at,sources:structuredClone(plan.sources)}}:{}),messages:[
+    {id:id+':start',speaker:'note',text:`${where}。${opening}`,at,status:'active'},
     ...(arrival?[{...arrival,id:id+':arrival',sourceMessageId:arrival.id,kind:'scene'}]:[]),
   ]};
 }
@@ -175,7 +190,9 @@ export function updateEncounterLocation(r:RoleData,scene:SceneData,expectedWhere
 
 export function encounterHistory(r:RoleData,messages:ChatMessage[]|undefined):ChatMessage[] {
   const originals=new Map(getActiveMessages(r.chats).map(m=>[m.id,m]));
+  const scene=r.scene,invalidOpening=scene?.entryPhase&&!encounterEntryContext(r,scene.startedAt)?scene.id+':start':undefined;
   return getActiveMessages(messages).filter(m=>{
+    if(m.id===invalidOpening)return false;
     if(!m.sourceMessageId)return true;
     const source=originals.get(m.sourceMessageId);
     return source?.speaker===m.speaker&&source.text===m.text&&source.at===m.at&&(source.revisionCount||0)===(m.revisionCount||0);
@@ -183,22 +200,24 @@ export function encounterHistory(r:RoleData,messages:ChatMessage[]|undefined):Ch
 }
 
 /** Conservative recovery from the same authorized phone turn, never from the actor's prose alone. */
-export function inferPhoneHandoff(r:RoleData,o:import('./sceneState').SceneObservation,inputIds:string[],replyIds:string[]):{event?:unknown;code:string} {
+export function inferPhoneHandoff(r:RoleData,o:SceneObservation,inputIds:string[]):{event?:unknown;code:string} {
   if(o.scene||r.scene||r.play)return {code:'handoff-scene-active'};
   const inputs=o.sources.filter(s=>inputIds.includes(s.id)&&s.speaker==='me'&&s.scope==='phone');
   const arrival=[...inputs].reverse().find(s=>['arrival','sighting'].includes(arrivalEvidence(s.text)));
   if(!arrival)return {code:inputs.some(s=>arrivalEvidence(s.text)==='invalid')?'handoff-not-arrived':'handoff-no-presence'};
   if(inputs.slice(inputs.indexOf(arrival)+1).some(s=>arrivalEvidence(s.text)==='invalid'))return {code:'handoff-later-input-contradicts'};
   if(o.now-arrival.at>2*3600000)return {code:'handoff-presence-too-old'};
-  const ids=new Set(o.sources.filter(s=>s.scope==='phone').map(s=>s.id)),plan=meetingPlan({...r,chats:r.chats.filter(m=>ids.has(m.id))},o.now);
+  const timed=o.plan?.status==='confirmed'&&o.plan.scheduledAt!==undefined&&(o.plan.expiresAt??0)>=o.now?o.plan:undefined;
+  const ids=new Set(o.sources.filter(s=>s.scope==='phone'&&(s.at>=arrival.at-PHONE_ENCOUNTER_CONTEXT_MS||timed?.sources.some(m=>m.id===s.id))).map(s=>s.id));
+  const cached=r.meetingPlan?.sources.every(s=>ids.has(s.id))?r.meetingPlan:undefined;
+  const plan=meetingPlan({...r,meetingPlan:cached,chats:r.chats.filter(m=>ids.has(m.id))},o.now);
   if(plan?.status==='cancelled'||plan?.status==='declined')return {code:'handoff-consent-withdrawn'};
   if(plan?.scheduledAt!==undefined&&(o.now<plan.scheduledAt-30*60000||o.now>(plan.expiresAt??-Infinity)))return {code:'handoff-outside-window'};
-  const replies=o.sources.filter(s=>replyIds.includes(s.id)&&s.speaker==='char'&&s.scope==='phone'),words=replies.map(s=>ownWords(s.text)).join('\n');
-  const presence=counterpartPresence(words);
-  if(presence.unavailable)return {code:'handoff-counterpart-unavailable'};
+  const presence=phoneEncounterPresence(o,arrival);
+  if(presence.code)return {code:presence.code};
   const complete=arrivalEvidence(arrival.text)==='arrival';
-  if(!(complete&&plan?.status==='confirmed')&&!(presence.reciprocal&&(presence.nearby||complete)))return {code:'handoff-no-mutual-presence'};
-  const witness=replies.find(s=>/(看见|看到|见到)你|你.*(?:到了|来了)|面前|身边|旁边/.test(ownWords(s.text)));
+  if(!(complete&&plan?.status==='confirmed')&&!presence.reciprocal)return {code:'handoff-no-mutual-presence'};
+  const witness=presence.replies.find(s=>/(看见|看到|见到)你|你.*(?:到了|来了)|面前|身边|旁边/.test(ownWords(s.text)));
   if(!witness)return {code:'handoff-no-counterpart-source'};
   const actual=arrivalPlace(ownWords(arrival.text));
   if(plan?.where&&!arrivalPlaceMatches(actual,plan.where))return {code:'handoff-place-conflict'};
@@ -208,5 +227,6 @@ export function inferPhoneHandoff(r:RoleData,o:import('./sceneState').SceneObser
   const refs=[...(confirmedSources.length?confirmedSources:[proposal]).map(s=>({id:s.id,quote:s.text,purpose:s.id===proposal.id?'proposal':'acceptance'})),...(proposal.speaker==='char'?[{id:arrival.id,quote:arrival.text,purpose:'acceptance'}]:[]),{id:witness.id,quote:witness.text,purpose:'acceptance'}];
   const witnessedPlace=proposal.speaker==='char'&&arrivalEvidence(proposal.text)==='arrival';
   const where=actual&&!relativePlace(actual)?actual:plan?.status==='confirmed'||witnessedPlace?plan?.where:undefined;
-  return {code:'handoff-mutual-presence',event:{action:'arrive',plan:{status:'confirmed',where:where||null,timeText:plan?.timeText||null,scheduledAt:plan?.scheduledAt??null,expiresAt:plan?.expiresAt??null,evidence:refs},arrival:{id:arrival.id,quote:arrival.text,purpose:'arrival'},location:{name:where||'',basis:where?'agreement':'unknown',evidence:[]}}};
+  const appointment=plan?.status==='confirmed'?plan:undefined;
+  return {code:presence.phase==='approaching'?'handoff-approaching':'handoff-mutual-presence',event:{action:'arrive',plan:{status:'confirmed',where:where||null,timeText:appointment?.timeText||null,scheduledAt:appointment?.scheduledAt??null,expiresAt:appointment?.expiresAt??null,evidence:refs},arrival:{id:arrival.id,quote:arrival.text,purpose:'arrival'},location:{name:where||'',basis:where?'agreement':'unknown',evidence:[]}}};
 }

@@ -1,4 +1,4 @@
-import {encounterHistory} from './encounter';
+import {encounterHistory,encounterEntryContext} from './encounter';
 import type {ConversationContext} from './conversationPrompt';
 import type {AppData,RoleData,ChatMessage} from './types';
 import type {FruitSource} from './fruit/types';
@@ -30,7 +30,8 @@ export function createLiveNovelContext(data:AppData,r:RoleData,kind:'scene'|'pla
   add('persona:'+r.id,'identity','personaDescription',`对方称呼：${r.userAlias||fields.name||'未指定'}；身份：${fields.identity||''}；背景：${fields.background||''}；称呼与代词：${fields.pronouns||''}；自述：${fields.notes||''}；仅对本角色的补充：${memoryRuleConflicts('用户补充：'+r.notes,memory.denied).length>0?'':r.notes||''}`);
   for(const f of memory.facts)facts.push({id:f.id,text:memoryFactText(f),layer:f.layer,marker:f.layer==='identity'?'personaDescription':'worldInfoBefore',at:f.at,scope,knownBy:[r.id],active:true,revisionValid:true});
   add('relationship:'+r.id,'relationship','worldInfoBefore',relationshipContext(r,at));
-  add('state:'+r.id,'currentState','scenario',`本次见面地点：${r.scene!.where}；当前时间：${new Date(at).toISOString()}`);
+  const entry=encounterEntryContext(r,at);
+  add('state:'+r.id,'currentState','scenario',`本次见面地点：${r.scene!.where}；当前时间：${new Date(at).toISOString()}${entry?'\n'+entry:''}`);
   const realMessages=[...r.chats,...(r.scene?.messages||[]),...(r.meetings||[]).flatMap(s=>s.messages)];
   const active=new Map(getActiveMessages(realMessages).filter(m=>m.at<=at).map(m=>[m.id,m]));
   for(const candidate of base.facts.filter(f=>f.layer==='episodic')){

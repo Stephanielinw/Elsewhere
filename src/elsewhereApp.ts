@@ -1,4 +1,4 @@
-import {traceStorage,type SaveSession} from './core/storageSession';
+import {traceStorage,validateStoredWorld,type SaveSession} from './core/storageSession';
 import {avatarView,renderWithAvatars} from './avatarView';
 import {frameDraft,frameStyle,saveFrameOnly,DEFAULT_FRAME_SCALE,type FrameDraft,type AvatarFrameFields} from './core/avatarAppearance';
 import {meetingTimeline,archiveMeeting} from './core/meetingHistory';
@@ -30,6 +30,7 @@ import {bindNovelDocument} from './core/novelDocument';
 import {createNovelDisplay} from './novelDisplay';
 import {safeBubbleCSS} from './core/bubbleCss';
 import {DEVICE_API_KEY,readDeviceApiKey,saveDeviceApiKey} from './core/deviceApiKey';
+import {normalizeApiBase} from './core/modelDiscovery';
 import {createTerminalAppearance,appearanceFontFamily,hydrateAppearanceFont} from './terminalAppearance';
 import {completionLimit} from './core/outputBudget';
 import {uploadedStickers} from './core/stickers';
@@ -63,6 +64,7 @@ import {
   mediaGet,
   mediaPut,
   restoreMediaFromBackup,
+  validateBackupAttachments,
 } from './core/media';
 import {
   buildQuoteMetadata,
@@ -161,7 +163,10 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       try { if(previousKey===null)localStorage.removeItem(DEVICE_API_KEY);else localStorage.setItem(DEVICE_API_KEY,previousKey); } catch { throw new Error('本地存储不可用，无法保存设置。请检查浏览器存储权限。'); }
       throw new Error('设置保存失败，原配置和 Key 已保留。');
     }
-    token=key.trim();
+    const nextKey=key.trim();
+    if(nextKey!==token||previous.endpoint!==settings.endpoint||previous.model!==settings.model
+      ||previous.mode!==settings.mode||previous.temperature!==settings.temperature||previous.maxTokens!==settings.maxTokens)apiConnectionVersion++;
+    token=nextKey;
     for(const item of data.roles)syncRoleDiaryTasks(item,data.settings,now());
     if(canUseRealModel(data.settings))void processDiaryQueue();
   }});
@@ -201,6 +206,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   let deleteRoleId: string | null = null;
   let busy = false;
   let token = readDeviceApiKey(localStorage,data.settings.endpoint);
+  let apiConnectionVersion = 0;
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
   const activeChatRequests = new Map<string,AbortController>();
   const chatTyping = new Set<string>();
@@ -290,7 +296,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   let focusTaskInputDraft = '';
   let focusHistoryDateKey = toLocalDateKey(now());
   let focusSettlementModalSessionId: string | null = null;
-  let focusSummaryAiBusy = false;
+  let focusSummaryWorld: AppData | null = null;
 
   function buildStagedFrameFromOwner(owner?: AvatarFrameFields | null): StagedFrameState {
     return frameDraft(owner);
@@ -1783,104 +1789,152 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     }
   }
 
-  async function requestAiFocusSummariesForSession(
-    sessionId: string,
-    manualTrigger = false
-  ): Promise<void> {
+  async function requestAiFocusSummariesForSession(sessionId: string, manualTrigger = false): Promise<void> {
+    const world = data;
+    if (focusSummaryWorld === world) return;
     ensureFocusData();
-    const rec = (data.focus?.completed || []).find((c) => c.id === sessionId);
-    if (!rec) return;
-    const participantIds = rec.participantRoleIds || [];
-    if (!participantIds.length) return;
+    const rec = world.focus?.completed.find(item => item.id === sessionId);
+    const membership = [...(rec?.participantRoleIds || [])];
+    const participants = new Map(world.roles.filter(r => membership.includes(r.id)).map(r => [r.id, r]));
+    if (!rec || !participants.size) return;
+    if (!canUseRealModel(world.settings)) {
+      if (manualTrigger) notify('尚未连接可用 API，原专注小结已保留。');
+      return;
+    }
 
-    if (!canUseRealModel(data.settings)) {
+    const previousRun = rec.summaryRun;
+    const legacyInterrupted = !previousRun && (rec.summaryStatus === 'generating' || rec.summaryStatus === 'failed');
+    if (!manualTrigger && (previousRun || legacyInterrupted)) return;
+    const savedIds = new Set(rec.roleSummaries?.filter(item => item.source === 'ai').map(item => item.roleId));
+    const remaining = [...new Set(previousRun?.remainingRoleIds || membership.filter(id => !legacyInterrupted || !savedIds.has(id)))]
+      .filter(id => participants.has(id));
+    const pendingRoleId = previousRun?.pendingRoleId;
+    const pending = pendingRoleId && remaining.includes(pendingRoleId) ? pendingRoleId : undefined;
+    if (remaining.length && (pending || legacyInterrupted)
+      && !window.confirm('上次请求可能已被服务商处理，重试可能再次计费。确认继续？')) return;
+    if (!remaining.length) {
       rec.summaryStatus = 'ready';
-      rec.summaryError = undefined;
+      delete rec.summaryError;
+      delete rec.summaryRun;
       save();
-      if (manualTrigger) {
-        notify('当前为本地演示模式，已展示基于角色人设与真实计时构建的专注小结');
-      }
       render(false);
       return;
     }
 
-    if (focusSummaryAiBusy) return;
-    focusSummaryAiBusy = true;
+    const settings = Object.freeze({...world.settings, endpoint:normalizeApiBase(world.settings.endpoint)});
+    const connection = Object.freeze({settings, key:token, version:apiConnectionVersion});
+    let storedCredential: string|null;
+    try {storedCredential = localStorage.getItem(DEVICE_API_KEY);}
+    catch {notify('无法核对设备凭据，未发送专注小结请求。');return;}
+    if (readDeviceApiKey(localStorage, settings.endpoint) !== connection.key || !saveSession.current()) {
+      notify('连接或存档已变化，请重新读取后再生成小结。');
+      return;
+    }
+    const connectionCurrent = () => {
+      if (data !== world || connection.version !== apiConnectionVersion || !saveSession.current()) return false;
+      try {return localStorage.getItem(DEVICE_API_KEY) === storedCredential;}
+      catch {return false;}
+    };
+    const progress: NonNullable<typeof rec.summaryRun> = {
+      remainingRoleIds:pending?[pending,...remaining.filter(id=>id!==pending)]:remaining,
+      ...(pending?{pendingRoleId:pending}:{}),
+    };
+    const original = {summaryRun:previousRun, summaryStatus:rec.summaryStatus, summaryError:rec.summaryError};
+    rec.summaryRun = progress;
     rec.summaryStatus = 'generating';
-    rec.summaryError = undefined;
-    save();
-    render(false);
+    delete rec.summaryError;
+    if (!save()) {Object.assign(rec,original);return;}
 
+    focusSummaryWorld = world;
+    const currentRecord = () => data === world && focusSummaryWorld === world
+      && [...participants.values()].every(participant => world.roles.includes(participant))
+      ? world.focus?.completed.find(item => item.id === sessionId && item.summaryRun === progress && item.summaryStatus === 'generating'
+        && item.participantRoleIds?.length === membership.length && membership.every((id,index)=>item.participantRoleIds?.[index]===id))
+      : undefined;
+    let failure = 'AI 小结请求未完成。';
     try {
-      const s = data.settings;
-      const url = s.endpoint.trim().replace(/\/+$/, '');
-      for (const roleId of participantIds) {
-        const roleItem = data.roles.find((r) => r.id === roleId);
-        if (!roleItem) continue;
-        const promptText = buildFocusSummaryAiPrompt(roleItem, rec);
-        const res = await fetch(url + '/chat/completions', {
+      render(false);
+      for (const roleId of progress.remainingRoleIds) {
+        const roleItem = participants.get(roleId)!;
+        const current = currentRecord();
+        if (!current) return;
+        if (!connectionCurrent()) {failure = '连接或存档已变化，已停止发送剩余小结。';break;}
+
+        const prompt = buildFocusSummaryAiPrompt(roleItem, current);
+        const previousPending = progress.pendingRoleId;
+        // A refresh after this commit cannot tell whether the POST left the browser.
+        progress.pendingRoleId = roleId;
+        if (!save()) {progress.pendingRoleId = previousPending;return;}
+        if (!connectionCurrent()) {
+          progress.pendingRoleId = previousPending;
+          failure = '连接或存档已变化，已停止发送剩余小结。';
+          break;
+        }
+        const res = await fetch(settings.endpoint + '/chat/completions', {
           method: 'POST',
+          redirect: 'error',
           headers: {
             'Content-Type': 'application/json',
-            ...(token ? { Authorization: 'Bearer ' + token } : {}),
+            ...(connection.key ? {Authorization:'Bearer ' + connection.key} : {}),
           },
           body: JSON.stringify({
-            model: s.model,
-            messages: [{ role: 'user', content: promptText }],
-            temperature: +s.temperature || 0.7,
-            ...completionLimit(s,'focus-summary'),
+            model:settings.model,
+            messages:[{role:'user',content:prompt}],
+            temperature:+settings.temperature || 0.7,
+            ...completionLimit(settings,'focus-summary'),
           }),
         });
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
-        }
+        if (!res.ok) {failure = `AI 小结请求未完成（HTTP ${res.status}）。`;break;}
         const json = await res.json();
         const text = String(json.choices?.[0]?.message?.content || '').trim();
-        if (!text) {
-          throw new Error('模型返回内容为空');
+        if (!text) {failure = '模型未返回有效小结。';break;}
+        const latest = currentRecord();
+        if (!latest || !saveSession.current()) return;
+
+        const previousSummaries = latest.roleSummaries, previousRemaining = progress.remainingRoleIds;
+        const summaries = [...(previousSummaries || [])];
+        const index = summaries.findIndex(item=>item.roleId===roleId);
+        const summary = {roleId,roleName:roleItem.name,text:text.slice(0,320),at:now(),source:'ai' as const};
+        if (index >= 0) summaries[index] = summary;
+        else summaries.push(summary);
+        latest.roleSummaries = summaries;
+        progress.remainingRoleIds = previousRemaining.filter(id => id !== roleId);
+        delete progress.pendingRoleId;
+        const complete = !progress.remainingRoleIds.length;
+        if (complete) {
+          latest.summaryStatus = 'ready';
+          delete latest.summaryRun;
         }
-        const latestRec = (data.focus?.completed || []).find(
-          (c) => c.id === sessionId
-        );
-        if (!latestRec) return;
-        if (!Array.isArray(latestRec.roleSummaries)) {
-          latestRec.roleSummaries = [];
+        if (!save()) {
+          latest.roleSummaries = previousSummaries;
+          latest.summaryStatus = 'generating';
+          latest.summaryRun = progress;
+          progress.remainingRoleIds = previousRemaining;
+          progress.pendingRoleId = roleId;
+          failure = '小结写入未确认。';
+          break;
         }
-        const idx = latestRec.roleSummaries.findIndex((x) => x.roleId === roleId);
-        const updatedSummary = {
-          roleId: roleItem.id,
-          roleName: roleItem.name,
-          text: text.slice(0, 320),
-          at: now(),
-          source: 'ai' as const,
-        };
-        if (idx >= 0) latestRec.roleSummaries[idx] = updatedSummary;
-        else latestRec.roleSummaries.push(updatedSummary);
+        if (complete) {
+          if (manualTrigger) notify('已更新 AI 角色专注小结');
+          return;
+        }
       }
-      const latestRec = (data.focus?.completed || []).find(
-        (c) => c.id === sessionId
-      );
-      if (latestRec) {
-        latestRec.summaryStatus = 'ready';
-        latestRec.summaryError = undefined;
-      }
-      save();
-      if (manualTrigger) notify('已更新 AI 角色专注小结');
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const latestRec = (data.focus?.completed || []).find(
-        (c) => c.id === sessionId
-      );
-      if (latestRec) {
-        latestRec.summaryStatus = 'failed';
-        latestRec.summaryError = `AI 小结请求未完成（${msg}），已保留本次真实计时归档与基础小结，可随时点击重试。`;
-      }
-      syslog('error', `专注角色小结生成失败：${msg}`);
-      save();
-      if (manualTrigger) notify('AI 角色小结生成失败，可点击重试');
+    } catch {
+      // Provider and browser errors are not copied into persisted diagnostics.
     } finally {
-      focusSummaryAiBusy = false;
-      render(false);
+      const current = currentRecord();
+      if (current && saveSession.current()) {
+        current.summaryStatus = 'failed';
+        current.summaryError = failure + (progress.pendingRoleId
+          ? '请求可能已被服务商处理。结果未确认，未自动重试。'
+          : '已保存的小结保留，剩余请求尚未发送。');
+        save();
+        if (manualTrigger) notify(current.summaryError);
+      }
+      if (focusSummaryWorld === world) {
+        focusSummaryWorld = null;
+        if (data === world) render(false);
+      }
     }
   }
 
@@ -3066,7 +3120,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
                         bounds.label
                       )}（${esc(dKey)}）</time>
                       <span class="diary-char-meta">${
-                        e.wordCount ? `${e.wordCount} 字 · ` : ''
+                        e.wordCount ? `${esc(e.wordCount)} 字 · ` : ''
                       }${
                     e.generatedAt ? `写于 ${dt(e.generatedAt)}` : dt(e.at)
                   }</span>
@@ -3262,7 +3316,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
             </div>
             <div class="focus-settlement-stat">
               <span class="stat-label">计划 / 实际有效时长</span>
-              <strong class="stat-val" data-testid="settlement-durations">计划 ${plannedMin} 分钟 · 实际 ${esc(
+              <strong class="stat-val" data-testid="settlement-durations">计划 ${esc(plannedMin)} 分钟 · 实际 ${esc(
                 actualDurationText
               )}</strong>
             </div>
@@ -3307,11 +3361,11 @@ export function initElsewhereApp(saveSession:SaveSession): void {
                   ? `<button type="button" class="btn small ghost" data-action="retryfocussummary" data-session-id="${esc(
                       rec.id
                     )}" data-testid="retry-focus-summary-btn" ${
-                      focusSummaryAiBusy ? 'disabled' : ''
+                      focusSummaryWorld === data ? 'disabled' : ''
                     }>${
-                      focusSummaryAiBusy
+                      focusSummaryWorld === data
                         ? '正在生成…'
-                        : rec.summaryStatus === 'failed'
+                        : rec.summaryRun || rec.summaryStatus === 'failed' || rec.summaryStatus === 'generating'
                         ? '↻ 重试生成角色小结'
                         : '↻ 重新生成小结'
                     }</button>`
@@ -3333,6 +3387,11 @@ export function initElsewhereApp(saveSession:SaveSession): void {
                         const sumItem = summaries.find(
                           (s) => s.roleId === pRole.id
                         );
+                        const requestState = rec.summaryRun?.pendingRoleId === pRole.id
+                          ? '可能已发送 · 结果未确认'
+                          : rec.summaryRun?.remainingRoleIds.includes(pRole.id)
+                            ? '尚未发送'
+                            : sumItem?.source === 'ai' ? '已成功保存' : '';
                         return `<div class="focus-role-summary-card" data-testid="settlement-summary-${esc(
                           pRole.id
                         )}">
@@ -3353,6 +3412,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
                             sumItem?.text ||
                               `${pRole.name}陪你记录下了这段 ${actualDurationText} 的「${taskLabel}」专注时光。`
                           )}</p>
+                          ${requestState ? `<small data-focus-request-state>${esc(requestState)}</small>` : ''}
                         </div>`;
                       })
                       .join('')}
@@ -3461,7 +3521,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
                     ).padStart(2, '0')}:${String(
                       Math.ceil(focusRemaining(f) / 1000) % 60
                     ).padStart(2, '0')}</strong>
-                    <span>计划 ${f.minutes} 分钟</span>
+                    <span>计划 ${esc(f.minutes)} 分钟</span>
                   </div>
                 </div>
 
@@ -3731,9 +3791,9 @@ export function initElsewhereApp(saveSession:SaveSession): void {
                           }">${isDone ? '已完成' : '提前结束'}</span>
                         </div>
                         <div class="row between tiny muted" style="width:100%">
-                          <span>有效专注 ${esc(durLabel)}（计划 ${
+                          <span>有效专注 ${esc(durLabel)}（计划 ${esc(
                         rec.plannedMinutes || rec.minutes
-                      } 分钟） · ${
+                      )} 分钟） · ${
                         pNames ? `与 ${esc(pNames)} 共同专注` : '独自专注'
                       }</span>
                           <span>${hm(rec.startedAt)}–${hm(rec.finishedAt)} ›</span>
@@ -5264,18 +5324,28 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     const fr = new FileReader();
     fr.onload = async () => {
       try {
-        const d = JSON.parse(String(fr.result));
-        if (!Array.isArray(d.roles) || !d.settings) {
-          throw new Error('不是 Elsewhere 备份');
+        let parsed: unknown;
+        try {parsed = JSON.parse(String(fr.result));}
+        catch {throw new Error('备份不是有效的 JSON');}
+        const d = validateStoredWorld(parsed);
+        const attachments = validateBackupAttachments(d._media);
+        delete d._media;
+        const next = normalizeAndMigrateData(d);
+        try {next.focus = ensureFocusStateNormalized(next.focus,next.roles);}
+        catch {throw new Error('专注备份结构无效');}
+        next.selected = null;
+        try {await restoreMediaFromBackup(attachments);}
+        catch {throw new Error('附件写入未完成，部分附件可能已写入；未替换世界存档');}
+        const previous = data;
+        data = next;
+        if (!save()) {
+          data = previous;
+          throw new Error('世界存档写入未确认，部分附件可能已写入；请重新读取');
         }
-        await restoreMediaFromBackup(d._media);
         mediaSources.clear();
         document.querySelectorAll<HTMLElement>('[data-hydrated-key]').forEach(el=>delete el.dataset.hydratedKey);
-        delete d._media;
-        data = normalizeAndMigrateData(d);
         token = readDeviceApiKey(localStorage,data.settings.endpoint);
-        data.selected = null;
-        save();
+        terminalApi.reset();
         go('landing');
         notify('已导入备份及媒体附件');
       } catch (e) {

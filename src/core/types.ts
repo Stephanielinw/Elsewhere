@@ -502,6 +502,10 @@ export interface CompletedFocusSession {
   roleSummaries?: FocusRoleSummary[];
   summaryStatus?: 'none' | 'ready' | 'generating' | 'failed';
   summaryError?: string;
+  summaryRun?: {
+    remainingRoleIds: string[];
+    pendingRoleId?: string;
+  };
 }
 
 export interface FocusState {

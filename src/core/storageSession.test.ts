@@ -21,3 +21,37 @@ test('invalid user facts and shared task containers cannot be normalized into em
  for(const field of ['avatarMediaId','frameId','frameMediaId']){const f=fixture(),d=defaults();(d.roles[0] as unknown as Record<string,unknown>)[field]={retained:'ORIGINAL_MEDIA_REFERENCE'};const raw=JSON.stringify(d);f.values.set(STORAGE_KEY,raw);assert.equal(readStoredSave(f.store).state,'invalid',field);assert.equal(f.values.get(STORAGE_KEY),raw);}
  const f=fixture(),d=defaults();d.sharedTasks={ddl:'ORIGINAL_TASK_BYTES',todo:[]} as never;f.values.set(STORAGE_KEY,JSON.stringify(d));assert.equal(readStoredSave(f.store).state,'invalid');
 });
+
+test('API settings keep an unconfigured old save and unrelated fields without inventing an address',()=>{
+ const f=fixture();
+ for(const endpoint of [undefined,'','   ']){
+  const raw=JSON.stringify({version:1,roles:[],settings:{endpoint,otherSetting:{retained:true}},otherWorldField:'keep'});
+  f.values.set(STORAGE_KEY,raw);
+  const snapshot=readStoredSave(f.store);
+  assert.equal(snapshot.state,'loaded');
+  if(snapshot.state!=='loaded')throw Error('valid legacy save');
+  assert.deepEqual(snapshot.value.settings,{endpoint:'',mode:'demo',model:'',temperature:0.8,maxTokens:550,otherSetting:{retained:true}});
+  assert.equal(snapshot.value.otherWorldField,'keep');
+  assert.equal(f.values.get(STORAGE_KEY),raw);
+ }
+});
+
+test('invalid known API fields and Focus display numbers are blocked while original bytes remain intact',()=>{
+ const f=fixture();
+ const invalidSettings=[
+  {temperature:'"><img onerror=void(0)>'},{temperature:'0.8'},{temperature:-0.1},{temperature:2.1},
+  {endpoint:'javascript:void(0)'},{endpoint:'https://a.invalid/?test=1'},{endpoint:'https://user@a.invalid/'},
+  {mode:'remote'},{model:[]},{model:'x'.repeat(513)},{maxTokens:0},{maxTokens:1.5},{autonomousLife:'false'},
+ ];
+ const candidates=invalidSettings.map(fields=>({...defaults(),settings:{...defaults().settings,...fields}}));
+ candidates.push({...defaults(),focus:{workMinutes:25,breakMinutes:5,active:{minutes:'<img onerror=void(0)>'} as never,completed:[]}});
+ candidates.push({...defaults(),focus:{workMinutes:25,breakMinutes:5,active:null,completed:[{plannedMinutes:'<img onerror=void(0)>'} as never]}});
+ candidates.push({...defaults(),focus:{workMinutes:{toString:null,valueOf:null} as never,breakMinutes:5,active:null,completed:[]}});
+ candidates.push({...defaults(),focus:{workMinutes:25,breakMinutes:5,active:{minutes:25,phase:'work',status:'running',runSince:1,durationMs:{toString:null,valueOf:null}} as never,completed:[]}});
+ for(const candidate of candidates){
+  const raw=JSON.stringify(candidate);
+  f.values.set(STORAGE_KEY,raw);
+  assert.equal(readStoredSave(f.store).state,'invalid');
+  assert.equal(f.values.get(STORAGE_KEY),raw);
+ }
+});

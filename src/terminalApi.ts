@@ -1,14 +1,37 @@
-import {escHtml as esc} from './core/footprints';
 import {fetchModelIds,normalizeApiBase} from './core/modelDiscovery';
 import type {ApiSettings} from './core/types';
 export function createTerminalApi(hooks:{settings:()=>ApiSettings;key:()=>string;save:(settings:ApiSettings,key:string)=>void;notify:(message:string)=>void}){
   let host:HTMLElement|null=null,draft:ApiSettings|null=null,key='',keyEndpoint='',models:string[]=[],status='',request:AbortController|null=null,requestId=0;
   const value=(name:string)=>host?.querySelector<HTMLInputElement|HTMLSelectElement>(`[name="${name}"]`)?.value||'';
-  function read(){if(!host||!draft)return;draft={...draft,mode:value('mode')==='api'?'api':'demo',endpoint:value('endpoint'),model:value('model'),temperature:Number(value('temperature'))};key=value('token');}
+  function read(){if(!host||!draft)return;draft={...draft,mode:value('mode')==='api'?'api':'demo',endpoint:value('endpoint'),model:value('model'),temperature:Number(value('temperature')||NaN)};key=value('token');}
   function cancel(){requestId++;request?.abort();request=null;}
   function feedback(){const node=host?.querySelector('[data-api-status]');if(node)node.textContent=status;const button=host?.querySelector<HTMLButtonElement>('[data-api-models]');if(button){button.disabled=Boolean(request);button.textContent=request?'正在读取…':'拉取模型';}}
-  function options(){const select=host?.querySelector<HTMLSelectElement>('[name="model"]');if(!select)return;const ids=[...new Set([draft?.model||'',...models].filter(Boolean))];select.innerHTML='<option value="">请先拉取并选择模型</option>'+ids.map(id=>`<option value="${esc(id)}" ${draft?.model===id?'selected':''}>${esc(id)}</option>`).join('');}
-  function render(){if(!host||!draft)return;host.innerHTML=`<form data-terminal-api novalidate><label class="terminal-label">运行方式<select class="field" name="mode"><option value="demo" ${draft.mode==='demo'?'selected':''}>本地演示（无需 API）</option><option value="api" ${draft.mode==='api'?'selected':''}>连接真实 API</option></select></label><div data-api-connection ${draft.mode==='demo'?'hidden':''}><label class="terminal-label">API 地址<input class="field" name="endpoint" value="${esc(draft.endpoint)}" placeholder="https://example.com/v1" autocomplete="url"></label><label class="terminal-label">API Key<input class="field" name="token" type="password" autocomplete="off" placeholder="仅保存在当前设备"></label><p class="terminal-caption">保存在此浏览器，之后打开自动恢复；不会随备份、日志或预设导出。</p><div class="terminal-model-toolbar"><button class="fruit-button" type="button" data-api-models>拉取模型</button><span>只读取模型列表，不生成回复</span></div><label class="terminal-label">模型<select class="field" name="model" aria-label="模型列表"></select></label><label class="terminal-label">Temperature<input class="field" name="temperature" type="number" min="0" max="2" step="0.1" value="${draft.temperature}"></label><div class="terminal-api-footer"><button class="fruit-button fruit-primary">保存设置</button><p role="status" aria-live="polite" data-api-status>${esc(status)}</p></div><p class="terminal-caption">支持 OpenAI 兼容接口（/models 与 /chat/completions）。其他原生协议不能自动转换；服务需允许浏览器跨域访问，不提供代理。</p></div></form>`;const field=host.querySelector<HTMLInputElement>('[name="token"]');if(field)field.value=key;options();feedback();}
+  function options(){
+    const select=host?.querySelector<HTMLSelectElement>('[name="model"]');
+    if(!select||!draft)return;
+    const ids=[...new Set([draft.model,...models].filter(id=>typeof id==='string'&&id))];
+    select.replaceChildren();
+    for(const id of ['',...ids]){
+      const option=document.createElement('option');
+      option.value=id;
+      option.textContent=id||'请先拉取并选择模型';
+      select.append(option);
+    }
+    select.value=typeof draft.model==='string'?draft.model:'';
+  }
+  function render(){
+    if(!host||!draft)return;
+    host.innerHTML=`<form data-terminal-api novalidate><label class="terminal-label">运行方式<select class="field" name="mode"><option value="demo">本地演示（无需 API）</option><option value="api">连接真实 API</option></select></label><div data-api-connection><label class="terminal-label">API 地址<input class="field" name="endpoint" placeholder="https://example.com/v1" autocomplete="url"></label><label class="terminal-label">API Key<input class="field" name="token" type="password" autocomplete="off" placeholder="仅保存在当前设备"></label><p class="terminal-caption">保存在此浏览器，之后打开自动恢复；不会随备份、日志或预设导出。</p><div class="terminal-model-toolbar"><button class="fruit-button" type="button" data-api-models>拉取模型</button><span>只读取模型列表，不生成回复</span></div><label class="terminal-label">模型<select class="field" name="model" aria-label="模型列表"></select></label><label class="terminal-label">Temperature<input class="field" name="temperature" type="number" min="0" max="2" step="0.1"></label><div class="terminal-api-footer"><button class="fruit-button fruit-primary">保存设置</button><p role="status" aria-live="polite" data-api-status></p></div><p class="terminal-caption">支持 OpenAI 兼容接口（/models 与 /chat/completions）。其他原生协议不能自动转换；服务需允许浏览器跨域访问，不提供代理。</p></div></form>`;
+    const form=host.querySelector<HTMLFormElement>('[data-terminal-api]')!;
+    const fields=form.elements;
+    const mode=fields.namedItem('mode') as HTMLSelectElement;
+    mode.value=draft.mode==='api'?'api':'demo';
+    form.querySelector<HTMLElement>('[data-api-connection]')!.hidden=mode.value==='demo';
+    (fields.namedItem('endpoint') as HTMLInputElement).value=typeof draft.endpoint==='string'?draft.endpoint:'';
+    (fields.namedItem('token') as HTMLInputElement).value=key;
+    (fields.namedItem('temperature') as HTMLInputElement).value=Number.isFinite(draft.temperature)?String(draft.temperature):'';
+    options();feedback();
+  }
   const click=(event:Event)=>{event.stopPropagation();if(!(event.target instanceof Element)||!event.target.closest('[data-api-models]'))return;event.preventDefault();read();cancel();if(!draft)return;const id=requestId,connection={base:draft.endpoint,key};request=new AbortController();const controller=request;status='正在读取模型列表…';feedback();const timer=setTimeout(()=>controller.abort(),15000);
     void fetchModelIds(connection.base,connection.key,{signal:controller.signal}).then(ids=>{if(id!==requestId)return;models=ids;status=`已拉取 ${ids.length} 个模型，请选择。`;options();hooks.notify(status);}).catch(error=>{if(id!==requestId)return;status=error instanceof Error?error.message:'模型列表读取失败';status=status.replace(/，?请?手动输入模型 ID。?|或手动输入。?/g,'');hooks.notify(status);}).finally(()=>{clearTimeout(timer);if(id===requestId){request=null;feedback();}});
   };
@@ -23,7 +46,19 @@ export function createTerminalApi(hooks:{settings:()=>ApiSettings;key:()=>string
     }
     feedback();
   };
-  const submit=(event:Event)=>{event.stopPropagation();event.preventDefault();read();if(!draft)return;try{const endpoint=normalizeApiBase(draft.endpoint);if(!Number.isFinite(draft.temperature)||draft.temperature<0||draft.temperature>2||!draft.model.trim()||draft.model.length>512)throw new Error('请选择模型，并检查 Temperature（0–2）。');hooks.save({...draft,endpoint},key);draft={...draft,endpoint};keyEndpoint=endpoint;const field=host?.querySelector<HTMLInputElement>('[name="endpoint"]');if(field)field.value=endpoint;status='已保存，下次打开自动恢复。';}catch(error){status=error instanceof Error?error.message:'设置未保存';}feedback();hooks.notify(status);};
+  const submit=(event:Event)=>{
+    event.stopPropagation();event.preventDefault();read();if(!draft)return;
+    try{
+      const endpoint=draft.endpoint.trim()?normalizeApiBase(draft.endpoint):'';
+      if(!endpoint&&key.trim())throw Error('保存 Key 前请填写有效的 API 地址。');
+      if(!Number.isFinite(draft.temperature)||draft.temperature<0||draft.temperature>2||draft.model.length>512)throw Error('请检查模型 ID 和 Temperature（0–2）。');
+      hooks.save({...draft,endpoint},key);
+      draft={...draft,endpoint};keyEndpoint=endpoint;
+      const field=host?.querySelector<HTMLInputElement>('[name="endpoint"]');if(field)field.value=endpoint;
+      status='已保存，下次打开自动恢复。';
+    }catch(error){status=error instanceof Error?error.message:'设置未保存';}
+    feedback();hooks.notify(status);
+  };
   function detach(){read();cancel();if(!host)return;host.removeEventListener('click',click);host.removeEventListener('input',input);host.removeEventListener('change',input);host.removeEventListener('submit',submit);host=null;}
-  return {detach,mount(element:HTMLElement|null){detach();host=element;if(!host)return;if(!draft){draft={...hooks.settings()};key=hooks.key();try{keyEndpoint=normalizeApiBase(draft.endpoint)}catch{keyEndpoint=''}}host.addEventListener('click',click);host.addEventListener('input',input);host.addEventListener('change',input);host.addEventListener('submit',submit);render();}};
+  return {detach,reset(){detach();draft=null;key='';keyEndpoint='';models=[];status='';},mount(element:HTMLElement|null){detach();host=element;if(!host)return;if(!draft){draft={...hooks.settings()};key=hooks.key();try{keyEndpoint=normalizeApiBase(draft.endpoint)}catch{keyEndpoint=''}}host.addEventListener('click',click);host.addEventListener('input',input);host.addEventListener('change',input);host.addEventListener('submit',submit);render();}};
 }

@@ -1,9 +1,16 @@
-import type { AppData, RoleData } from './types';
+import type { ApiSettings, AppData, RoleData } from './types';
 import { makeUid } from './revisions';
 import { initNewRoleFirstMessageState } from './firstMessage';
 import {safeBubbleCSS,BUBBLE_CSS_LIMIT} from './bubbleCss';
 
 export const STORAGE_KEY = 'elsewhere-v01';
+export const DEFAULT_API_SETTINGS: Readonly<ApiSettings> = {
+  mode: 'demo',
+  endpoint: 'https://api.openai.com/v1',
+  model: '',
+  maxTokens: 550,
+  temperature: 0.8,
+};
 
 export function createRole(
   name: string,
@@ -77,13 +84,7 @@ export function defaults(): AppData {
     roles: [makeNain()],
     user: { name: '', pronouns: '', identity: '', background: '', notes: '' },
     selected: null,
-    settings: {
-      mode: 'demo',
-      endpoint: 'https://api.openai.com/v1',
-      model: '',
-      maxTokens: 550,
-      temperature: 0.8,
-    },
+    settings: { ...DEFAULT_API_SETTINGS },
     preset: null,
   };
 }

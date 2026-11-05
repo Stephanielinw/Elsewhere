@@ -1,4 +1,5 @@
-import {STORAGE_KEY} from './defaults';
+import {DEFAULT_API_SETTINGS,STORAGE_KEY} from './defaults';
+import {normalizeApiBase} from './modelDiscovery';
 
 type Store=Pick<Storage,'getItem'|'setItem'>;
 export type SaveSnapshot={state:'loaded';raw:string;value:Record<string,unknown>}|{state:'empty'|'unavailable'|'invalid';raw:string|null};
@@ -8,20 +9,60 @@ export function traceStorage(phase:string,details:Record<string,string|number|bo
 }
 const arrays=(v:Record<string,unknown>,fields:string[])=>fields.every(k=>v[k]===undefined||Array.isArray(v[k]));
 const object=(v:unknown):v is Record<string,unknown>=>!!v&&typeof v==='object'&&!Array.isArray(v);
+const finiteNumber=(value:unknown):value is number=>typeof value==='number'&&Number.isFinite(value);
+const positiveNumber=(value:unknown)=>finiteNumber(value)&&value>0;
+
+export function validateStoredWorld(value:unknown):Record<string,unknown> {
+  if(!object(value)||!Array.isArray(value.roles)||!object(value.settings))throw Error('不是有效的 Elsewhere 存档');
+  const settings=value.settings,legacy=value.version===undefined||value.version===1||value.version===2;
+  const {
+    endpoint=legacy?'':undefined,
+    mode=legacy?DEFAULT_API_SETTINGS.mode:undefined,
+    model=legacy?DEFAULT_API_SETTINGS.model:undefined,
+    temperature=legacy?DEFAULT_API_SETTINGS.temperature:undefined,
+    maxTokens=legacy?DEFAULT_API_SETTINGS.maxTokens:undefined,
+    autonomousLife,
+  }=settings;
+  if(typeof endpoint!=='string')throw Error('API 地址必须是文本');
+  const base=endpoint.trim()?normalizeApiBase(endpoint):'';
+  if(mode!=='api'&&mode!=='demo')throw Error('API 运行方式无效');
+  if(typeof model!=='string'||model.length>512)throw Error('模型 ID 必须是至多 512 字符的文本');
+  if(typeof temperature!=='number'||!Number.isFinite(temperature)||temperature<0||temperature>2)throw Error('Temperature 必须是 0–2 的数字');
+  if(typeof maxTokens!=='number'||!Number.isSafeInteger(maxTokens)||maxTokens<=0)throw Error('输出预算必须是正整数');
+  if(autonomousLife!==undefined&&typeof autonomousLife!=='boolean')throw Error('生活推进开关必须是布尔值');
+  if(!arrays(value,['customFrames','customFonts','bubblePresets','logs']))throw Error('存档列表无效');
+  if(value.sharedTasks!==undefined&&(!object(value.sharedTasks)||!arrays(value.sharedTasks,['ddl','todo'])))throw Error('待办结构无效');
+  if(value.focus!=null){
+    const focus=value.focus;
+    if(!object(focus)||!arrays(focus,['completed']))throw Error('专注记录结构无效');
+    if(focus.workMinutes!==undefined&&!positiveNumber(focus.workMinutes))throw Error('专注设置时长无效');
+    if(focus.active!=null){
+      const active=focus.active;
+      if(!object(active)||!arrays(active,['participants','participantRoleIds','tasks','moments']))throw Error('进行中的专注结构无效');
+      if(['minutes','durationMs'].some(key=>active[key]!==undefined&&!positiveNumber(active[key]))
+        ||['elapsedMs','startedAt','nextLiveLogDueAt'].some(key=>active[key]!==undefined&&!finiteNumber(active[key]))
+        ||active.runSince!=null&&!finiteNumber(active.runSince))throw Error('进行中的专注时间无效');
+    }
+    for(const record of (focus.completed as unknown[]|undefined)||[]){
+      if(!object(record)||['minutes','plannedMinutes'].some(key=>record[key]!==undefined&&!positiveNumber(record[key])))throw Error('归档专注时长无效');
+      const run=record.summaryRun;
+      if(run!==undefined&&(!object(run)||!Array.isArray(run.remainingRoleIds)||run.remainingRoleIds.some(id=>typeof id!=='string')||run.pendingRoleId!==undefined&&!run.remainingRoleIds.includes(run.pendingRoleId)))throw Error('专注总结进度无效');
+    }
+  }
+  const user=value.user;
+  if(user!==undefined&&(!object(user)||['name','pronouns','identity','background','notes','avatarMediaId','frameId','frameMediaId','frameData'].some(k=>user[k]!==undefined&&typeof user[k]!=='string')))throw Error('用户资料结构无效');
+  const histories=['chats','diaries','events','plays','meetings','messageRevisions','diaryTasks','pendingReplies','personalThreads','lifeTasks'];
+  if(value.roles.some(r=>!object(r)||typeof r.id!=='string'||typeof r.name!=='string'||!arrays(r,histories)||r.footprintsByDate!==undefined&&!object(r.footprintsByDate)||['avatarMediaId','frameId','frameMediaId'].some(k=>r[k]!==undefined&&typeof r[k]!=='string')||['chats','diaries','events'].some(k=>Array.isArray(r[k])&&(r[k] as unknown[]).some(m=>!object(m)))))throw Error('角色资料或历史结构无效');
+  if(value.roles.some(r=>r.diaries?.some((entry:Record<string,unknown>)=>entry.wordCount!==undefined
+    && (typeof entry.wordCount!=='number'||!Number.isSafeInteger(entry.wordCount)||entry.wordCount<0))))throw Error('日记归档字数无效');
+  return {...value,settings:{...settings,endpoint:base,mode,model,temperature,maxTokens}};
+}
 export function readStoredSave(store:Pick<Storage,'getItem'>):SaveSnapshot {
  let raw:string|null;try{raw=store.getItem(STORAGE_KEY);}catch{traceStorage('read-unavailable');return {state:'unavailable',raw:null};}
  if(raw===null){traceStorage('read-empty');return {state:'empty',raw};}
  try{
-  const value:unknown=JSON.parse(raw);
-  if(!object(value)||!Array.isArray(value.roles)||!object(value.settings)||typeof value.settings.endpoint!=='string')throw Error('invalid save');
-  if(!arrays(value,['customFrames','customFonts','bubblePresets','logs']))throw Error('invalid lists');
-  if(value.sharedTasks!==undefined&&(!object(value.sharedTasks)||!arrays(value.sharedTasks,['ddl','todo'])))throw Error('invalid tasks');
-  if(value.focus!=null&&(!object(value.focus)||!arrays(value.focus,['completed'])))throw Error('invalid focus');
-  const user=value.user;
-  if(user!==undefined&&(!object(user)||['name','pronouns','identity','background','notes','avatarMediaId','frameId','frameMediaId','frameData'].some(k=>user[k]!==undefined&&typeof user[k]!=='string')))throw Error('invalid profile');
-  const histories=['chats','diaries','events','plays','meetings','messageRevisions','diaryTasks','pendingReplies','personalThreads','lifeTasks'];
-  if(value.roles.some(r=>!object(r)||typeof r.id!=='string'||typeof r.name!=='string'||!arrays(r,histories)||r.footprintsByDate!==undefined&&!object(r.footprintsByDate)||['avatarMediaId','frameId','frameMediaId'].some(k=>r[k]!==undefined&&typeof r[k]!=='string')||['chats','diaries','events'].some(k=>Array.isArray(r[k])&&(r[k] as unknown[]).some(m=>!object(m)))))throw Error('invalid history');
-  traceStorage('read-loaded',{roles:value.roles.length});return {state:'loaded',raw,value};
+  const value=validateStoredWorld(JSON.parse(raw));
+  traceStorage('read-loaded',{roles:(value.roles as unknown[]).length});return {state:'loaded',raw,value};
  }catch{traceStorage('read-invalid');return {state:'invalid',raw};}
 }
 export class SaveSession {

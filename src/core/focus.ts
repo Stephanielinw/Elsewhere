@@ -751,6 +751,7 @@ export function ensureFocusStateNormalized(focus: FocusState | undefined, roles:
     : [];
 
   return {
+    ...focus,
     workMinutes,
     breakMinutes: 5,
     active: focus?.active || null,

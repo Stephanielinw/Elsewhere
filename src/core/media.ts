@@ -150,18 +150,27 @@ export async function buildBackupPayload(data: AppData): Promise<Record<string, 
   return pack;
 }
 
-export async function restoreMediaFromBackup(
-  attachments: { id: string; data: string }[] | undefined
-): Promise<void> {
-  if (!Array.isArray(attachments)) return;
+type BackupAttachment = { id: string; data: string };
+
+export function validateBackupAttachments(value: unknown): BackupAttachment[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw Error('备份附件清单无效');
+  const ids = new Set<string>();
+  for (const [index, item] of value.entries()) {
+    const invalid = () => Error(`备份附件第 ${index + 1} 项格式无效`);
+    if (!item || typeof item.id !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(item.id) || ids.has(item.id) || typeof item.data !== 'string') throw invalid();
+    const comma = item.data.indexOf(','), encoded = item.data.slice(comma + 1);
+    if (comma < 0 || !/^data:(?:(?:audio|image|font)\/[a-z0-9.+-]+|application\/(?:octet-stream|font-woff|x-font-ttf|x-font-opentype))?(?:;[a-z0-9.+-]+=[a-z0-9.+-]+)*;base64$/i.test(item.data.slice(0, comma))
+      || encoded.length % 4 !== 0 || !/^[a-zA-Z0-9+/]*={0,2}$/.test(encoded)) throw invalid();
+    ids.add(item.id);
+  }
+  return value;
+}
+
+export async function restoreMediaFromBackup(attachments: BackupAttachment[]): Promise<void> {
   for (const item of attachments) {
-    if (
-      !item ||
-      !/^[a-zA-Z0-9_-]+$/.test(String(item.id || '')) ||
-      !/^data:(audio|image|font)\/[a-z0-9+.-]+;base64,/i.test(String(item.data || ''))
-    ) {
-      continue;
-    }
+    // Keep the existing media restore policy for legacy data URLs of other types.
+    if (!/^data:(audio|image|font)\/[a-z0-9+.-]+;base64,/i.test(item.data)) continue;
     const blob = await (await fetch(item.data)).blob();
     await mediaPut(item.id, blob);
   }

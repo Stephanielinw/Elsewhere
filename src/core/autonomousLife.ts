@@ -12,16 +12,24 @@ export interface LifeRecord {version:1;roleId:string;taskId:string;origin:'simul
 type Store=Pick<Storage,'getItem'|'setItem'>;
 export function readLifeJournal(store:Store):LifeTask[] {
  const raw=store.getItem(LIFE_JOURNAL_KEY);if(!raw)return [];
- const data=JSON.parse(raw);if(data?.version!==1||!Array.isArray(data.tasks)||data.tasks.some((t:LifeTask)=>!t||typeof t.id!=='string'||typeof t.roleId!=='string'||t.id!=='life:'+encodeURIComponent(t.roleId)+':'+t.dateKey||t.dateKey!==toLocalDateKey(t.at)||t.to!==t.at||t.from>t.to||!Number.isFinite(t.at)||!Number.isFinite(t.from)||!Number.isFinite(t.to)||!['attempted','completed','quiet','failed','cancelled'].includes(t.status)))throw Error('生活调用记录不可验证，自动推进已暂停');
+ return decodeLifeJournal(JSON.parse(raw));
+}
+export function decodeLifeJournal(value:unknown):LifeTask[] {
+ if(value===undefined)return [];
+ const data=value as {version?:number;tasks?:LifeTask[]}|null;if(data?.version!==1||!Array.isArray(data.tasks)||data.tasks.some((t:LifeTask)=>!t||typeof t.id!=='string'||typeof t.roleId!=='string'||t.id!=='life:'+encodeURIComponent(t.roleId)+':'+t.dateKey||t.dateKey!==toLocalDateKey(t.at)||t.to!==t.at||t.from>t.to||!Number.isFinite(t.at)||!Number.isFinite(t.from)||!Number.isFinite(t.to)||!['attempted','completed','quiet','failed','cancelled'].includes(t.status)))throw Error('生活调用记录不可验证，自动推进已暂停');
  if(new Set(data.tasks.map((t:LifeTask)=>t.id)).size!==data.tasks.length)throw Error('生活调用记录重复，自动推进已暂停');
  return data.tasks;
 }
 export function writeLifeJournal(store:Store,tasks:LifeTask[]):void {store.setItem(LIFE_JOURNAL_KEY,JSON.stringify({version:1,tasks}));}
 const allTasks=(roles:RoleData[],journal:LifeTask[])=>[...new Map([...roles.flatMap(r=>r.lifeTasks||[]),...journal].map(t=>[t.id,t])).values()];
+export function lifeQuotaAvailable(tasks:LifeTask[],roleId:string,at:number):boolean {
+ const dateKey=toLocalDateKey(at),id='life:'+encodeURIComponent(roleId)+':'+dateKey;
+ return !tasks.some(t=>t.id===id||t.roleId===roleId&&t.at>at-day)&&tasks.filter(t=>t.at>at-day||t.dateKey===dateKey).length<2;
+}
 export function claimLifeTask(roles:RoleData[],r:RoleData,at:number,ready:boolean,journal:LifeTask[]=[]):LifeTask|null {
  if(!ready||!roles.some(x=>x.id===r.id)||r.scene||r.play||r.chatTiming?.pending.length||r.chatTiming?.inFlight||r.pendingReplies?.length||r.firstMessageState?.status!=='ready'&&!getActiveMessages(r.chats).some(m=>m.speaker==='char'))return null;
  const dateKey=toLocalDateKey(at),tasks=allTasks(roles,journal),id='life:'+encodeURIComponent(r.id)+':'+dateKey;
- if(tasks.some(t=>t.id===id)||tasks.filter(t=>t.at>at-day||t.dateKey===dateKey).length>=2)return null;
+ if(!lifeQuotaAvailable(tasks,r.id,at))return null;
  const from=Math.max(getLocalDayBounds(dateKey).startMs,at-6*3600000,r.firstMessageState?.updatedAt||Math.min(...getActiveMessages(r.chats).filter(m=>m.speaker==='char').map(m=>m.at)));
  if(at-from<2*3600000)return null;
  const lastContact=Math.max(0,...getActiveMessages(r.chats).map(m=>m.at));if(at-lastContact<3600000)return null;

@@ -38,3 +38,9 @@ test('simulation cannot overlap already recorded real life or appear completed b
  const r=fixture();r.events=[{id:'known',kind:'life',title:'既有记录',detail:'整理既有笔记',at:at-hour,source:'manual',lifeEvidence:'confirmed',knownBy:[r.id]}];const x=prepare(r);assert.throws(()=>commitLifeTask(r,x.task,x.p,response(x,[activity(at-hour)]),at));
  const y=prepare();const events=commitLifeTask(y.r,y.task,y.p,response(y,[activity(at-hour)]),at);assert.equal(collectRoleLife(y.r,events[0].at+1000).events.length,0);
 });
+
+test('a failed attempt before midnight still blocks the same role within the rolling day',()=>{
+ const r=fixture(),late=new Date(2026,10,3,23,50).getTime();r.firstMessageState!.updatedAt=late-4*hour;
+ const first=claimLifeTask([r],r,late,true)!;assert.ok(first);first.status='failed';
+ const restored=JSON.parse(JSON.stringify(r));assert.equal(claimLifeTask([restored],restored,late+4*hour,true),null);
+});

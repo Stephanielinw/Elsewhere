@@ -146,6 +146,8 @@ export interface MeetingPlan {
 }
 
 export interface SceneReplyTicket {
+  inputIds?:string[];
+  eventStatus?:'missing'|'malformed';
   requestId:string;
   roleId:string;
   sceneId:string|null;

@@ -1,12 +1,8 @@
 import type {ChatMessage,MeetingPlan,RoleData,SceneData} from './types';
 import {getActiveEvents,getActiveMessages,makeUid} from './revisions';
-import {structuredMeetingPlan,sceneDecisionStillValid,type SceneDecision} from './sceneState';
+import {structuredMeetingPlan,sceneDecisionStillValid,arrivalEvidence,scenePhoneWords as ownWords,counterpartPresence,explicitArrivalPlace,arrivalPlaceMatches,type SceneDecision} from './sceneState';
 
-// shortcut: deterministic explicit agreements only; ambiguous prose stays in chat until manual meeting.
-function ownWords(text:string):string {
-  return text.replace(/```[\s\S]*?```/g,'').replace(/^\s*>.*$/gm,'')
-    .replace(/[“「『"][\s\S]*?[”」』"]/g,'').trim();
-}
+// The local path requires affirmative user evidence; optional same-call metadata handles other wording.
 const hypothetical=/(如果|假如|要是|开玩笑|逗你|玩笑|台词|转述|他说|她说|我想说|比如)/;
 const intent=/(见面|碰面|碰头|会合|相见|见吧|见好吗|见如何|见怎么样|等你|等我|找你|过去|过来)/;
 const refusal=/(不能|没法|无法|不想|不愿|不方便|不行|不了|拒绝|不去|不见)/;
@@ -53,13 +49,14 @@ function meetingPlace(text:string):string|undefined {
 
 /** Rebuild from active originals; cached plans never override edits, permissions or time. */
 export function meetingPlan(r:RoleData,at:number):MeetingPlan|null {
-  const semantic=structuredMeetingPlan(r,at);if(semantic)return semantic;
+  const semantic=structuredMeetingPlan(r,at);
   const consumed=Math.max(0,...(r.meetings||[]).map(s=>s.startedAt));
   const denied=new Set(getActiveEvents(r.events).filter(e=>e.messageId&&e.knownBy?.length&&!e.knownBy.includes(r.id)).map(e=>e.messageId));
   const messages=getActiveMessages(r.chats).filter(m=>m.speaker!=='note'&&m.at<=at&&m.at>consumed&&!denied.has(m.id)).map((m,i)=>({m,i})).sort((a,b)=>a.m.at-b.m.at||a.i-b.i);
-  let plan:MeetingPlan|null=null;
+  let plan:MeetingPlan|null=semantic||null;
   let previous:ChatMessage|undefined;
-  for(const {m} of messages){plan=advancePlan(plan,m,previous);previous=m;}
+  const lastSemantic=semantic?Math.max(...messages.flatMap(({m},i)=>semantic.sources.some(s=>s.id===m.id)?[i]:[])):-1;
+  for(const [i,{m}] of messages.entries()){if(i>lastSemantic)plan=advancePlan(plan,m,previous);previous=m;}
   return plan;
 }
 function advancePlan(plan:MeetingPlan|null,m:ChatMessage,previous?:ChatMessage):MeetingPlan|null {
@@ -67,7 +64,7 @@ function advancePlan(plan:MeetingPlan|null,m:ChatMessage,previous?:ChatMessage):
   if(m.speaker==='note')return plan;
   const speaker=m.speaker,source=snapshot(m);
   const contextual=Boolean(previous&&plan?.sources.some(source=>source.id===previous.id)&&m.at-previous.at<=15*60000);
-  const meetingMention=intent.test(text)||/约定|约好|赴约|取消|别来了|不去了|不能去了|改天再|下次再/.test(text);
+  const meetingMention=intent.test(text)||cancellation.test(text)||/约定|约好|赴约|取消|别来了|不去了|不能去了|改天再|下次再/.test(text);
   if(plan&&(meetingMention||contextual)&&(cancellation.test(text)||refusal.test(text)))
     return {...plan,status:cancellation.test(text)?'cancelled':'declined',acceptedBy:[],sources:[...plan.sources,source]};
   const where=meetingPlace(text);let when=meetingTime(text,m.at);const question=/[？?]|好吗|可以吗|怎么样|如何/.test(text);
@@ -91,19 +88,21 @@ function advancePlan(plan:MeetingPlan|null,m:ChatMessage,previous?:ChatMessage):
   return plan;
 }
 
+const arrivalPlace=(words:string)=>explicitArrivalPlace(words)||meetingPlace(words);
+const relativePlace=(value:string)=>arrivalPlaceMatches(value,'');
+
 export function isArrival(r:RoleData,text:string,at:number):boolean {
   if(r.scene||r.play)return false;
   const words=ownWords(text),plan=meetingPlan(r,at);
-  if(plan?.interpretation==='scene-state-v1')return false;
+  if(arrivalEvidence(text)==='invalid')return false;
   if(!words||hypothetical.test(words)||refusal.test(words)||cancellation.test(words)||uncertain.test(words)||/(没到|未到|没有到|还没|不是|快到|就到|将到|会到|等我到|到了再|昨天|前天|刚才|上次|明天|后天|朋友|同事|他说|她说)/.test(words))return false;
-  if(!plan||plan.status!=='confirmed'||plan.scheduledAt===undefined||plan.expiresAt===undefined||at<plan.scheduledAt-30*60000||at>plan.expiresAt)return false;
+  if(!plan||plan.status!=='confirmed'||plan.scheduledAt!==undefined&&(at<plan.scheduledAt-30*60000||at>(plan.expiresAt??-Infinity)))return false;
+  if(arrivalEvidence(text)==='sighting')return false; // Visibility alone is not physical arrival.
   if(!/^(?:我(?:已经|刚刚|刚)?(?:到|抵达)|已经到了|到啦|到了|我看见你了|我已经在你面前|我就在你旁边)/.test(words))return false;
   if(/准备|打算|再告诉|再联系|去找|还要|要去/.test(words))return false;
-  const arrivedPlace=words.match(/(?:我(?:已经|刚刚|刚)?(?:到了|到达(?:了)?|抵达(?:了)?))([^，。！？!?\n]{1,32})/);
-  const actual=arrivedPlace?.[1]?.replace(/了$/,'').trim()||meetingPlace(words);
-  const relative=actual&&/^(?:约好的地方|约定的地方|这里|这儿|那里|那儿)$/.test(actual);
+  const actual=arrivalPlace(words);
   if(!/(到了|到啦|抵达|到达|到.{1,32}了|我看见你了|我已经在你面前|我就在你旁边)/.test(words))return false;
-  return !actual||relative||actual===plan.where||Boolean(/^(门口|入口|楼下|前门)$/.test(actual)&&plan.where?.endsWith(actual));
+  return arrivalPlaceMatches(actual,plan.where||'');
 }
 export function isFarewell(text:string):boolean {
   const words=ownWords(text);
@@ -112,23 +111,35 @@ export function isFarewell(text:string):boolean {
 export function createEncounter(r:RoleData,arrival:ChatMessage|null,at:number,id:string,decision?:SceneDecision):SceneData|null {
   const semantic=decision&&sceneDecisionStillValid(r,decision)&&decision.action==='arrive'&&decision.arrival?.id===arrival?.id;
   if(r.scene||r.play||arrival&&(!getActiveMessages(r.chats).some(m=>m.id===arrival.id&&m.speaker==='me'&&m.text===arrival.text&&m.at===arrival.at)||!semantic&&!isArrival(r,arrival.text,at)))return null;
-  const plan=semantic?decision.plan:meetingPlan(r,at),confirmed=plan?.status==='confirmed'&&(semantic||at>=(plan.scheduledAt??Infinity)-30*60000&&at<=(plan.expiresAt??-Infinity));
-  const where=semantic?decision.location!.name:confirmed?plan.where!:'地点待确认';
+  const plan=semantic?decision.plan:meetingPlan(r,at),confirmed=plan?.status==='confirmed'&&(semantic||plan.scheduledAt===undefined||at>=plan.scheduledAt-30*60000&&at<=(plan.expiresAt??-Infinity));
+  const where=semantic?decision.location!.name:confirmed&&plan.where?plan.where:'地点待确认';
   return {id,startedAt:at,where,...(confirmed?{agreement:structuredClone(plan),locationEvidence:{origin:'agreement' as const,at,sources:structuredClone(plan.sources)}}:{}),messages:[
     {id:id+':start',speaker:'note',text:`${where}。你们开始当面交谈。`,at,status:'active'},
     ...(arrival?[{...arrival,id:id+':arrival',sourceMessageId:arrival.id,kind:'scene'}]:[]),
   ]};
 }
 
+/** End the phone turn without deleting its originals or reviving its queue after the meeting. */
+export function settlePhoneHandoff(r:RoleData):void {
+  r.pendingReplies=[];
+  if(r.chatTiming){r.chatTiming={...r.chatTiming,generation:r.chatTiming.generation+1,pending:[],quietUntil:0};delete r.chatTiming.inFlight;delete r.chatTiming.replyDueAt;delete r.chatTiming.blocked;delete r.chatTiming.error;}
+}
+
 export function commitSceneDecision(r:RoleData,d:SceneDecision,at:number,id:string,persist:()=>boolean,origin?:{requestId:string;replyIds:string[];contextIds?:string[]}):'none'|'plan'|'entered'|'moved'|'left' {
   if(!sceneDecisionStillValid(r,d)||!Number.isFinite(at)||at<d.observation.now)throw new Error('场景或原话已变化，状态未写入');
   if(d.action==='none')return 'none';
   if(d.action==='leave')return 'left';
-  const old=r.scene,before={where:old?.where,agreement:old?.agreement,proof:old?.locationEvidence,plan:r.meetingPlan,events:r.events.length};
+  const old=r.scene,before={where:old?.where,agreement:old?.agreement,proof:old?.locationEvidence,plan:r.meetingPlan,events:r.events.length,pending:r.pendingReplies,timing:r.chatTiming};
   try{
     if(d.action==='arrive'){
       const arrival=r.chats.find(m=>m.id===d.arrival!.id)!;
-      const scene=createEncounter(r,arrival,at,id,d);if(!scene)throw new Error('当前不能重复进入见面');r.scene=scene;
+      const scene=createEncounter(r,arrival,at,id,d);if(!scene)throw new Error('当前不能重复进入见面');
+      if(origin?.replyIds.length){
+        const replies=getActiveMessages(r.chats).filter(m=>origin.replyIds.includes(m.id)),ids=new Set([arrival.id,...replies.flatMap(m=>m.replySourceIds||[]),...origin.replyIds]);
+        const originals=getActiveMessages(r.chats).filter(m=>ids.has(m.id)&&m.at>=arrival.at&&m.speaker!=='note');
+        scene.messages=[scene.messages[0],...originals.map(m=>{const {sceneReply,...copy}=m;return {...copy,id:id+':phone:'+m.id,sourceMessageId:m.id,kind:'scene' as const};})];
+      }
+      r.scene=scene;settlePhoneHandoff(r);
     }
     if(d.plan)r.meetingPlan=d.plan;
     if(d.location&&r.scene){
@@ -142,7 +153,7 @@ export function commitSceneDecision(r:RoleData,d:SceneDecision,at:number,id:stri
     }
     if(!persist())throw new Error('场景状态保存失败，原现场已保留');
     return d.action==='arrive'?'entered':d.location?'moved':'plan';
-  }catch(error){r.scene=old;if(old){old.where=before.where!;if(before.agreement)old.agreement=before.agreement;else delete old.agreement;if(before.proof)old.locationEvidence=before.proof;else delete old.locationEvidence;}r.meetingPlan=before.plan;r.events.length=before.events;throw error;}
+  }catch(error){r.scene=old;if(old){old.where=before.where!;if(before.agreement)old.agreement=before.agreement;else delete old.agreement;if(before.proof)old.locationEvidence=before.proof;else delete old.locationEvidence;}if(before.plan===undefined)delete r.meetingPlan;else r.meetingPlan=before.plan;r.events.length=before.events;if(before.pending===undefined)delete r.pendingReplies;else r.pendingReplies=before.pending;if(before.timing===undefined)delete r.chatTiming;else r.chatTiming=before.timing;throw error;}
 }
 
 /** Explicit correction only: retain original agreement, prose and past meeting records. */
@@ -169,4 +180,33 @@ export function encounterHistory(r:RoleData,messages:ChatMessage[]|undefined):Ch
     const source=originals.get(m.sourceMessageId);
     return source?.speaker===m.speaker&&source.text===m.text&&source.at===m.at&&(source.revisionCount||0)===(m.revisionCount||0);
   });
+}
+
+/** Conservative recovery from the same authorized phone turn, never from the actor's prose alone. */
+export function inferPhoneHandoff(r:RoleData,o:import('./sceneState').SceneObservation,inputIds:string[],replyIds:string[]):{event?:unknown;code:string} {
+  if(o.scene||r.scene||r.play)return {code:'handoff-scene-active'};
+  const inputs=o.sources.filter(s=>inputIds.includes(s.id)&&s.speaker==='me'&&s.scope==='phone');
+  const arrival=[...inputs].reverse().find(s=>['arrival','sighting'].includes(arrivalEvidence(s.text)));
+  if(!arrival)return {code:inputs.some(s=>arrivalEvidence(s.text)==='invalid')?'handoff-not-arrived':'handoff-no-presence'};
+  if(inputs.slice(inputs.indexOf(arrival)+1).some(s=>arrivalEvidence(s.text)==='invalid'))return {code:'handoff-later-input-contradicts'};
+  if(o.now-arrival.at>2*3600000)return {code:'handoff-presence-too-old'};
+  const ids=new Set(o.sources.filter(s=>s.scope==='phone').map(s=>s.id)),plan=meetingPlan({...r,chats:r.chats.filter(m=>ids.has(m.id))},o.now);
+  if(plan?.status==='cancelled'||plan?.status==='declined')return {code:'handoff-consent-withdrawn'};
+  if(plan?.scheduledAt!==undefined&&(o.now<plan.scheduledAt-30*60000||o.now>(plan.expiresAt??-Infinity)))return {code:'handoff-outside-window'};
+  const replies=o.sources.filter(s=>replyIds.includes(s.id)&&s.speaker==='char'&&s.scope==='phone'),words=replies.map(s=>ownWords(s.text)).join('\n');
+  const presence=counterpartPresence(words);
+  if(presence.unavailable)return {code:'handoff-counterpart-unavailable'};
+  const complete=arrivalEvidence(arrival.text)==='arrival';
+  if(!(complete&&plan?.status==='confirmed')&&!(presence.reciprocal&&(presence.nearby||complete)))return {code:'handoff-no-mutual-presence'};
+  const witness=replies.find(s=>/(看见|看到|见到)你|你.*(?:到了|来了)|面前|身边|旁边/.test(ownWords(s.text)));
+  if(!witness)return {code:'handoff-no-counterpart-source'};
+  const actual=arrivalPlace(ownWords(arrival.text));
+  if(plan?.where&&!arrivalPlaceMatches(actual,plan.where))return {code:'handoff-place-conflict'};
+  const confirmedSources=plan?.status==='confirmed'?plan.sources.flatMap(ref=>o.sources.filter(s=>s.id===ref.id)):[];
+  const proposal=confirmedSources.find(s=>s.speaker===plan!.proposedBy)||
+    (plan?.proposedBy==='char'?o.sources.find(s=>plan.sources.some(p=>p.id===s.id)&&s.speaker==='char'&&s.at<=arrival.at):undefined)||arrival;
+  const refs=[...(confirmedSources.length?confirmedSources:[proposal]).map(s=>({id:s.id,quote:s.text,purpose:s.id===proposal.id?'proposal':'acceptance'})),...(proposal.speaker==='char'?[{id:arrival.id,quote:arrival.text,purpose:'acceptance'}]:[]),{id:witness.id,quote:witness.text,purpose:'acceptance'}];
+  const witnessedPlace=proposal.speaker==='char'&&arrivalEvidence(proposal.text)==='arrival';
+  const where=actual&&!relativePlace(actual)?actual:plan?.status==='confirmed'||witnessedPlace?plan?.where:undefined;
+  return {code:'handoff-mutual-presence',event:{action:'arrive',plan:{status:'confirmed',where:where||null,timeText:plan?.timeText||null,scheduledAt:plan?.scheduledAt??null,expiresAt:plan?.expiresAt??null,evidence:refs},arrival:{id:arrival.id,quote:arrival.text,purpose:'arrival'},location:{name:where||'',basis:where?'agreement':'unknown',evidence:[]}}};
 }

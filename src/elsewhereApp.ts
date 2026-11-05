@@ -1,11 +1,12 @@
+import {traceStorage,type SaveSession} from './core/storageSession';
 import {avatarView,renderWithAvatars} from './avatarView';
 import {frameDraft,frameStyle,saveFrameOnly,DEFAULT_FRAME_SCALE,type FrameDraft,type AvatarFrameFields} from './core/avatarAppearance';
 import {meetingTimeline,archiveMeeting} from './core/meetingHistory';
 import {meetingCardHtml,meetingRecordHtml} from './meetingHistoryView';
 import {logsForDay,logDays,logTimestamp} from './core/systemLogs';
-import {meetingPlan,isArrival as canArrive,createEncounter,isFarewell,encounterHistory,updateEncounterLocation,commitSceneDecision} from './core/encounter';
+import {meetingPlan,isArrival as canArrive,createEncounter,isFarewell,encounterHistory,updateEncounterLocation,commitSceneDecision,settlePhoneHandoff} from './core/encounter';
 import {createSceneObservation} from './core/sceneState';
-import {prepareSceneReply,splitSceneReply,sceneReplyMatches,resolveSceneReply} from './core/sceneReply';
+import {prepareSceneReply,splitSceneReply,sceneReplyMatches,resolveSceneReply,resolvePhoneSceneReply} from './core/sceneReply';
 import {identityName,identityContext,buildNativeContext,compileNativeConversation,compileNovelConversation,compileOpeningPrompt,type NativePromptOptions} from './core/prompt';
 import {ConversationCompileError,requestMessages,promptStructure,type ConversationCompilation} from './core/conversationPrompt';
 import {loadRequestPreset} from './core/fruit/library';
@@ -17,6 +18,7 @@ import {chatTiming,setChatFocused,enqueueChat,prepareChatDue,claimChatBatch,chat
 import {compileChatBatchPrompt,buildPhoneRegeneration,readChatResponse} from './core/chatBatchPrompt';
 import {describeChatVoice,chatVoiceSummary} from './core/chatVoice';
 import {preparePersonalReply,splitPersonalReply,applyPersonalReply,personalTicketValid,collectRoleLife} from './core/roleLife';
+import {syncLifeBudget,reserveLifeAttempt} from './core/lifeBudget';
 import {claimLifeTask,prepareLifeTask,commitLifeTask,readLifeJournal,writeLifeJournal,lifeTaskState,LIFE_MAX_OUTPUT,type LifeTask} from './core/autonomousLife';
 import {syncRoleMemory} from './core/memory';
 import {claimProactive,proactiveTaskValid,finishProactive,recordProactiveDelivery,recoverProactive,proactiveInstruction,parseProactiveReply,type ProactiveTask} from './core/proactiveChat';
@@ -139,7 +141,7 @@ import {
   syncActiveFocusLiveLogs,
 } from './core/focus';
 
-export function initElsewhereApp(): void {
+export function initElsewhereApp(saveSession:SaveSession): void {
   const novelDisplay=createNovelDisplay((roleId,stageId,mode,messageId)=>{
     const r=data.roles.find(r=>r.id===roleId);if(!r||data.selected!==roleId)return null;
     const stages=mode==='meeting'?[r.scene,...(r.meetings||[])]:[r.play,...(r.plays||[])];
@@ -181,18 +183,13 @@ export function initElsewhereApp(): void {
   const uid = (): string => makeUid('e');
   const now = (): number => Date.now();
 
-  let rawLoaded: unknown = null;
-  let originalSave: string | null = null;
-  try {
-    originalSave=localStorage.getItem(STORAGE_KEY);
-    rawLoaded = JSON.parse(originalSave || 'null');
-  } catch {
-    rawLoaded = null;
-  }
+  const rawLoaded=saveSession.initial.value,originalSave=saveSession.raw;
+  const stored=rawLoaded as Partial<AppData>|null;
+  const appearanceCounts=[stored?.customFonts?.length||0,stored?.bubblePresets?.length||0];
   const normalizedData=normalizeAndMigrateData(rawLoaded);
-  const nainMigration=originalSave?migrateUntouchedNainDemo(normalizedData,localStorage,Date.now(),originalSave):{data:normalizedData,cleaned:false,error:undefined};
+  if((normalizedData.customFonts?.length||0)<appearanceCounts[0]||(normalizedData.bubblePresets?.length||0)<appearanceCounts[1]){traceStorage('normalization-rejected',{reason:'appearance-list-loss'});throw Error('unsafe-normalization');}
+  const nainMigration=originalSave?migrateUntouchedNainDemo(normalizedData,saveSession.storage,Date.now(),originalSave):{data:normalizedData,cleaned:false,error:undefined};
   let data: AppData = nainMigration.data;
-  let persistedSave=originalSave;
 
   let view = 'landing';
   let lastRenderedView = 'landing';
@@ -1365,7 +1362,7 @@ export function initElsewhereApp(): void {
 
   const save = (): boolean => {
     try {
-      const raw=JSON.stringify(data);localStorage.setItem(STORAGE_KEY, raw);persistedSave=raw;
+      const raw=JSON.stringify(data);if(!saveSession.write(raw)){notify(saveSession.error==='changed'?'本机存档已变化，未覆盖。请刷新后继续。':'存档写入未确认，原数据保留。请重新读取后继续。');return false;}
       return true;
     } catch {
       notify('存储空间不足，请先导出或清理数据');
@@ -1442,30 +1439,39 @@ export function initElsewhereApp(): void {
   const novelTasks=createNovelTasks();
   const applyingSceneReplies=new Set<string>();
   async function applySavedSceneReply(r:RoleData,item:ChatMessage):Promise<void> {
-    const ticket=item.sceneReply;if(!ticket?.payload||applyingSceneReplies.has(ticket.requestId))return;
+    const ticket=item.sceneReply;if(!ticket||applyingSceneReplies.has(ticket.requestId))return;
+    if(ticket.sceneId===null&&r.pendingReplies?.some(job=>job.replyTurnId===item.replyTurnId))return;
+    traceStorage('scene-ticket-found',{pending:r.pendingReplies?.length||0,hasScene:!!r.scene});
     applyingSceneReplies.add(ticket.requestId);
     let retryable=false;
     const messages=ticket.sceneId===null?r.chats:r.scene?.id===ticket.sceneId?r.scene.messages:[];
     const replies=item.replyTurnId?messages.filter(m=>m.replyTurnId===item.replyTurnId):messages.filter(m=>m===item);
     try{
+      traceStorage('scene-validation-started');
       if(!data.roles.includes(r)||ticket.sceneId===null&&(r.chatTiming?.pending.length||r.chatTiming?.inFlight)||!await sceneReplyMatches(r,data.user,ticket,replies))throw new Error('场景事件来源已变化');
       if(item.sceneReply!==ticket) return;
       delete item.sceneReply;
-      const decision=resolveSceneReply(r,data.user,ticket,replies,now());
+      const outcome=ticket.sceneId===null?resolvePhoneSceneReply(r,data.user,ticket,replies,now()):{decision:resolveSceneReply(r,data.user,ticket,replies,now()),code:'scene-event-valid',diagnostic:'scene-event-valid'};
+      const decision=outcome.decision;
+      if(outcome.diagnostic!=='scene-event-valid')syslog('scene-state','场景事件诊断',{roleId:r.id,requestId:ticket.requestId,code:outcome.diagnostic,handoff:outcome.code});
+      if(!decision){if(!save())throw new Error('状态确认保存失败');return;}
       retryable=true;
+      traceStorage('scene-save-started');
       const result=commitSceneDecision(r,decision,now(),uid(),save,{requestId:ticket.requestId,replyIds:replies.map(m=>m.id),contextIds:ticket.contextIds});
+      traceStorage('scene-save-confirmed',{hasScene:!!r.scene,result});
       if(result==='left'){
         if(!archiveMeeting(r,now(),save))throw new Error('见面归档未完成');
         if(role()===r&&view==='novel'&&novelViewKind==='scene')go('chat');
       }else if(result==='entered'){
-        revisePhoneSchedule(r);save();
+        activeChatRequests.get(r.id)?.abort();chatTyping.delete(r.id);
         if(role()===r&&view==='chat')go('novel','scene');
       }else if(result==='none'&&!save())throw new Error('状态确认保存失败');
       if(result!=='none')syslog('scene-state','同次生成的场景事件已保存',{roleId:r.id,action:decision.action,source:ticket.sceneId||r.scene?.id});
       if(role()===r&&(view==='home'||view==='novel'&&novelViewKind==='scene'))render(false);
     }catch{
+      traceStorage('scene-apply-failed',{reason:retryable?'save-failed':'source-invalid'});
       if(retryable)item.sceneReply=ticket;else delete item.sceneReply;
-      syslog('scene-state','场景事件未采用；正文及已有状态保留，不追加模型请求',{roleId:r.id,code:'scene-event-ignored'});save();
+      syslog('scene-state','场景事件未采用；正文及已有状态保留，不追加模型请求',{roleId:r.id,requestId:ticket.requestId,code:retryable?'scene-state-save-failed':'scene-event-stale-or-invalid'});save();
     }finally{applyingSceneReplies.delete(ticket.requestId);}
   }
   function resumeLocalSceneReplies(r:RoleData):void {
@@ -1529,7 +1535,7 @@ export function initElsewhereApp(): void {
       const compiled:{value?:ConversationCompilation}={};
       const messages=await compileRequest(r,'chat',options=>{const result=compileChatBatchPrompt(data,r,batch,now(),options);compiled.value=result;return result;},()=>data.roles.includes(r)&&chatBatchValid(r,batch));
       let prepared:Awaited<ReturnType<typeof prepareSceneReply>>|undefined;
-      if(!r.scene&&!r.play&&compiled.value){const at=now(),context=buildNativeContext(data,r,'chat','',{nowTs:at,currentInputs:batch.sources});prepared=await prepareSceneReply(r,data.user,createSceneObservation(r,context),compiled.value,{requestId:batch.id,now:at});}
+      if(!r.scene&&!r.play&&compiled.value){const at=now(),context=buildNativeContext(data,r,'chat','',{nowTs:at,currentInputs:batch.sources});prepared=await prepareSceneReply(r,data.user,createSceneObservation(r,context),compiled.value,{requestId:batch.id,now:at,inputIds:batch.sources.map(m=>m.id)});}
       if(!data.roles.includes(r)||!chatBatchValid(r,batch))return;
       if(prepared)includeScenePromptTrace(r);
       const usedIds=new Set(compiled.value?.messages.flatMap(m=>m.sourceIds||[])||[]);
@@ -1545,7 +1551,7 @@ export function initElsewhereApp(): void {
       const timingBefore=structuredClone(r.chatTiming),outboxBefore=r.pendingReplies;
       if(!completeChatBatch(r,batch))return;
       const turnId=makeUid('turn'),base=now();
-      r.pendingReplies=[...(r.pendingReplies||[]),...bubbles.map((bubble,i)=>({id:uid(),replyTo:batch.sources.at(-1)!.id,replyTurnId:turnId,bubbles:[bubble],dueAt:base+i*240,sources:batch.sources,chatBatchId:batch.id,...(i===bubbles.length-1&&privateReply.payload?{personalReply:{ticket:personal.ticket,payload:privateReply.payload}}:{}),...(prepared&&extracted.payload&&i===bubbles.length-1?{sceneReply:{...prepared.ticket,payload:extracted.payload}}:{})}))];
+      r.pendingReplies=[...(r.pendingReplies||[]),...bubbles.map((bubble,i)=>({id:uid(),replyTo:batch.sources.at(-1)!.id,replyTurnId:turnId,bubbles:[bubble],dueAt:base+i*240,sources:batch.sources,chatBatchId:batch.id,...(i===bubbles.length-1&&privateReply.payload?{personalReply:{ticket:personal.ticket,payload:privateReply.payload}}:{}),...(prepared&&i===bubbles.length-1?{sceneReply:{...prepared.ticket,...(extracted.payload?{payload:extracted.payload}:{eventStatus:/<\/?elsewhere_scene_event/i.test(privateReply.text)?'malformed' as const:'missing' as const})}}:{})}))];
       if(!save()){r.chatTiming=timingBefore;r.pendingReplies=outboxBefore;throw new Error('回复未能保存，请重试');}
       deliverPending(r);
     }catch(error){
@@ -1625,6 +1631,8 @@ export function initElsewhereApp(): void {
 
   // The journal is only a durable cost ledger; formal life remains in role.events.
   let lifeBusy=false,lifeLastCheck=0,lifeController:AbortController|null=null,lifeJournalError='';
+  let lifeClaims:LifeTask[]=[];
+  const lifeEnabled=()=>data.settings.autonomousLife!==false;
   const lifeVersion=(r:RoleData)=>JSON.stringify([r.chats,r.scene,r.play,r.events,r.personalThreads,r.memory,r.name,r.profile,r.job,r.traits,r.place,r.relationship,r.canonNotes,r.notes]);
   function storedLifeVersion(id:string):string {
     const stored=JSON.parse(localStorage.getItem(STORAGE_KEY)||'null') as AppData|null;
@@ -1637,34 +1645,35 @@ export function initElsewhereApp(): void {
     lifeBusy=true;
     void navigator.locks.request('elsewhere-life-budget-v1',{ifAvailable:true},async lock=>{
       if(!lock)return;
-      let journal:LifeTask[];try{journal=readLifeJournal(localStorage);}catch{lifeJournalError='生活调用额度记录无法核验，自动推进已暂停。';return;}
-      if(localStorage.getItem(STORAGE_KEY)!==persistedSave){lifeJournalError='其他标签页更新了存档，请刷新后继续生活推进。';return;}
+      let journal:LifeTask[];try{journal=await syncLifeBudget([...readLifeJournal(localStorage),...data.roles.flatMap(r=>r.lifeTasks||[])]);lifeClaims=journal;}catch{lifeJournalError='生活调用额度记录无法核验，自动推进已暂停。';return;}
+      if(localStorage.getItem(STORAGE_KEY)!==saveSession.raw){lifeJournalError='其他标签页更新了存档，请刷新后继续生活推进。';return;}
       const roles=[...data.roles].sort((a,b)=>(a.id===data.selected?-1:b.id===data.selected?1:0));
       for(const r of roles){
         if(isRoleInActiveFocus(r))continue;
         const previous=r.lifeTasks?structuredClone(r.lifeTasks):undefined;
         const task=claimLifeTask(data.roles,r,now(),true,journal);if(!task)continue;
-        journal=[...journal.filter(t=>t.id!==task.id),task];
+        try{if(!await reserveLifeAttempt(task,journal)){r.lifeTasks=previous;return;}}catch{r.lifeTasks=previous;lifeJournalError='生活额度无法可靠占用，未发送请求。';return;}
+        journal=[...journal,task];lifeClaims=journal;
         try{writeLifeJournal(localStorage,journal);}catch{r.lifeTasks=previous;lifeJournalError='无法保存生活调用额度，未发送请求。';return;}
         let maySave=true,version='';const hadThreads=Array.isArray(r.personalThreads);
         const controller=new AbortController();lifeController=controller;
         const timeout=setTimeout(()=>controller.abort(),90000);
         try{
-          if(localStorage.getItem(STORAGE_KEY)!==persistedSave||!save())throw Error('生活任务未能保存');
+          if(!data.roles.includes(r)||r.scene||r.play||r.chatTiming?.pending.length||r.chatTiming?.inFlight||!lifeEnabled()||localStorage.getItem(STORAGE_KEY)!==saveSession.raw||!save())throw Error('生活任务未能保存');
           const prepared=prepareLifeTask(r,data.user,task),settings={...data.settings};version=lifeVersion(r);
           if(storedLifeVersion(r.id)!==version)throw Error('生活来源已变化');
           syslog('life','独立生活推进已开始',{roleId:r.id,taskId:task.id});
           const res=await fetch(settings.endpoint.trim().replace(/\/+$/,'')+'/chat/completions',{method:'POST',signal:controller.signal,headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({model:settings.model,messages:prepared.messages,temperature:settings.temperature,max_tokens:LIFE_MAX_OUTPUT,stream:false})});
           const raw=await readChatResponse(res);
-          maySave=localStorage.getItem(STORAGE_KEY)===persistedSave&&storedLifeVersion(r.id)===version;
+          maySave=localStorage.getItem(STORAGE_KEY)===saveSession.raw&&storedLifeVersion(r.id)===version;
           if(controller.signal.aborted||!maySave||!data.roles.includes(r)||lifeVersion(r)!==version||data.settings.autonomousLife===false||isRoleInActiveFocus(r))throw Error('生活来源或任务已变化');
           commitLifeTask(r,task,prepared,raw,now());
-          if(localStorage.getItem(STORAGE_KEY)!==persistedSave||!save())throw Error('生活记录保存失败');
+          if(localStorage.getItem(STORAGE_KEY)!==saveSession.raw||!save())throw Error('生活记录保存失败');
           syslog('life',task.status==='quiet'?'该窗口没有需要单独记录的生活事件':'独立生活已归档',{roleId:r.id,taskId:task.id});
         }catch(error){
           r.events=r.events.filter(e=>e.lifeRecord?.taskId!==task.id);
           if(r.personalThreads){r.personalThreads=r.personalThreads.filter(t=>t.requestId!==task.id);if(!hadThreads&&!r.personalThreads.length)delete r.personalThreads;}
-          try{maySave=maySave&&localStorage.getItem(STORAGE_KEY)===persistedSave;}catch{maySave=false;}
+          try{maySave=maySave&&localStorage.getItem(STORAGE_KEY)===saveSession.raw;}catch{maySave=false;}
           task.status=controller.signal.aborted?'cancelled':'failed';
           // Never log a model body or arbitrary transport error into diagnostics.
           task.error=controller.signal.aborted?'已取消或超时':error instanceof Error&&error.message==='生活记录保存失败'?'本地保存失败':'响应或来源未通过校验';
@@ -2101,7 +2110,7 @@ export function initElsewhereApp(): void {
     r.pendingReplies=remaining;
     if(changed){r.meetingPlan=meetingPlan(r,now());syncRoleMemory(r,now());}
     if(changed&&!save()){r.pendingReplies=before;r.chats.length=chats;r.events.length=events;r.firstMessageState=firstMessage;r.meetingPlan=planBefore;r.personalThreads=privateBefore;r.memory=memoryBefore;r.proactive=proactiveBefore;return false;}
-    if(changed&&!remaining.length)resumeLocalSceneReplies(r);
+    if(changed)resumeLocalSceneReplies(r);
     return changed;
   }
 
@@ -3167,7 +3176,7 @@ export function initElsewhereApp(): void {
     const archive=getOrBuildDailyFootprints(r,monitorDateKey,at);
     const items=monitorItemsForDisplay(r,data.user,archive.items,at),life=collectRoleLife(r,cutoff);
     let state=lifeJournalError;
-    if(!state)try{state=lifeTaskState(data.roles,r,at,Boolean(token.trim())&&canUseRealModel(data.settings),data.settings.autonomousLife!==false,readLifeJournal(localStorage),lifeBusy&&Boolean(lifeController));}catch{state='生活调用额度记录无法核验，自动推进已暂停。';}
+    if(!state)try{state=lifeTaskState(data.roles,r,at,Boolean(token.trim())&&canUseRealModel(data.settings),data.settings.autonomousLife!==false,[...readLifeJournal(localStorage),...lifeClaims.map(t=>data.roles.find(r=>r.id===t.roleId)?.lifeTasks?.find(x=>x.id===t.id)||t)],lifeBusy&&Boolean(lifeController));}catch{state='生活调用额度记录无法核验，自动推进已暂停。';}
     const list=items.map(item=>{
       const event=item.category==='life'?life.events.find(e=>e.id===item.sourceEventIds[0]):undefined;
       const source=event?.lifeRecord?'生活模拟 · 已归档':item.category==='life'?'有来源的生活记录':item.category==='drama'?'排演参与 · 不计作戏内人生':'有效互动';
@@ -4840,7 +4849,7 @@ export function initElsewhereApp(): void {
 
   function beginEncounter(r:RoleData,arrival:ChatMessage):boolean {
     const scene=createEncounter(r,arrival,now(),uid());if(!scene)return false;
-    r.scene=scene;r.meetingPlan=scene.agreement||null;
+    r.scene=scene;r.meetingPlan=scene.agreement||null;settlePhoneHandoff(r);
     entry(r,'scene','由聊天进入面对面',`地点：${scene.where}；约定来源：${scene.agreement?.sources.map(m=>m.id).join('、')}；到达消息：${arrival.id}`,now(),{source:scene.id,knownBy:['user',r.id]});
     return true;
   }
@@ -5008,7 +5017,7 @@ export function initElsewhereApp(): void {
     }
     if (!r || busy || !text.trim()) return;
     if(kind==='scene'&&!r.scene||kind==='play'&&!r.play){notify('请先打开当前场景');return;}
-    const submissionBefore={scene:r.scene,sceneMessages:r.scene?structuredClone(r.scene.messages):null,playMessages:r.play?structuredClone(r.play.messages):null,chats:r.chats.length,events:r.events.length,meetingPlan:r.meetingPlan};
+    const submissionBefore={scene:r.scene,sceneMessages:r.scene?structuredClone(r.scene.messages):null,playMessages:r.play?structuredClone(r.play.messages):null,chats:r.chats.length,events:r.events.length,meetingPlan:r.meetingPlan,pending:r.pendingReplies,timing:r.chatTiming};
     if(kind==='chat'){chatDraft='';const input=$<HTMLTextAreaElement>('#message-input');if(input)input.value='';}
     busy = true;
     const at = now();
@@ -5057,9 +5066,9 @@ export function initElsewhereApp(): void {
     if(!save()){
       r.scene=submissionBefore.scene;if(r.scene&&submissionBefore.sceneMessages)r.scene.messages=submissionBefore.sceneMessages;
       if(r.play&&submissionBefore.playMessages)r.play.messages=submissionBefore.playMessages;
-      r.chats.length=submissionBefore.chats;r.events.length=submissionBefore.events;r.meetingPlan=submissionBefore.meetingPlan;if(kind==='chat'){chatDraft=obj.text;const input=$<HTMLTextAreaElement>('#message-input');if(input)input.value=chatDraft;}else {if(kind==='play')novelDraft=obj.text;const input=$<HTMLTextAreaElement>('#novel-input');if(input)input.value=obj.text;if(kind==='scene'&&r.scene)r.scene.draft=obj.text;}busy=false;render(false);return;
+      r.chats.length=submissionBefore.chats;r.events.length=submissionBefore.events;r.meetingPlan=submissionBefore.meetingPlan;r.pendingReplies=submissionBefore.pending;r.chatTiming=submissionBefore.timing;if(kind==='chat'){chatDraft=obj.text;const input=$<HTMLTextAreaElement>('#message-input');if(input)input.value=chatDraft;}else {if(kind==='play')novelDraft=obj.text;const input=$<HTMLTextAreaElement>('#novel-input');if(input)input.value=obj.text;if(kind==='scene'&&r.scene)r.scene.draft=obj.text;}busy=false;render(false);return;
     }
-    if(kind==='chat'){revisePhoneSchedule(r);save();}
+    if(kind==='chat'){activeChatRequests.get(r.id)?.abort();chatTyping.delete(r.id);}
     render();
     if(awaitingNainOpening(r)&&!canUseRealModel(data.settings)){busy=false;render(false);notify('你的消息已保存；连接 API 后才能生成角色首条回复。');return;}
     const submittedStage=useKind==='scene'?r.scene:r.play;
@@ -5308,7 +5317,7 @@ export function initElsewhereApp(): void {
     if(act==='nainpreflight'){
       if(!r||busy||diaryQueueBusy||lifeBusy){notify('请等待当前请求结束后再清档。');return;}
       if(!window.confirm(`仅清理当前奈恩的互动：${r.chats.length} 条聊天、${r.diaries.length} 篇日记、${r.events.length} 条事件，以及见面／戏剧／足迹状态。若有真实记录请取消。角色资料与其他角色保留；先创建恢复副本。本操作仅执行一次，确认继续？`))return;
-      const result=resetNainStart(data,r.id,localStorage,now());
+      const result=resetNainStart(data,r.id,saveSession.storage,now());
       data=result.data;
       if(result.cleaned){chatDraft='';novelDraft='';intermissionDraft='';render(false);notify('奈恩已恢复到等待 API 首条消息的起点，恢复副本已保存。');}
       else notify(result.error||'当前角色已经清理过，未重复执行。');
@@ -6679,17 +6688,21 @@ export function initElsewhereApp(): void {
     recoverProactive(roleItem);
     syncRoleDiaryTasks(roleItem, data.settings, now(), { resetGenerating: true });
   }
-  save();
+  traceStorage('app-recovery-started',{scenes:data.roles.filter(r=>r.scene).length,tickets:data.roles.reduce((n,r)=>n+r.chats.filter(m=>m.sceneReply).length,0)});
+  if(!save()){traceStorage('startup-save-failed');throw Error('startup-storage-unconfirmed');}
+  traceStorage('startup-save-confirmed');
   for(const item of data.roles)resumeLocalSceneReplies(item);
   if (canUseRealModel(data.settings)) {
     void processDiaryQueue();
   }
 
-  document.addEventListener('visibilitychange',()=>{captureMeetingDraft();if(!document.hidden){pumpChatSchedules();pumpProactive();pumpRoleLife();if(view==='home')homeTasks.refresh();}});
-  window.addEventListener('pageshow',()=>{pumpChatSchedules();pumpProactive();pumpRoleLife();if(view==='home')homeTasks.refresh();});
+  document.addEventListener('visibilitychange',()=>{captureMeetingDraft();if(!document.hidden&&saveSession.current()){pumpChatSchedules();pumpProactive();pumpRoleLife();if(view==='home')homeTasks.refresh();}});
+  queueMicrotask(()=>{if(saveSession.current()){pumpChatSchedules();pumpProactive();pumpRoleLife();}});
+  window.addEventListener('pageshow',()=>{if(!saveSession.current())return;pumpChatSchedules();pumpProactive();pumpRoleLife();if(view==='home')homeTasks.refresh();});
 
   if (typeof setInterval === 'function') {
     setInterval(() => {
+      if(!saveSession.current())return;
       refreshSystemLogs();
       if(view==='home')homeTasks.refresh();
       pumpChatSchedules();

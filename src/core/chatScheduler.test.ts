@@ -93,3 +93,37 @@ test('explicit chat regeneration preserves old records until success and bounds 
  const history=buildPhoneRegeneration(data,r,'c',10);assert.ok(history);assert.ok(!JSON.stringify(history.messages).includes('FUTURE_SECRET'));assert.deepEqual(history.sourceIds,['u']);assert.equal(JSON.stringify(r),before);
  const opening=buildPhoneRegeneration(data,r,'opening',10);assert.ok(opening);assert.ok(JSON.stringify(opening.messages).includes('第一条手机消息'));assert.ok(!JSON.stringify(opening.messages).includes('FUTURE_SECRET'));assert.equal(JSON.stringify(r),before);
 });
+
+test('scene choice follows one quiet period and immediate entry consumes that same round',async()=>{
+ const {setChatScene}=await import('./chatScheduler');
+ const r=fixture();send(r,'first',1000);
+ assert.equal(setChatScene(r,2000),true);
+ const deadline=chatTiming(r).quietUntil;
+ assert.equal(setChatScene(r,3000),true);
+ assert.equal(setChatScene(r,4000),true);
+ assert.equal(chatTiming(r).quietUntil,deadline);
+ send(r,'second',5000);
+ assert.equal(setChatScene(r,65000),false);
+ assert.equal(claimChatBatch(r,64999,true),null);
+ const batch=claimChatBatch(r,10000,true,true)!;
+ assert.equal(batch.entry,'immediate');
+ assert.deepEqual(batch.sources.map(m=>m.id),['first','second']);
+ assert.equal(completeChatBatch(r,batch),true);
+ assert.equal(claimChatBatch(r,70000,true),null);
+ send(r,'next',72000);prepareChatDue(r,132000,()=>30000);
+ assert.equal(claimChatBatch(r,132000,true),null);
+ assert.equal(claimChatBatch(r,162000,true)?.entry,undefined);
+});
+
+test('a scheduled scene uses the original cutoff and a recovered preflight is known unsent',async()=>{
+ const {setChatScene}=await import('./chatScheduler');
+ const r=fixture();send(r,'one',1000);setChatScene(r,2000);
+ prepareChatDue(r,61000,()=>{throw Error('scene does not use the phone wait');});
+ const batch=claimChatBatch(r,61000,true)!;
+ assert.equal(batch.entry,'scheduled');
+ const restored=structuredClone(r);recoverChatTiming(restored);
+ assert.match(chatTiming(restored).error||'',/尚未发送/);
+ assert.equal(claimChatBatch(restored,90000,true),null);
+ retryChatTiming(restored);
+ assert.equal(claimChatBatch(restored,90000,true)?.roundId,batch.roundId);
+});

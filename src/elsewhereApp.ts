@@ -4,9 +4,10 @@ import {frameDraft,frameStyle,saveFrameOnly,DEFAULT_FRAME_SCALE,type FrameDraft,
 import {meetingTimeline,archiveMeeting} from './core/meetingHistory';
 import {meetingCardHtml,meetingRecordHtml} from './meetingHistoryView';
 import {logsForDay,logDays,logTimestamp} from './core/systemLogs';
-import {meetingPlan,isArrival as canArrive,createEncounter,isFarewell,encounterHistory,updateEncounterLocation,commitSceneDecision,settlePhoneHandoff} from './core/encounter';
-import {createSceneObservation} from './core/sceneState';
-import {prepareSceneReply,splitSceneReply,sceneReplyMatches,resolveSceneReply,resolvePhoneSceneReply} from './core/sceneReply';
+import {meetingPlan,createEncounter,isFarewell,encounterHistory,updateEncounterLocation,commitSceneDecision} from './core/encounter';
+import {createSceneObservation,sceneStateKey} from './core/sceneState';
+import {prepareSceneReply,splitSceneReply,sceneReplyMatches,resolveSceneReply} from './core/sceneReply';
+import {phoneMessagesAt} from './core/messageProvenance';
 import {identityName,identityContext,buildNativeContext,compileNativeConversation,compileNovelConversation,compileOpeningPrompt,type NativePromptOptions} from './core/prompt';
 import {ConversationCompileError,requestMessages,promptStructure,type ConversationCompilation} from './core/conversationPrompt';
 import {loadRequestPreset} from './core/fruit/library';
@@ -14,7 +15,7 @@ import type {FruitPreset} from './core/fruit/types';
 import {createNovelTasks,commitNovelReply,prepareNovelRegeneration,readNovelResponse,novelSamplingParameters,type NovelKind} from './core/novelGeneration';
 import {monitorItemsForDisplay} from './core/monitorPresentation';
 import {uiIcon,plainUiLabel} from './uiIcons';
-import {chatTiming,setChatFocused,enqueueChat,prepareChatDue,claimChatBatch,chatBatchValid,chatRevisionKey,completeChatBatch,failChatBatch,recoverChatTiming,retryChatTiming,reviseChatTiming,sourceStillValid} from './core/chatScheduler';
+import {chatTiming,setChatFocused,enqueueChat,prepareChatDue,claimChatBatch,canChooseChatScene,chatSceneEntry,setChatScene,chatBatchValid,chatRevisionKey,completeChatBatch,failChatBatch,recoverChatTiming,retryChatTiming,reviseChatTiming,sourceStillValid} from './core/chatScheduler';
 import {compileChatBatchPrompt,buildPhoneRegeneration,readChatResponse} from './core/chatBatchPrompt';
 import {describeChatVoice,chatVoiceSummary} from './core/chatVoice';
 import {preparePersonalReply,splitPersonalReply,applyPersonalReply,personalTicketValid,collectRoleLife} from './core/roleLife';
@@ -41,6 +42,7 @@ import { createFruitManager } from './fruitManager';
 import type {
   ActiveFocusSession,
   ChatBatch,
+  SceneData,
   AppData,
   ChatMessage,
   CustomAvatarFrame,
@@ -213,7 +215,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   const activeChatRequests = new Map<string,AbortController>();
   const chatTyping = new Set<string>();
   let chatPanel = '';
-  let chatDraft = '';
+  const chatDrafts = new WeakMap<RoleData,string>();
+  let chatDraftOwner:RoleData|undefined;
   let novelDraft = '';
   let novelViewKind:NovelKind='scene';
   let meetingDraftTimer:ReturnType<typeof setTimeout>|undefined;
@@ -1514,9 +1517,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if(!data.roles.includes(r)||ticket.sceneId===null&&(r.chatTiming?.pending.length||r.chatTiming?.inFlight)||!await sceneReplyMatches(r,data.user,ticket,replies))throw new Error('场景事件来源已变化');
       if(item.sceneReply!==ticket) return;
       delete item.sceneReply;
-      const outcome=ticket.sceneId===null?resolvePhoneSceneReply(r,data.user,ticket,replies,now()):{decision:resolveSceneReply(r,data.user,ticket,replies,now()),code:'scene-event-valid',diagnostic:'scene-event-valid'};
-      const decision=outcome.decision;
-      if(outcome.diagnostic!=='scene-event-valid'||ticket.sceneId===null)syslog('scene-state','场景事件诊断',{roleId:r.id,requestId:ticket.requestId,code:outcome.diagnostic,handoff:outcome.code});
+      const parsed=ticket.payload?resolveSceneReply(r,data.user,ticket,replies,now()):null;
+      const decision=parsed?.action==='arrive'||ticket.sceneId===null&&parsed?.action!=='plan'?null:parsed;
       if(!decision){if(!save())throw new Error('状态确认保存失败');return;}
       retryable=true;
       traceStorage('scene-save-started');
@@ -1525,9 +1527,6 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if(result==='left'){
         if(!archiveMeeting(r,now(),save))throw new Error('见面归档未完成');
         if(role()===r&&view==='novel'&&novelViewKind==='scene')go('chat');
-      }else if(result==='entered'){
-        activeChatRequests.get(r.id)?.abort();chatTyping.delete(r.id);
-        if(role()===r&&view==='chat')go('novel','scene');
       }else if(result==='none'&&!save())throw new Error('状态确认保存失败');
       if(result!=='none')syslog('scene-state','同次生成的场景事件已保存',{roleId:r.id,action:decision.action,source:ticket.sceneId||r.scene?.id});
       if(role()===r&&(view==='home'||view==='novel'&&novelViewKind==='scene'))render(false);
@@ -1615,7 +1614,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       const timingBefore=structuredClone(r.chatTiming),outboxBefore=r.pendingReplies;
       if(!completeChatBatch(r,batch))return;
       const turnId=makeUid('turn'),base=now();
-      r.pendingReplies=[...(r.pendingReplies||[]),...bubbles.map((bubble,i)=>({id:uid(),replyTo:batch.sources.at(-1)!.id,replyTurnId:turnId,bubbles:[bubble],dueAt:base+i*240,sources:batch.sources,chatBatchId:batch.id,...(i===bubbles.length-1&&privateReply.payload?{personalReply:{ticket:personal.ticket,payload:privateReply.payload}}:{}),...(prepared&&i===bubbles.length-1?{sceneReply:{...prepared.ticket,...(extracted.payload?{payload:extracted.payload}:{eventStatus:/<\/?elsewhere_scene_event/i.test(privateReply.text)?'malformed' as const:'missing' as const})}}:{})}))];
+      r.pendingReplies=[...(r.pendingReplies||[]),...bubbles.map((bubble,i)=>({id:uid(),replyTo:batch.sources.at(-1)!.id,replyTurnId:turnId,bubbles:[bubble],dueAt:base+i*240,sources:batch.sources,chatBatchId:batch.id,...(i===bubbles.length-1&&privateReply.payload?{personalReply:{ticket:personal.ticket,payload:privateReply.payload}}:{}),...(prepared&&extracted.payload&&i===bubbles.length-1?{sceneReply:{...prepared.ticket,payload:extracted.payload}}:{})}))];
       if(!save()){r.chatTiming=timingBefore;r.pendingReplies=outboxBefore;offerUnstoredReply(bubbles.join('\n'));throw new Error('回复已返回，保存未确认；重新发送可能再次计费');}
       deliverPending(r);
     }catch(error){
@@ -1633,18 +1632,22 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if(!saveSession.current())return;
     for(const r of data.roles){
       if(!r.chatTiming)continue;
-      const before=JSON.stringify(r.chatTiming);
-      prepareChatDue(r,now(),quietAt=>chatDelay(r,quietAt));
-      const batch=activeChatRequests.has(r.id)?null:claimChatBatch(r,now(),Boolean(token.trim())&&canUseRealModel(data.settings));
-      if(JSON.stringify(r.chatTiming)!==before){
+      const before=structuredClone(r.chatTiming),at=now();
+      prepareChatDue(r,at,quietAt=>chatDelay(r,quietAt));
+      const sceneWaiting=chatSceneEntry(r.chatTiming);
+      const batch=activeChatRequests.has(r.id)||sceneWaiting&&(busy||document.hidden||role()!==r||view!=='chat'||r.pendingReplies?.length)
+        ?null:claimChatBatch(r,at,Boolean(token.trim())&&canUseRealModel(data.settings));
+      if(JSON.stringify(r.chatTiming)!==JSON.stringify(before)){
         if(!save()){
-          if(batch)failChatBatch(r,batch,'调度未能保存，请重试');
+          r.chatTiming=before;
+          if(batch){before.blocked='failed';before.error='调度未能确认保存，本次请求尚未发送。';}
           if(view==='chat'&&role()?.id===r.id)patchDynamicRegionsOnTick();
-          continue;
+          return;
         }
         if(view==='chat'&&role()?.id===r.id)patchDynamicRegionsOnTick();
       }
-      if(batch)void runChatBatch(r,batch);
+      if(batch?.entry)void runMeetingRound(r,batch);
+      else if(batch)void runChatBatch(r,batch);
     }
   }
 
@@ -1755,6 +1758,10 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   }
 
   function acceptPhoneMessage(r:RoleData,item:ChatMessage):boolean {
+    const timing=r.chatTiming;
+    if(timing?.inFlight?.entry||timing?.pending.length&&chatSceneEntry(timing)&&item.at>=timing.quietUntil){
+      notify('本轮线下聚合已结束，未发送的内容仍保留。');return false;
+    }
     const timingBefore=r.chatTiming?structuredClone(r.chatTiming):undefined;
     const chatsBefore=r.chats.length,eventsBefore=r.events.length,planBefore=r.meetingPlan,memoryBefore=r.memory;
     r.chats.push(item);eMemory(r,item.text,'me','chat',item.at,item.id);syncRoleMemory(r,item.at);enqueueChat(r,item.id,item.at);r.meetingPlan=meetingPlan(r,item.at);
@@ -2829,7 +2836,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if (chatPanel === 'more') {
       return `<section class="chat-drawer" aria-label="聊天工具菜单">${bar}<div class="chat-tool-grid">${[
         ['voice', '语音'],
-                ['photo', '照片'],
+        ['photo', '照片'],
+        ['sticker', '表情包'],
         ['packet', '红包'],
       ]
         .map(
@@ -2838,7 +2846,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
               id
             )}<span>${label}</span></button>`
         )
-        .join('')}<button data-action="meet">${glyph('profile')}<span>见面</span></button><button data-action="view" data-view="focus">${glyph('focus')}<span>一起专注</span></button><button data-action="view" data-view="drama">${glyph('drama')}<span>戏剧</span></button><button data-action="chatvoice">${glyph('chat')}<span>聊天表达</span></button></div></section>`;
+        .join('')}<button data-action="meet">${glyph('profile')}<span>${role()?.chatTiming?.pending.length?'立即见面并使用本轮消息':'见面'}</span></button><button data-action="view" data-view="focus">${glyph('focus')}<span>一起专注</span></button><button data-action="view" data-view="drama">${glyph('drama')}<span>戏剧</span></button><button data-action="chatvoice">${glyph('chat')}<span>聊天表达</span></button></div></section>`;
     }
     if (chatPanel === 'sticker') {
       const gallery=uploadedStickers(role()?.chats||[]);
@@ -3007,6 +3015,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
 
   function screenChat(): string {
     const r = role()!;
+    chatDraftOwner=r;
+    const offline=!!(chatSceneEntry(r.chatTiming)||r.chatTiming?.inFlight?.entry);
     const focused = isFocused(r);
     const pawStateClass = focused ? 'is-dark' : 'is-light';
     const pawTitle = focused
@@ -3038,7 +3048,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       </div>`
      : ''
  }
- <form class="compose" id="message-form"><textarea id="message-input" rows="1" placeholder="发送信息" aria-label="输入消息">${esc(chatDraft)}</textarea><button type="button" class="compose-plus" data-action="chatpanel" data-panel="more" aria-label="打开聊天功能" aria-expanded="${chatPanel==='more'}">${chatPanel==='more'?attachmentIcon('close'):attachmentIcon('more')}</button><button type="button" class="compose-sticker" data-action="chatpanel" data-panel="sticker" aria-label="发送表情包">${attachmentIcon('sticker')}</button><button class="send-btn" aria-label="发送消息">${uiIcon('send')}</button></form>`,
+ <form class="compose" id="message-form"><textarea id="message-input" rows="1" placeholder="发送信息" aria-label="输入消息">${esc(readChatDraft(r))}</textarea><button type="button" class="compose-plus" data-action="chatpanel" data-panel="more" aria-label="打开聊天功能" aria-expanded="${chatPanel==='more'}">${chatPanel==='more'?attachmentIcon('close'):attachmentIcon('more')}</button><button type="button" class="compose-offline" data-action="offline-round" aria-label="线下模式" aria-pressed="${offline}" ${canChooseChatScene(r.chatTiming,now())&&!ongoing(r)?'':'disabled'} title="选择本轮聚合结束后进入面对面">线下</button><button class="send-btn" aria-label="发送消息">${uiIcon('send')}</button></form>`,
       false
     );
   }
@@ -3938,6 +3948,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     }
     const title = isPlay ? (p as PlayData).title : `与${r.name}的见面`;
     const showBackstage=isPlay&&Boolean((p as PlayData).paused);
+    const opening=isPlay?undefined:r.scene?.opening;
+    const openingPending=opening&&opening.status!=='archived';
     if(showBackstage)view='intermission';
     const activeMessages = isPlay?getActiveMessages(p.messages):encounterHistory(r,p.messages);
     const revCount = ensureRevisionsList(r).filter(
@@ -4025,11 +4037,12 @@ export function initElsewhereApp(saveSession:SaveSession): void {
             </div>`
           : ''
       }
+      ${openingPending?`<div class="chat-feedback" role="status" data-scene-opening="${esc(opening.status)}"><p>${busy?'正在准备或生成本轮面对面回复。':opening.status==='unsent'?'场景已保存，首次请求尚未发送。':'首次请求或保存结果未确认。可先刷新核对，重试可能再次计费。'}</p>${busy?'':`<button type="button" class="btn secondary" data-action="resume-scene-opening">${opening.status==='unsent'?'继续本轮':'重新发送首次请求'}</button>`}</div>`:''}
       <form class="compose" id="novel-form" data-role-id="${esc(r.id)}" data-scene-id="${isPlay?'':esc(p.id)}"><textarea id="novel-input" ${showBackstage?'disabled':''} placeholder="写下你说的话或行动..." rows="1">${esc(
         isPlay?novelDraft:r.scene?.draft||''
       )}</textarea><button class="btn" ${
-        busy||showBackstage ? 'disabled' : ''
-      }>${uiIcon('send')}</button>${data.settings.mode==='api'&&!showBackstage&&activeMessages.at(-1)?.speaker==='me'?`<button type="button" class="btn secondary" data-action="retry-novel" ${busy?'disabled':''} title="不重复添加用户消息">重试回复</button>`:''}</form></section>${showBackstage?renderIntermissionPanel(r,p as PlayData):''}</div>`,
+        busy||showBackstage||openingPending ? 'disabled' : ''
+      }>${uiIcon('send')}</button>${data.settings.mode==='api'&&!showBackstage&&!openingPending&&activeMessages.at(-1)?.speaker==='me'?`<button type="button" class="btn secondary" data-action="retry-novel" ${busy?'disabled':''} title="不重复添加用户消息">重试回复</button>`:''}</form></section>${showBackstage?renderIntermissionPanel(r,p as PlayData):''}</div>`,
       false
     );
   }
@@ -4418,6 +4431,11 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     const r = role();
     if (!r) return;
     if (view === 'chat') {
+      const offline=$<HTMLButtonElement>('[data-action=offline-round]');
+      if(offline){
+        offline.disabled=!canChooseChatScene(r.chatTiming,now())||ongoing(r);
+        offline.setAttribute('aria-pressed',String(!!(chatSceneEntry(r.chatTiming)||r.chatTiming?.inFlight?.entry)));
+      }
       const feedback = document.querySelector<HTMLElement>('[data-chat-feedback]');
       if(feedback){feedback.hidden=!r.chatTiming?.blocked;feedback.innerHTML=renderChatFeedback(r);}
       if (!editingMessageId) {
@@ -4456,12 +4474,32 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if(persist&&meetingDraftDirty){clearTimeout(meetingDraftTimer);if(save())meetingDraftDirty=false;}
   }
 
+  const chatDraftRound=(r:RoleData)=>r.chatTiming?.round?.id||r.chatTiming?.inFlight?.roundId||r.scene?.opening?.roundId||r.meetings?.at(-1)?.opening?.roundId;
+  function readChatDraft(r:RoleData):string {
+    const remembered=chatDrafts.get(r);
+    if(remembered!==undefined)return remembered;
+    const id=chatDraftRound(r);
+    if(!id)return '';
+    try{
+      const draft=JSON.parse(sessionStorage.getItem('elsewhere-chat-draft:'+r.id)||'null');
+      return draft?.roundId===id&&typeof draft.text==='string'?draft.text:'';
+    }catch{return '';}
+  }
+  function captureChatDraft():void {
+    const input=$<HTMLTextAreaElement>('#message-input'),owner=chatDraftOwner;
+    if(!input||!owner||!data.roles.includes(owner))return;
+    chatDrafts.set(owner,input.value);
+    const id=chatDraftRound(owner);
+    if(!id)return;
+    try{
+      const key='elsewhere-chat-draft:'+owner.id;
+      if(input.value)sessionStorage.setItem(key,JSON.stringify({roundId:id,text:input.value}));else sessionStorage.removeItem(key);
+    }catch{/* Keep the draft in this page when tab storage is unavailable. */}
+  }
   function render(scroll = true): void {
     captureMeetingDraft();
     if(view==='home' && homeTasks.isOpen()){homeTasks.refresh();return;}
-    if (view === 'chat' && $('#message-input')) {
-      chatDraft = ($('#message-input') as HTMLTextAreaElement).value;
-    }
+    if(view==='chat')captureChatDraft();
     if ($<HTMLFormElement>('#novel-form')?.dataset.sceneId==='' && $('#novel-input')) {
       novelDraft = ($('#novel-input') as HTMLTextAreaElement).value;
     }
@@ -4556,7 +4594,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
 
   let leavingPresets=false;
   window.addEventListener('beforeunload',(event)=>{captureMeetingDraft();if(fruitManager.hasUnsaved()){event.preventDefault();event.returnValue='';}});
-  function go(v: string,kind?:NovelKind,persist=true): void {
+  function go(v: string,kind?:NovelKind,persist=true,settlingScene=false): void {
     if(kind)novelViewKind=kind;
     if(v==='intermission')novelViewKind='play';
     captureMeetingDraft();
@@ -4568,16 +4606,14 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if(leavingPresets)return;
       leavingPresets=true;void fruitManager.beforeLeave().then(ok=>{if(ok){view='home';go(v);}}).finally(()=>{leavingPresets=false;});return;
     }
-    if(saveSession.hasWriter())completeFocusIfDue();
+    if(!settlingScene&&saveSession.hasWriter())completeFocusIfDue();
     if (activeFocus()?.phase === 'work' && v !== 'focus' && v !== 'novel') {
       view = 'focus';
       render();
       notify('专注期间已锁定，先结束本轮才能切换手机');
       return;
     }
-    if (view === 'chat' && $('#message-input')) {
-      chatDraft = ($('#message-input') as HTMLTextAreaElement).value;
-    }
+    if(view==='chat')captureChatDraft();
     if (v !== view) {
       editingMessageId = null;
       editingMessageDraft = '';
@@ -4597,14 +4633,11 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       chatPanel = '';
       if (voiceRecorder?.state === 'recording') stopRecording(true);
     }
-    if (v === 'landing') {
-      chatDraft = '';
-    }
     if (!role() && !['roleform', 'userprofile', 'deleterole'].includes(v)) {
       v = 'landing';
     }
     if (
-      role() && saveSession.current() &&
+      !settlingScene && role() && saveSession.current() &&
       !['landing', 'roleform', 'userprofile', 'deleterole'].includes(v)
     ) {
       simulate(role()!);
@@ -4613,7 +4646,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     view = v;
     if(persist&&saveSession.hasWriter())save();
     render(!preserveStage);
-    if(role())resumeLocalSceneReplies(role()!);
+    if(!settlingScene&&role())resumeLocalSceneReplies(role()!);
     const diaryOwner=role();
     if(v==='diary'&&diaryOwner)void inspectDiaryRecovery(diaryOwner);
   }
@@ -4634,13 +4667,21 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     return reply;
   }
 
-  async function generateNovelReply(r:RoleData,kind:NovelKind,input:string,regenerateId?:string):Promise<void> {
-    const task=novelTasks.begin(r,kind),userRevision=JSON.stringify([data.user,data.sharedTasks]);
-    const valid=()=>data.roles.includes(r)&&novelTasks.valid(task,r,data.selected)&&userRevision===JSON.stringify([data.user,data.sharedTasks]);
+  async function generateNovelReply(r:RoleData,kind:NovelKind,input:string,regenerateId?:string,opening?:{scene:SceneData;batch?:ChatBatch}):Promise<void> {
+    const world=data,connection=apiConnectionVersion,credential=token,batch=opening?.batch,scene=opening?.scene;
+    const before=batch?sceneStateKey(r):null;
+    const draft=batch?{...r,scene:scene!,events:r.events.slice()}:r;
+    if(batch)entry(draft,'scene','你选择进入面对面',`地点：${scene!.where}`,scene!.startedAt,{source:scene!.id,knownBy:['user',r.id]});
+    let attached=!batch,dispatched=false,timer:ReturnType<typeof setTimeout>|undefined;
+    const task=novelTasks.begin(draft,kind),userRevision=JSON.stringify([data.user,data.sharedTasks]);
+    const valid=()=>data===world&&world.roles.includes(r)&&userRevision===JSON.stringify([world.user,world.sharedTasks])
+      && (attached?novelTasks.valid(task,r,data.selected):view==='chat'&&!document.hidden&&chatBatchValid(r,batch!)&&sceneStateKey(r)===before&&novelTasks.valid(task,draft,data.selected))
+      && (!opening||dispatched||(saveSession.current()&&connection===apiConnectionVersion&&credential===token&&!!credential.trim()&&canUseRealModel(world.settings)))
+      && (!scene||openingSourcesValid(attached?r:draft,scene));
     try{
       const regeneration=regenerateId?prepareNovelRegeneration(r,kind,regenerateId):undefined;
       if(regenerateId&&!regeneration)throw new Error('原回复不可重抽，记录已保留');
-      const source=regeneration?.role||r,at=regeneration?.targetAt??now(),selected:{value?:RequestPromptOptions;compiled?:ConversationCompilation}={};
+      const source=regeneration?.role||draft,at=regeneration?.targetAt??now(),selected:{value?:RequestPromptOptions;compiled?:ConversationCompilation}={};
       const messages=await compileRequest(r,kind,options=>{
         selected.value=options;
         const result=compileNovelConversation(data,source,kind,input,{...options,nowTs:at});
@@ -4650,25 +4691,85 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       const options=selected.value;if(!options?.profile||!valid())throw new Error('场景来源已变化，未发送');
       const thirdParty=options.presetId!=='native';
       let prepared:Awaited<ReturnType<typeof prepareSceneReply>>|undefined;
-      if(kind==='scene'&&!regenerateId&&!r.play&&selected.compiled){const context=buildNativeContext(data,r,'scene',input,{nowTs:at});prepared=await prepareSceneReply(r,data.user,createSceneObservation(r,context,buildNativeContext(data,r,'chat','',{nowTs:at}),identityContext(data,r)),selected.compiled,{requestId:task.id,now:at});}
+      if(kind==='scene'&&!regenerateId&&!source.play&&selected.compiled){const context=buildNativeContext(data,source,'scene',input,{nowTs:at});prepared=await prepareSceneReply(source,data.user,createSceneObservation(source,context,buildNativeContext(data,source,'chat','',{nowTs:at}),identityContext(data,source)),selected.compiled,{requestId:task.id,now:at});}
       if(!valid())throw new Error('场景来源已变化，未发送');
       if(prepared)includeScenePromptTrace(r);
-      const result=await readNovelResponse(await requestSceneCompletion(prepared?.messages||messages,kind,thirdParty?novelSamplingParameters(options.preset):{},task.controller.signal),options.profile,thirdParty);
-      if(!valid())throw new Error('场景或消息已变化，迟到回复未写入');
+      const sampling=thirdParty?novelSamplingParameters(options.preset):{};
+      if(batch&&scene){
+        const timing=structuredClone(r.chatTiming),events=r.events,previous=r.scene;
+        if(!completeChatBatch(r,batch))throw Error('本轮已经变化，未创建见面');
+        r.scene=scene;r.events=draft.events;
+        traceStorage('scene-save-started');
+        if(!save()){r.scene=previous;r.events=events;r.chatTiming=timing;throw Error(saveError());}
+        attached=true;
+        traceStorage('scene-save-confirmed',{hasScene:true,result:'entered'});
+        go('novel','scene',false,true);
+      }
+      if(scene?.opening){
+        if(!valid())throw Error('连接或场景已变化，本次请求尚未发送');
+        const prior=scene.opening.status;
+        scene.opening.status='unknown';
+        if(!save()){scene.opening.status=prior;throw Error(saveError());}
+        // A crash after this receipt and before fetch is indistinguishable from an interrupted request.
+        dispatched=true;
+        timer=setTimeout(()=>task.controller.abort(),90000);
+      }
+      const result=await readNovelResponse(await requestSceneCompletion(prepared?.messages||messages,kind,sampling,task.controller.signal),options.profile,thirdParty);
+      if(!valid()){
+        if(scene&&data===world&&role()===r)offerUnstoredReply(result.text);
+        throw new Error('场景或消息已变化，迟到回复未写入');
+      }
       const lastInput=(kind==='scene'?encounterHistory(r,task.stage.messages):getActiveMessages(task.stage.messages)).filter(m=>m.speaker==='me').at(-1);
       const item:ChatMessage={id:uid(),speaker:'char',text:result.text,at:regeneration?regeneration.targetAt:now(),status:'active',replyTo:regeneration?regeneration.sourceId:lastInput?.id,kind,
         ...(thirdParty?{novelOutput:{presetId:options.presetId,mode:kind==='play'?'theatre' as const:'meeting' as const,memoryEligible:false as const,...result.auxiliary}}:{})};
       if(thirdParty&&result.sections&&item.novelOutput)item.novelOutput.document=bindNovelDocument(result.sections,{roleId:r.id,stageId:task.stage.id,messageId:item.id,mode:kind==='play'?'theatre':'meeting',revisionCount:item.revisionCount||0,createdAt:item.at,presetId:options.presetId,presetHash:options.preset.sha256});
       if(prepared&&result.sceneEvent)item.sceneReply={...prepared.ticket,payload:result.sceneEvent};
       commitNovelReply(r,task,item,()=>{
+        if(scene?.opening)scene.opening.status='archived';
         if(save())return true;
+        if(scene?.opening)scene.opening.status='unknown';
         offerUnstoredReply(result.text);
         return false;
       },regeneration||undefined,now());
       if(item.sceneReply)await applySavedSceneReply(r,item);
       syslog('api',`小说回复已保存 ${kind}`,{presetId:options.presetId});
       if(regenerateId)notify('已重新生成；原版本及修订记录保留');
-    }finally{novelTasks.finish(task);}
+    }finally{clearTimeout(timer);novelTasks.finish(task);}
+  }
+
+  function openingSourcesValid(r:RoleData,scene:SceneData):boolean {
+    const originals=scene.messages.filter(m=>m.sourceMessageId);
+    const effective=encounterHistory(r,scene.messages,now());
+    return originals.length>0&&originals.every(m=>m.speaker==='me'&&effective.some(e=>e.id===m.id));
+  }
+
+  async function runMeetingOpening(r:RoleData,scene:SceneData,batch?:ChatBatch):Promise<void> {
+    const world=data;
+    busy=true;
+    try{
+      await generateNovelReply(r,'scene',encounterHistory({...r,scene},scene.messages,now()).filter(m=>m.sourceMessageId).at(-1)?.text||'',undefined,{scene,batch});
+    }catch(error){
+      if(data===world&&world.roles.includes(r)){
+        const reason=error instanceof Error&&error.name!=='AbortError'?error.message:'请求已中断';
+        if(batch&&r.chatTiming?.inFlight?.id===batch.id){failChatBatch(r,batch,'线下请求尚未发送。'+reason);save();}
+        if(role()===r)notify(reason+(scene.opening?.status==='unknown'?'。请求结果未确认，可能已计费。':'。本次请求尚未发送。'));
+      }
+    }finally{
+      busy=novelTasks.has(data.selected||'');
+      if(data===world&&role()===r&&(view==='chat'||view==='novel'))render(false);
+    }
+  }
+
+  function runMeetingRound(r:RoleData,batch:ChatBatch):void {
+    const at=now(),scene=createEncounter(r,null,at,uid());
+    const eligible=phoneMessagesAt(r,at);
+    if(!scene||!batch.entry||!batch.sources.every(source=>eligible.some(m=>m.id===source.id))){
+      failChatBatch(r,batch,'当前消息来源无法确认，未发送线下请求。');save();return;
+    }
+    scene.messages[0].text=`${scene.where}。你选择转入线下，延续原话中的行动。`;
+    scene.messages.push(...batch.sources.map(m=>({...m,id:`${scene.id}:phone:${m.id}`,sourceMessageId:m.id,kind:'scene' as const})));
+    scene.opening={roundId:batch.roundId||batch.id,entry:batch.entry,status:'unsent'};
+    void runMeetingOpening(r,scene,batch);
   }
 
   async function generateRoleFirstMessage(r: RoleData): Promise<void> {
@@ -5025,15 +5126,6 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     ][recent % 4];
   }
 
-  function isArrival(r:RoleData,text:string):boolean {return canArrive(r,text,now());}
-
-  function beginEncounter(r:RoleData,arrival:ChatMessage):boolean {
-    const scene=createEncounter(r,arrival,now(),uid());if(!scene)return false;
-    r.scene=scene;r.meetingPlan=scene.agreement||null;settlePhoneHandoff(r);
-    entry(r,'scene','由聊天进入面对面',`地点：${scene.where}；约定来源：${scene.agreement?.sources.map(m=>m.id).join('、')}；到达消息：${arrival.id}`,now(),{source:scene.id,knownBy:['user',r.id]});
-    return true;
-  }
-
   function mediaNote(item: Partial<ChatMessage>): string {
     if (item.kind === 'sticker') {
       return item.caption
@@ -5187,68 +5279,38 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     kind: 'chat' | 'scene' | 'play',
     text: string
   ): Promise<void> {
-    const r = role();
-    if(kind==='chat'&&r&&text.trim()&&(data.settings.mode==='api'||!isArrival(r,text))){
+    const r=role();
+    if(!r||!text.trim())return;
+    if(kind==='chat'){
       const item:ChatMessage={id:uid(),speaker:'me',text:text.trim(),at:now(),kind:'chat',status:'active',quote:quotingMessage||null};
       if(acceptPhoneMessage(r,item)){
-        chatDraft='';const input=$<HTMLTextAreaElement>('#message-input');if(input)input.value='';render(false);
+        const input=$<HTMLTextAreaElement>('#message-input');if(input)input.value='';
+        captureChatDraft();render(false);
       }
       return;
     }
-    if (!r || busy || !text.trim()) return;
-    if(kind==='scene'&&!r.scene||kind==='play'&&!r.play){notify('请先打开当前场景');return;}
-    const submissionBefore={scene:r.scene,sceneMessages:r.scene?structuredClone(r.scene.messages):null,playMessages:r.play?structuredClone(r.play.messages):null,chats:r.chats.length,events:r.events.length,meetingPlan:r.meetingPlan,pending:r.pendingReplies,timing:r.chatTiming};
-    if(kind==='chat'){chatDraft='';const input=$<HTMLTextAreaElement>('#message-input');if(input)input.value='';}
-    busy = true;
-    const at = now();
-    const obj: ChatMessage = {
-      id: uid(),
-      speaker: 'me',
-      text: text.trim(),
-      at,
-      kind: kind === 'chat' ? 'chat' : kind,
-      status: 'active',
-      quote: quotingMessage || null,
-    };
-    quotingMessage = null;
-    const useKind: 'scene' | 'play' = kind==='play'?'play':'scene';
-    if (kind === 'play' && r.play?.paused) {
-      busy = false;
+    if(busy)return;
+    const p=kind==='play'?r.play:r.scene;
+    if(!p){notify('请先打开当前场景');return;}
+    if(kind==='scene'&&r.scene?.opening&&r.scene.opening.status!=='archived')return;
+    if(kind==='play'&&r.play?.paused){
       go('intermission');
       notify('正在幕间，需先返回戏剧才能推进剧情');
       return;
     }
-    if (kind === 'chat') {
-      r.chats.push(obj);
-      eMemory(r, obj.text, 'me', 'chat', at, obj.id);
-      if (!beginEncounter(r,obj)) {
-        r.chats.length=submissionBefore.chats;r.events.length=submissionBefore.events;busy=false;
-        const accepted=acceptPhoneMessage(r,obj);
-        chatDraft=accepted?'':obj.text;
-        const input=$<HTMLTextAreaElement>('#message-input');if(input)input.value=chatDraft;
-        if(!accepted)quotingMessage=obj.quote||null;
-        render(false);return;
-      }
-      novelViewKind='scene';view='novel';
-    } else {
-      const p = kind === 'play' ? r.play! : r.scene!;
-      p.messages.push(obj);
-      entry(
-        r,
-        kind === 'play' ? 'drama' : 'scene',
-        '你在' + (kind === 'play' ? '戏里' : '见面时') + '说过',
-        obj.text,
-        at,
-        { source: p.id, messageId: obj.id, speaker: 'me', knownBy:['user',r.id] }
-      );
-    }
-    syslog('chat', `${useKind} 用户消息已提交`, { source: obj.id });
+    const events=r.events.length,at=now(),useKind=kind;
+    const obj:ChatMessage={id:uid(),speaker:'me',text:text.trim(),at,kind,status:'active',quote:quotingMessage||null};
+    busy=true;quotingMessage=null;
+    p.messages.push(obj);
+    entry(r,kind==='play'?'drama':'scene',kind==='play'?'你在戏里说过':'你在见面时说过',obj.text,at,{source:p.id,messageId:obj.id,speaker:'me',knownBy:['user',r.id]});
+    syslog('chat',`${useKind} 用户消息已提交`,{source:obj.id});
     if(!save()){
-      r.scene=submissionBefore.scene;if(r.scene&&submissionBefore.sceneMessages)r.scene.messages=submissionBefore.sceneMessages;
-      if(r.play&&submissionBefore.playMessages)r.play.messages=submissionBefore.playMessages;
-      r.chats.length=submissionBefore.chats;r.events.length=submissionBefore.events;r.meetingPlan=submissionBefore.meetingPlan;r.pendingReplies=submissionBefore.pending;r.chatTiming=submissionBefore.timing;if(kind==='chat'){chatDraft=obj.text;const input=$<HTMLTextAreaElement>('#message-input');if(input)input.value=chatDraft;}else {if(kind==='play')novelDraft=obj.text;const input=$<HTMLTextAreaElement>('#novel-input');if(input)input.value=obj.text;if(kind==='scene'&&r.scene)r.scene.draft=obj.text;}busy=false;render(false);return;
+      p.messages.pop();r.events.length=events;quotingMessage=obj.quote||null;
+      if(kind==='play')novelDraft=obj.text;
+      if(kind==='scene'&&r.scene)r.scene.draft=obj.text;
+      const input=$<HTMLTextAreaElement>('#novel-input');if(input)input.value=obj.text;
+      busy=false;render(false);return;
     }
-    if(kind==='chat'){activeChatRequests.get(r.id)?.abort();chatTyping.delete(r.id);}
     render();
     if(awaitingNainOpening(r)&&!canUseRealModel(data.settings)){busy=false;render(false);notify('你的消息已保存；连接 API 后才能生成角色首条回复。');return;}
     const submittedStage=useKind==='scene'?r.scene:r.play;
@@ -5347,13 +5409,25 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       go('novel',r.scene?'scene':'play');
       return;
     }
-    simulate(r);
+    if(!checkWriteAccess())return;
+    if(activeChatRequests.has(r.id)||r.chatTiming?.inFlight||r.pendingReplies?.length||busy){
+      notify('请等正在处理的回复完成后再见面。');return;
+    }
+    if(r.chatTiming?.pending.length){
+      if(!token.trim()||!canUseRealModel(data.settings)){notify('请先在终端连接 API。本轮消息仍保留，未发送请求。');return;}
+      const before=structuredClone(r.chatTiming);
+      const batch=claimChatBatch(r,now(),true,true);
+      if(!batch){notify('本轮已有未确认的回复，请先处理该轮再见面。');return;}
+      if(!save()){r.chatTiming=before;return;}
+      runMeetingRound(r,batch);
+      return;
+    }
     const scene=createEncounter(r,null,now(),uid());if(!scene)return;
     const eventsBefore=r.events.length;
     r.scene=scene;
     entry(r,'scene','你们开始见面',`地点：${scene.where}`,now(),{source:scene.id,knownBy:['user',r.id]});
     if(!save()){r.scene=null;r.events.length=eventsBefore;return;}
-    revisePhoneSchedule(r);save();go('novel','scene');
+    go('novel','scene',false);
   }
 
   function endNovel(kind:NovelKind=novelViewKind,returnToChat=true): void {
@@ -5473,6 +5547,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         await stageBackupMedia(next,attachments);
         if(data!==previous||saveSession.raw!==baseline)throw Error('暂存期间世界已变化，未替换存档。');
         if(!save(next))throw Error(saveError());
+        try{for(const owner of next.roles)sessionStorage.removeItem('elsewhere-chat-draft:'+owner.id);}catch{/* Per-tab draft storage is optional. */}
         data = next;
         mediaSources.clear();
         document.querySelectorAll<HTMLElement>('[data-hydrated-key]').forEach(el=>delete el.dataset.hydratedKey);
@@ -5525,7 +5600,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if(!window.confirm(`仅清理当前奈恩的互动：${r.chats.length} 条聊天、${r.diaries.length} 篇日记、${r.events.length} 条事件，以及见面／戏剧／足迹状态。若有真实记录请取消。角色资料与其他角色保留；先创建恢复副本。本操作仅执行一次，确认继续？`))return;
       const result=resetNainStart(data,r.id,saveSession.storage,now());
       data=result.data;
-      if(result.cleaned){chatDraft='';novelDraft='';intermissionDraft='';render(false);notify('奈恩已恢复到等待 API 首条消息的起点，恢复副本已保存。');}
+      if(result.cleaned){chatDrafts.delete(r);novelDraft='';intermissionDraft='';render(false);notify('奈恩已恢复到等待 API 首条消息的起点，恢复副本已保存。');}
       else notify(result.error||'当前角色已经清理过，未重复执行。');
       return;
     }
@@ -5537,6 +5612,14 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         const payload=await buildBackupPayload(snapshot),blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),link=document.createElement('a');
         link.href=url;link.download='Elsewhere_奈恩清档前恢复副本.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
       }catch{notify('恢复副本导出失败，原副本仍保留。');}})();return;
+    }
+    if(act==='resume-scene-opening'){
+      const scene=r?.scene;
+      if(!r||!scene?.opening||scene.opening.status==='archived'||busy||!checkWriteAccess())return;
+      if(!openingSourcesValid(r,scene)){notify('原话的有效版本已变化，本轮无法继续。可保留现场或结束见面。');return;}
+      if(!token.trim()||!canUseRealModel(data.settings)){notify('请先在终端连接 API。');return;}
+      if(scene.opening.status!=='unsent'&&!window.confirm('首次请求可能已被服务商处理。重新发送可能再次计费，确定继续？'))return;
+      void runMeetingOpening(r,scene);render(false);return;
     }
     if(act==='retry-novel'){
       const current=role(),kind:NovelKind=novelViewKind,p=current&&(kind==='play'?current.play:current.scene);
@@ -5631,9 +5714,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     }
     if (act === 'chatroleedit') {
       if (!r) return;
-      if ($('#message-input')) {
-        chatDraft = ($('#message-input') as HTMLTextAreaElement).value;
-      }
+      captureChatDraft();
       formMode = 'edit';
       editingRoleId = r.id;
       roleFormReturnView = 'chat';
@@ -5663,7 +5744,23 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       go('roleform');
       return;
     }
-    if(act==='retrychatbatch'){if(r){retryChatTiming(r);if(save()){pumpChatSchedules();render(false);}}return;}
+    if(act==='offline-round'){
+      if(!r||view!=='chat'||ongoing(r)||!checkWriteAccess())return;
+      const before=structuredClone(r.chatTiming);
+      if(setChatScene(r,now())){
+        if(!save())r.chatTiming=before;
+        render(false);
+      }else patchDynamicRegionsOnTick();
+      return;
+    }
+    if(act==='retrychatbatch'){
+      if(r&&checkWriteAccess()){
+        const before=structuredClone(r.chatTiming);
+        retryChatTiming(r);
+        if(save()){render(false);pumpChatSchedules();}else r.chatTiming=before;
+      }
+      return;
+    }
     if (act === 'focuschat') {
       if (r) requestChatFocus(r);
       return;
@@ -6557,7 +6654,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if (f.id === 'novel-form') {
       const inputEl = $('#novel-input') as HTMLTextAreaElement | null;
       const t = inputEl?.value || '';
-      if(busy||!t.trim()||!checkWriteAccess())return;
+      const opening=f.dataset.sceneId?role()?.scene?.opening:undefined;
+      if(busy||!t.trim()||opening&&opening.status!=='archived'||!checkWriteAccess())return;
       if(f.dataset.sceneId==='')novelDraft = '';
       if (inputEl) inputEl.value = '';
       captureMeetingDraft();
@@ -6810,7 +6908,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
 
   appRoot.addEventListener('input', (e) => {
     const el = e.target as HTMLTextAreaElement | HTMLInputElement;
-    if (el.id === 'message-input') chatDraft = el.value;
+    if (el.id === 'message-input') captureChatDraft();
     if (el.id === 'novel-input') {if($<HTMLFormElement>('#novel-form')?.dataset.sceneId==='')novelDraft=el.value;captureMeetingDraft(false);clearTimeout(meetingDraftTimer);meetingDraftTimer=setTimeout(()=>captureMeetingDraft(),300);}
     if (el.id === 'intermission-input') intermissionDraft = el.value;
     if (el.id === 'focus-task-input') {

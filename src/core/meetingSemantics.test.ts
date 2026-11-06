@@ -111,7 +111,8 @@ test('current semantic non-entry wins over the old lexical handoff and the norma
  assert.equal(f.resolve({state:'remote',reason:'uncertain'}).decision?.action,'none');
  assert.equal(f.resolve({state:'separated',reason:'ended'}).decision?.action,'none');
  assert.deepEqual(f.prepared.messages.slice(1),requestMessages(f.compiled));
- assert.match(f.prepared.messages[0].content,/physical-now/);
+ assert.match(f.prepared.messages[0].content,/模式由玩家选择，约见信息不切换页面/);
+ assert.doesNotMatch(f.prepared.messages[0].content,/physical-now/);
  const x=splitSceneReply(f.actor.text+'<elsewhere_scene_event>'+f.encode({state:'remote',reason:'uncertain'})+'</elsewhere_scene_event>');
  assert.equal(x.text,f.actor.text);
  assert.ok(x.payload);

@@ -127,7 +127,8 @@ async function main(){
  async function flush(p){await p.waitForTimeout(400);}
  async function enterDiary(p,id='fixture-role-0'){
   await p.locator('[data-action=enter][data-id='+id+']').click();
-  await p.locator('[data-view=diary]').first().evaluate(el=>el.click());
+  await p.locator('[data-home-page="1"]').click();
+  await p.getByRole('button',{name:'打开日记'}).click();
  }
  const retry=(p,day)=>p.locator('[data-action=retrydiary][data-date="'+day+'"]').click();
  const states=async p=>(await receipts(p)).map(row=>row.state).sort();

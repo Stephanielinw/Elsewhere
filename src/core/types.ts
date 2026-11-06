@@ -175,6 +175,7 @@ export interface SceneData {
   agreement?: MeetingPlan;
   locationEvidence?: {origin:'agreement'|'generated'|'movement'|'unknown'|'manual';at:number;sources:MeetingPlan['sources'];contextIds?:string[]};
   draft?: string;
+  opening?: {roundId:string;entry:'scheduled'|'immediate';status:'unsent'|'unknown'|'archived'};
   messages: ChatMessage[];
 }
 
@@ -201,6 +202,8 @@ export interface PlayData {
 
 export interface ChatBatch {
   id: string;
+  roundId?: string;
+  entry?: 'scheduled' | 'immediate';
   roleId: string;
   generation: number;
   sources: ChatMessage[];
@@ -216,6 +219,7 @@ export interface ChatTimingState {
   focused: boolean;
   generation: number;
   pending: string[];
+  round?: {id:string;entry?:'scheduled'|'immediate';locked?:boolean;phoneAttempted?:boolean};
   quietUntil: number;
   replyDueAt?: number;
   inFlight?: ChatBatch;

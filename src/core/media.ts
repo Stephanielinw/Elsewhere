@@ -1,4 +1,5 @@
 import type { AppData } from './types';
+import {makeUid} from './revisions';
 
 const MEDIA_DB = 'elsewhere-media-v1';
 const MEDIA_STORE = 'blobs';
@@ -53,20 +54,29 @@ export function mediaDB(): Promise<IDBDatabase> {
   });
 }
 
-export async function mediaPut(id: string, blob: Blob): Promise<void> {
+export async function mediaAddMany(items: {id:string;blob:Blob}[]): Promise<void> {
+  if (!items.length) return;
   const db = await mediaDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(MEDIA_STORE, 'readwrite');
-    tx.objectStore(MEDIA_STORE).put(blob, id);
-    tx.oncomplete = () => {
-      db.close();
-      resolve();
-    };
-    tx.onerror = () => {
-      db.close();
-      reject(tx.error || new Error('媒体保存失败'));
-    };
-  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(MEDIA_STORE, 'readwrite', {durability:'strict'});
+      tx.oncomplete = () => resolve();
+      tx.onabort = () => reject(new Error('媒体暂存失败'));
+      const store = tx.objectStore(MEDIA_STORE);
+      try {
+        // Only add new IDs. A collision aborts the entire stage.
+        for (const {id,blob} of items) store.add(blob,id);
+      } catch {
+        tx.abort();
+      }
+    });
+  } finally {
+    db.close();
+  }
+}
+
+export function mediaPut(id: string, blob: Blob): Promise<void> {
+  return mediaAddMany([{id,blob}]);
 }
 
 export async function mediaGet(id: string): Promise<Blob | undefined> {
@@ -77,67 +87,43 @@ export async function mediaGet(id: string): Promise<Blob | undefined> {
     q.onsuccess = () => resolve(q.result as Blob | undefined);
     q.onerror = () => reject(q.error);
     tx.oncomplete = () => db.close();
-    tx.onerror = () => db.close();
+    tx.onabort = tx.onerror = () => db.close();
   });
 }
 
-export async function mediaDelete(id: string): Promise<void> {
-  const db = await mediaDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(MEDIA_STORE, 'readwrite');
-    tx.objectStore(MEDIA_STORE).delete(id);
-    tx.oncomplete = () => {
-      db.close();
-      resolve();
-    };
-    tx.onerror = () => {
-      db.close();
-      reject(tx.error);
-    };
-  });
+const mediaFields = new Set(['mediaId','avatarMediaId','frameMediaId','wallpaperMediaId']);
+
+/** Include stored message copies and archives, even when they are not currently displayed. */
+function* mediaReferences(world: unknown): Generator<{record:Record<string,unknown>;key:string;id:string}> {
+  const pending: unknown[] = [world];
+  while (pending.length) {
+    const value = pending.pop();
+    if (!value || typeof value !== 'object') continue;
+    if (Array.isArray(value)) {
+      for (let i = value.length - 1; i >= 0; i--) pending.push(value[i]);
+      continue;
+    }
+    const record = value as Record<string,unknown>;
+    for (const [key,field] of Object.entries(record)) {
+      if (!mediaFields.has(key)) pending.push(field);
+      else if (typeof field === 'string' && field) yield {record,key,id:field};
+      else if (field != null && typeof field !== 'string') throw Error('存档附件引用无效');
+    }
+  }
 }
 
 export function collectReferencedMediaIds(data: AppData): string[] {
-  const rawIds: string[] = [];
-  for (const font of data.customFonts || []) {
-    if (typeof font.mediaId === 'string') rawIds.push(font.mediaId);
-  }
-  if (data.user?.avatarMediaId && typeof data.user.avatarMediaId === 'string') {
-    rawIds.push(data.user.avatarMediaId);
-  }
-  if (data.user?.frameMediaId && typeof data.user.frameMediaId === 'string') {
-    rawIds.push(data.user.frameMediaId);
-  }
-  for (const cf of data.customFrames || []) {
-    if (cf?.mediaId && typeof cf.mediaId === 'string') {
-      rawIds.push(cf.mediaId);
-    }
-  }
-  for (const r of data.roles || []) {
-    if (typeof r.wallpaperMediaId === 'string') rawIds.push(r.wallpaperMediaId);
-    if (r.avatarMediaId && typeof r.avatarMediaId === 'string') {
-      rawIds.push(r.avatarMediaId);
-    }
-    if (r.frameMediaId && typeof r.frameMediaId === 'string') {
-      rawIds.push(r.frameMediaId);
-    }
-    for (const m of r.chats || []) {
-      if (m.mediaId && typeof m.mediaId === 'string') {
-        rawIds.push(m.mediaId);
-      }
-    }
-  }
-  return [...new Set(rawIds.filter(Boolean))];
+  return [...new Set(Array.from(mediaReferences(data),ref=>ref.id))];
 }
 
 export async function buildBackupPayload(data: AppData): Promise<Record<string, unknown>> {
   const pack = JSON.parse(JSON.stringify(data)) as Record<string, unknown>;
   const mediaArr: { id: string; data: string }[] = [];
-  const ids = collectReferencedMediaIds(data);
+  const ids = [...new Set(Array.from(mediaReferences(pack),ref=>ref.id))];
 
   for (const id of ids) {
     const media = await mediaGet(id);
-    if (!media) continue;
+    if (!media) throw Error('找不到存档引用的附件，未生成不完整备份。');
     const uri = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(String(reader.result));
@@ -167,11 +153,22 @@ export function validateBackupAttachments(value: unknown): BackupAttachment[] {
   return value;
 }
 
-export async function restoreMediaFromBackup(attachments: BackupAttachment[]): Promise<void> {
-  for (const item of attachments) {
-    // Keep the existing media restore policy for legacy data URLs of other types.
-    if (!/^data:(audio|image|font)\/[a-z0-9+.-]+;base64,/i.test(item.data)) continue;
-    const blob = await (await fetch(item.data)).blob();
-    await mediaPut(item.id, blob);
+export async function stageBackupMedia(candidate: AppData, attachments: BackupAttachment[]): Promise<void> {
+  const refs = [...mediaReferences(candidate)];
+  const byId = new Map(attachments.map(item=>[item.id,item.data]));
+  const ids = [...new Set(refs.map(ref=>ref.id))];
+  if (ids.some(id=>!byId.has(id))) throw Error('备份缺少存档引用的附件，未恢复。');
+
+  const mapping = new Map<string,string>();
+  const staged: {id:string;blob:Blob}[] = [];
+  for (const oldId of ids) {
+    const response = await fetch(byId.get(oldId)!);
+    if (!response.ok) throw Error('备份附件无法读取。');
+    const id = makeUid('media');
+    staged.push({id,blob:await response.blob()});
+    mapping.set(oldId,id);
   }
+  await mediaAddMany(staged);
+  // shortcut: Keep both generations until an exclusive writer can verify all retained references.
+  for (const {record,key,id} of refs) record[key] = mapping.get(id)!;
 }

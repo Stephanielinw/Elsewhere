@@ -60,10 +60,9 @@ import {
 import {
   buildBackupPayload,
   createMediaSources,
-  mediaDelete,
   mediaGet,
   mediaPut,
-  restoreMediaFromBackup,
+  stageBackupMedia,
   validateBackupAttachments,
 } from './core/media';
 import {
@@ -170,7 +169,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     for(const item of data.roles)syncRoleDiaryTasks(item,data.settings,now());
     if(canUseRealModel(data.settings))void processDiaryQueue();
   }});
-  const terminalAppearance=createTerminalAppearance({data:()=>data,role:()=>role(),save:()=>save(),apply:()=>applyTerminalAppearance(),notify:message=>notify(message)});
+  const terminalAppearance=createTerminalAppearance({data:()=>data,role:()=>role(),save:()=>save(),saveError:()=>saveError(),apply:()=>applyTerminalAppearance(),notify:message=>notify(message)});
   const $ = <T extends HTMLElement = HTMLElement>(s: string): T | null =>
     document.querySelector<T>(s);
   const esc = (s: unknown): string =>
@@ -232,15 +231,21 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     catch(error){avatarPreviewURLs.delete(url);URL.revokeObjectURL(url);throw error;}
   }
 
-  async function saveAvatarPhoto(owner:{avatarMediaId?:string},blob:Blob):Promise<void>{
+  async function stageAvatarPhoto(blob:Blob):Promise<string>{
     const id=makeUid('ava');avatarLoadingIds.add(id);
     try{
       await mediaPut(id,blob);
       if(!await mediaSources.getDecoded(id))throw new Error('头像尚未解码');
-      const old=owner.avatarMediaId;owner.avatarMediaId=id;
-      if(old&&old!==id)await mediaDelete(old).catch(()=>{});
-    }catch(error){if(owner.avatarMediaId!==id)await mediaDelete(id).catch(()=>{});throw error;}
-    finally{avatarLoadingIds.delete(id);}
+      return id;
+    }finally{avatarLoadingIds.delete(id);}
+  }
+  const profileSaves=new WeakSet<HTMLFormElement>();
+  async function stageFormAvatar(form:HTMLFormElement,blob:Blob):Promise<string>{
+    profileSaves.add(form);
+    const submit=form.querySelector<HTMLButtonElement>('[type="submit"]');
+    if(submit)submit.disabled=true;
+    try{return await stageAvatarPhoto(blob);}
+    finally{profileSaves.delete(form);if(submit)submit.disabled=false;}
   }
   let detailId = '';
 
@@ -1069,7 +1074,6 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     const appliedDraft: StagedFrameState = { ...modalFrameDraft };
     const { baseOwner } = getModalBaseOwnerAndDisplayName(ownerType);
     if (baseOwner && !saveFrameOnly(baseOwner, appliedDraft, save)) {
-      notify('头像框保存失败，原设置已保留，请重试');
       return false;
     }
 
@@ -1366,15 +1370,35 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     };
   }
 
-  const save = (): boolean => {
+  const saveError = ():string => {
+    switch(saveSession.error){
+      case 'uncertain':return '存档写入结果不确定，请刷新核对。新旧附件均保留。';
+      case 'changed':return '本机存档已变化，未覆盖。请刷新后继续。';
+      case 'unavailable':return '无法读取当前存档，未写入。请刷新后继续。';
+      default:return '存档未保存，原记录保留。';
+    }
+  };
+  const save = (world=data): boolean => {
     try {
-      const raw=JSON.stringify(data);if(!saveSession.write(raw)){notify(saveSession.error==='changed'?'本机存档已变化，未覆盖。请刷新后继续。':'存档写入未确认，原数据保留。请重新读取后继续。');return false;}
+      if(!saveSession.write(JSON.stringify(world))){notify(saveError());return false;}
       return true;
     } catch {
-      notify('存储空间不足，请先导出或清理数据');
+      notify('存档无法序列化，未写入。');
       return false;
     }
   };
+  function saveLogged(type:string,detail:string,extra?:Record<string,unknown>):boolean{
+    const logs=data.logs;
+    data.logs=[...(logs||[])];
+    syslog(type,detail,extra);
+    if(save())return true;
+    data.logs=logs;
+    return false;
+  }
+  function restoreFields<T extends object>(value:T,snapshot:T):void{
+    for(const key of Object.keys(value))if(!Object.hasOwn(snapshot,key))Reflect.deleteProperty(value,key);
+    Object.assign(value,snapshot);
+  }
 
   const notify = (msg: string): void => {
     if (typeof document.createElement !== 'function') return;
@@ -1710,8 +1734,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     return true;
   }
 
-  function revisePhoneSchedule(r:RoleData):void {
-    activeChatRequests.get(r.id)?.abort();chatTyping.delete(r.id);
+  function revisePhoneSchedule(r:RoleData,cancel=true):void {
+    if(cancel){activeChatRequests.get(r.id)?.abort();chatTyping.delete(r.id);}
     r.meetingPlan=meetingPlan(r,now());
     if(!r.chatTiming)return;
     reviseChatTiming(r,now());
@@ -4055,6 +4079,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       notify('还没有可回退的戏内回合');
       return;
     }
+    const previous={...p,messages:p.messages.slice(),revisions:p.revisions?.slice(),intermissionMessages:p.intermissionMessages?.slice()};
+    const events=r.events;
     const rejected = p.messages.splice(lastMe);
     const entryIds = new Set(rejected.map((m) => m.id));
     r.events = r.events.filter(
@@ -4079,10 +4105,13 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       at: now(),
       status: 'active',
     });
-    syslog('intermission', `回退一轮戏内互动：${entryIds.size} 条消息`, {
+    if(!saveLogged('intermission', `回退一轮戏内互动：${entryIds.size} 条消息`, {
       source: p.id,
-    });
-    save();
+    })){
+      restoreFields(p,previous);
+      r.events=events;
+      return;
+    }
     render();
     notify('戏内回合已回退，幕间保留修订记录');
   }
@@ -4471,7 +4500,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
 
   let leavingPresets=false;
   window.addEventListener('beforeunload',(event)=>{captureMeetingDraft();if(fruitManager.hasUnsaved()){event.preventDefault();event.returnValue='';}});
-  function go(v: string,kind?:NovelKind): void {
+  function go(v: string,kind?:NovelKind,persist=true): void {
     if(kind)novelViewKind=kind;
     if(v==='intermission')novelViewKind='play';
     captureMeetingDraft();
@@ -4526,7 +4555,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       deliverPending(role());
     }
     view = v;
-    save();
+    if(persist)save();
     render(!preserveStage);
     if(role())resumeLocalSceneReplies(role()!);
   }
@@ -5242,6 +5271,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if (!r) return;
     if (kind==='play'&&r.play) {
       const p = r.play;
+      const {endedAt}=p,plays=r.plays.length,events=r.events.length,chats=r.chats.length;
       p.endedAt = now();
       r.plays.push(p);
       const activePlayMsgs = getActiveMessages(p.messages);
@@ -5286,6 +5316,14 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         status: 'active',
       });
       r.play = null;
+      if(!save()){
+        p.endedAt=endedAt;
+        r.play=p;
+        r.plays.length=plays;
+        r.events.length=events;
+        r.chats.length=chats;
+        return;
+      }
     } else if (kind==='scene'&&r.scene) {
       captureMeetingDraft();
       try{archiveMeeting(r,now(),save);}catch(error){notify(error instanceof Error?error.message:'见面未能归档，现场已保留');return;}
@@ -5295,8 +5333,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       else refreshSystemLogs();
       return;
     }
-    save();
-    go('chat');
+    go('chat',undefined,false);
   }
 
   async function exportData(): Promise<void> {
@@ -5319,39 +5356,43 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     }
   }
 
+  let restoringBackup=false;
   function importBackup(file: File | undefined): void {
-    if (!file) return;
+    if (!file||restoringBackup) return;
+    restoringBackup=true;
     const fr = new FileReader();
+    fr.onerror=()=>{restoringBackup=false;notify('无法读取备份文件。');};
     fr.onload = async () => {
       try {
+        const previous=data,baseline=saveSession.raw;
+        if(!saveSession.current())throw Error(saveError());
         let parsed: unknown;
         try {parsed = JSON.parse(String(fr.result));}
         catch {throw new Error('备份不是有效的 JSON');}
         const d = validateStoredWorld(parsed);
         const attachments = validateBackupAttachments(d._media);
         delete d._media;
+        const fontCount=Array.isArray(d.customFonts)?d.customFonts.length:0;
+        const bubbleCount=Array.isArray(d.bubblePresets)?d.bubblePresets.length:0;
         const next = normalizeAndMigrateData(d);
+        if((next.customFonts?.length||0)<fontCount||(next.bubblePresets?.length||0)<bubbleCount)throw Error('备份中的外观记录无法完整恢复。');
         try {next.focus = ensureFocusStateNormalized(next.focus,next.roles);}
         catch {throw new Error('专注备份结构无效');}
         next.selected = null;
-        try {await restoreMediaFromBackup(attachments);}
-        catch {throw new Error('附件写入未完成，部分附件可能已写入；未替换世界存档');}
-        const previous = data;
+        await stageBackupMedia(next,attachments);
+        if(data!==previous||saveSession.raw!==baseline)throw Error('暂存期间世界已变化，未替换存档。');
+        if(!save(next))throw Error(saveError());
         data = next;
-        if (!save()) {
-          data = previous;
-          throw new Error('世界存档写入未确认，部分附件可能已写入；请重新读取');
-        }
         mediaSources.clear();
         document.querySelectorAll<HTMLElement>('[data-hydrated-key]').forEach(el=>delete el.dataset.hydratedKey);
         token = readDeviceApiKey(localStorage,data.settings.endpoint);
         terminalApi.reset();
-        go('landing');
+        go('landing',undefined,false);
         notify('已导入备份及媒体附件');
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         notify('备份导入失败：' + msg);
-      }
+      } finally {restoringBackup=false;}
     };
     fr.readAsText(file);
   }
@@ -5664,15 +5705,20 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     }
     if (act === 'sharediary') {
       if (!r || !b.dataset.id) return;
+      const diary=r.diaries.find(d=>d.id===b.dataset.id&&d.speaker==='me');
+      const previous=diary?structuredClone(diary):undefined,eventCount=r.events.length;
       const res = shareDiaryWithRole(r, b.dataset.id, now());
       if (!res.ok) {
         notify(res.reason || '分享失败');
         return;
       }
-      syslog('diary', `向 ${r.name} 主动分享了一篇个人日记`, {
+      if(!saveLogged('diary', `向 ${r.name} 主动分享了一篇个人日记`, {
         diaryId: b.dataset.id,
-      });
-      save();
+      })){
+        if(diary&&previous)restoreFields(diary,previous);
+        r.events.length=eventCount;
+        return;
+      }
       render(false);
       notify(`已将这篇日记分享给 ${r.name}`);
       return;
@@ -5747,19 +5793,20 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if (act === 'retractmsg') {
       if (!r || !b.dataset.id) return;
       const scope = (b.dataset.scope as RevisionScope) || 'chat';
+      const previous=structuredClone(r);
       const res = retractMessage(r, scope, b.dataset.id, now());
       if (!res.ok) {
         notify(res.reason || '撤回失败');
         return;
       }
-      if(scope==='chat')revisePhoneSchedule(r);
+      if(scope==='chat')revisePhoneSchedule(r,false);
+      if(!saveLogged('revision',`撤回 ${scope} 消息`,{targetMessageId:b.dataset.id,revisionId:res.revision?.id})){
+        restoreFields(r,previous);
+        return;
+      }
+      if(scope==='chat'){activeChatRequests.get(r.id)?.abort();chatTyping.delete(r.id);}
       if (quotingMessage?.id === b.dataset.id) quotingMessage = null;
       if (editingMessageId === b.dataset.id) editingMessageId = null;
-      syslog('revision', `撤回 ${scope} 消息`, {
-        targetMessageId: b.dataset.id,
-        revisionId: res.revision?.id,
-      });
-      save();
       render(false);
       notify('消息已撤回，已从正式上下文与记忆中移除');
       return;
@@ -5776,18 +5823,18 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         return;
       }
       ensureIntermission(r.play);
+      const previous=r.play.paused;
       r.play.paused = true;
-      syslog('intermission', '用户主动暂停演出', { source: r.play.id });
-      save();
-      go('intermission');
+      if(!saveLogged('intermission','用户主动暂停演出',{source:r.play.id})){r.play.paused=previous;return;}
+      go('intermission',undefined,false);
       return;
     }
     if (act === 'resumeplay') {
       if (!r?.play) return;
+      const previous=r.play.paused;
       r.play.paused = false;
-      syslog('intermission', '返回戏内演出', { source: r.play.id });
-      save();
-      go('novel','play');
+      if(!saveLogged('intermission','返回戏内演出',{source:r.play.id})){r.play.paused=previous;return;}
+      go('novel','play',false);
       return;
     }
     if (act === 'rollbackplay') {
@@ -5838,17 +5885,19 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       return;
     }
     if (act === 'clearlogs') {
+      const previous=data.logs;
       data.logs = [];
-      save();
+      if(!save()){data.logs=previous;return;}
       render();
       return;
     }
     if (act === 'clearframe') {
       if (!r) return;
+      const previous={frameId:r.frameId,frameData:r.frameData,frameMediaId:r.frameMediaId};
       r.frameId = 'none';
       r.frameData = '';
       r.frameMediaId = '';
-      save();
+      if(!save()){Object.assign(r,previous);return;}
       render(false);
       notify('已移除当前角色头像框');
       return;
@@ -6012,7 +6061,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     }
     if (act === 'confirmterminalframeupload') {
       if (!stagedTerminalFrameBlob) return;
-      const blobToSave = stagedTerminalFrameBlob;
+      const blobToSave = stagedTerminalFrameBlob,world=data;
       const nameInput = document.getElementById(
         'terminal-staged-frame-name'
       ) as HTMLInputElement | null;
@@ -6024,17 +6073,20 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         try {
           const mediaId = makeUid('frm_u');
           await mediaPut(mediaId, blobToSave);
+          if(data!==world||stagedTerminalFrameBlob!==blobToSave)return;
           const customId = makeUid('cf');
-          if (!Array.isArray(data.customFrames)) data.customFrames = [];
-          data.customFrames.unshift({
+          const previous=data.customFrames;
+          data.customFrames=[{
             id: customId,
             name: cleanName,
             mediaId,
             createdAt: now(),
-          });
+          },...(previous||[])];
+          if(!saveLogged('ui',`终端入库自定义头像框素材：${cleanName}`)){
+            data.customFrames=previous;
+            return;
+          }
           resetStagedTerminalFrame();
-          syslog('ui', `终端入库自定义头像框素材：${cleanName}`);
-          save();
           render(false);
           notify(`已将「${cleanName}」加入头像框图库，可在人物编辑页选用`);
         } catch (err) {
@@ -6056,7 +6108,9 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       const idx = list.findIndex((x) => x.id === customId);
       if (idx < 0) return;
       const removed=list[idx];
-      const usesAsset=(owner:AvatarFrameFields)=>owner.frameId===removed.id || Boolean(removed.mediaId&&owner.frameMediaId===removed.mediaId) || Boolean(removed.dataUrl&&owner.frameData===removed.dataUrl);
+      const sharesMedia=list.some(item=>item!==removed&&item.mediaId&&item.mediaId===removed.mediaId);
+      const sharesData=list.some(item=>item!==removed&&item.dataUrl&&item.dataUrl===removed.dataUrl);
+      const usesAsset=(owner:AvatarFrameFields)=>owner.frameId===removed.id || Boolean(!sharesMedia&&removed.mediaId&&owner.frameMediaId===removed.mediaId) || Boolean(!sharesData&&removed.dataUrl&&owner.frameData===removed.dataUrl);
       const affected=[data.user,...data.roles,draftUserFrame,draftRoleFrame,modalFrameDraft].filter((owner):owner is RoleData|UserProfileData|StagedFrameState=>Boolean(owner)&&usesAsset(owner!));
       const snapshots=affected.map(owner=>({owner,frameId:owner.frameId,frameMediaId:owner.frameMediaId,frameData:owner.frameData}));
       list.splice(idx,1);
@@ -6064,11 +6118,9 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if(!save()){
         list.splice(idx,0,removed);
         for(const {owner,...fields}of snapshots)Object.assign(owner,fields);
-        notify('删除未保存，原素材和设置已保留');
         return;
       }
       for(const [key,choice]of modalFrameChoices)if(usesAsset(choice))modalFrameChoices.delete(key);
-      if(removed.mediaId)void mediaDelete(removed.mediaId).catch(()=>{});
       if (frameModalOwner && document.querySelector('[data-testid="avatar-frame-modal"]')) {
         patchFrameModalBodyAndTabsInPlace(frameModalOwner);
       } else {
@@ -6086,7 +6138,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       syncModalAdjustInputsToStaged(ownerType, staged);
       const remoteUrl = staged?.frameData || '';
       if (!staged || !/^https:\/\//i.test(remoteUrl)) return;
-      const selectionId=staged.frameId;
+      const selectionId=staged.frameId,world=data;
       void (async () => {
         try {
           const resp = await fetch(remoteUrl, { mode: 'cors' });
@@ -6094,6 +6146,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
           const blob = await resp.blob();
           const mediaId = makeUid('frm_cache');
           await mediaPut(mediaId, blob);
+          if(data!==world)return;
           if (!Array.isArray(data.customFrames)) data.customFrames = [];
           const presetInfo = findPresetFrameByIdOrUrl(
             selectionId || remoteUrl
@@ -6106,7 +6159,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
             createdAt: now(),
           };
           data.customFrames.unshift(cachedFrame);
-          if(!save()){data.customFrames=data.customFrames.filter(item=>item!==cachedFrame);await mediaDelete(mediaId).catch(()=>{});notify('缓存记录保存失败，原头像框保持不变');return;}
+          if(!save()){data.customFrames=data.customFrames.filter(item=>item!==cachedFrame);return;}
           if(frameModalOwner!==ownerType || modalFrameDraft!==staged || staged.frameId!==selectionId || staged.frameData!==remoteUrl){notify('素材已缓存，当前新选择保持不变');return;}
           staged.frameMediaId=mediaId;
           if (frameModalOwner && document.querySelector('[data-testid="avatar-frame-modal"]')) {
@@ -6168,20 +6221,24 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       const msgId = f.dataset.id || editingMessageId;
       const scope = (f.dataset.scope as RevisionScope) || editingMessageScope;
       if (!r || !msgId) return;
+      const previous=structuredClone(r);
       const newText = String(fd.get('editText') || '').trim();
       const res = editMessage(r, scope, msgId, newText, now());
       if (!res.ok) {
         notify(res.reason || '修改失败');
         return;
       }
-      editingMessageId = null;
-      editingMessageDraft = '';
-      syslog('revision', `编辑 ${scope} 消息`, {
+      if(scope==='chat'){syncRoleMemory(r,now());revisePhoneSchedule(r,false);if(r.chats.find(m=>m.id===msgId)?.speaker==='me')enqueueChat(r,msgId,now());}
+      if(!saveLogged('revision', `编辑 ${scope} 消息`, {
         targetMessageId: msgId,
         revisionId: res.revision?.id,
-      });
-      if(scope==='chat'){syncRoleMemory(r,now());revisePhoneSchedule(r);if(r.chats.find(m=>m.id===msgId)?.speaker==='me')enqueueChat(r,msgId,now());}
-      save();
+      })){
+        restoreFields(r,previous);
+        return;
+      }
+      if(scope==='chat'){activeChatRequests.get(r.id)?.abort();chatTyping.delete(r.id);}
+      editingMessageId = null;
+      editingMessageDraft = '';
       render(false);
       notify('消息已修改，旧版本已归档并从正式上下文移除');
       return;
@@ -6201,6 +6258,17 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     }
 
     if (f.id === 'user-profile-form') {
+      if(profileSaves.has(f))return;
+      const world=data,version=userAvatarUploadVersion;
+      let avatarId=draftUserAvatarRemove?'':undefined;
+      if(draftUserAvatarBlob){
+        try{avatarId=await stageFormAvatar(f,draftUserAvatarBlob);}
+        catch{notify('个人头像暂存失败，资料未修改。');return;}
+        if(data!==world||version!==userAvatarUploadVersion||!f.isConnected)return;
+      }
+      const previous=data.user;
+      data.user={...previous};
+      if(avatarId!==undefined)data.user.avatarMediaId=avatarId;
       for (const k of [
         'name',
         'pronouns',
@@ -6230,36 +6298,26 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         data.user.frameY = draftUserFrame.frameY;
         data.user.frameLayoutVersion = draftUserFrame.frameLayoutVersion;
       }
-      try {
-        if (draftUserAvatarBlob) {
-          await saveAvatarPhoto(data.user,draftUserAvatarBlob);
-        } else if (draftUserAvatarRemove) {
-          const oldId = data.user.avatarMediaId;
-          data.user.avatarMediaId = '';
-          if (oldId) {
-            await mediaDelete(oldId).catch(() => {});
-          }
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        notify('个人头像保存失败：' + msg);
-      }
+      if(!saveLogged('identity','更新用户全局资料与头像框')){data.user=previous;return;}
       resetUserAvatarDraft();
-      syslog('identity', '更新用户全局资料与头像框');
-      save();
-      go('landing');
+      go('landing',undefined,false);
       notify('我的资料与头像框已保存');
       return;
     }
 
     if (f.id === 'role-form') {
-      const name = String(fd.get('name') || '').trim();
-      if (!name) return;
-      const isNew = formMode !== 'edit';
-      let r =
-        formMode === 'edit'
-          ? data.roles.find((x) => x.id === editingRoleId) || null
-          : null;
+      const name=String(fd.get('name')||'').trim();
+      if(!name||profileSaves.has(f))return;
+      const world=data,version=roleAvatarUploadVersion,isNew=formMode!=='edit';
+      let r=isNew?undefined:data.roles.find(x=>x.id===editingRoleId);
+      if(!isNew&&!r)return;
+      let avatarId=draftRoleAvatarRemove?'':undefined;
+      if(draftRoleAvatarBlob){
+        try{avatarId=await stageFormAvatar(f,draftRoleAvatarBlob);}
+        catch{notify('角色头像暂存失败，资料未修改。');return;}
+        if(data!==world||version!==roleAvatarUploadVersion||!f.isConnected||r&&!world.roles.includes(r))return;
+      }
+      const rolesBefore=data.roles,selectedBefore=data.selected,roleBefore=r?{...r}:undefined;
       if (!r) {
         r = createRole(
           name,
@@ -6270,7 +6328,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         );
         r.relationship = '';
         initNewRoleFirstMessageState(r, data.settings, now());
-        data.roles.push(r);
+        data.roles=[...rolesBefore,r];
       }
       for (const k of [
         'name',
@@ -6285,6 +6343,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
           .trim()
           .slice(0, 20000);
       }
+      if(avatarId!==undefined)r.avatarMediaId=avatarId;
       if (draftRoleFrame) {
         const wrap = document.getElementById('frame-adjust-role');
         if (wrap) {
@@ -6303,25 +6362,15 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         r.frameY = draftRoleFrame.frameY;
         r.frameLayoutVersion = draftRoleFrame.frameLayoutVersion;
       }
-      try {
-        if (draftRoleAvatarBlob) {
-          await saveAvatarPhoto(r,draftRoleAvatarBlob);
-        } else if (draftRoleAvatarRemove) {
-          const oldId = r.avatarMediaId;
-          r.avatarMediaId = '';
-          if (oldId) {
-            await mediaDelete(oldId).catch(() => {});
-          }
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        notify('角色头像保存失败：' + msg);
+      data.selected=r.id;
+      if(!saveLogged('role',`${isNew?'创建':'编辑'}角色：${r.name}`)){
+        if(roleBefore)restoreFields(r,roleBefore);
+        data.roles=rolesBefore;
+        data.selected=selectedBefore;
+        return;
       }
       resetRoleAvatarDraft();
-      data.selected = r.id;
-      syslog('role', `${formMode === 'edit' ? '编辑' : '创建'}角色：${r.name}`);
-      save();
-      go(formMode === 'edit' ? roleFormReturnView : 'home');
+      go(isNew?'home':roleFormReturnView,undefined,false);
       notify(formMode === 'edit' ? '角色资料与头像框修改已保存' : `已创建角色 ${r.name}`);
       if (isNew && canUseRealModel(data.settings)) {
         generateRoleFirstMessage(r);
@@ -6336,8 +6385,10 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         notify('名字不匹配，未删除角色');
         return;
       }
+      const previous={focus:data.focus,roles:data.roles,logs:data.logs,selected:data.selected};
       ensureFocusData();
       if (data.focus?.active) {
+        data.focus.active={...data.focus.active};
         data.focus.active.participantRoleIds = (
           data.focus.active.participantRoleIds || []
         ).filter((id) => id !== target.id);
@@ -6357,26 +6408,13 @@ export function initElsewhereApp(saveSession:SaveSession): void {
           (id) => id !== target.id
         );
       }
-      for (const m of target.chats || []) {
-        if (m.mediaId) mediaDelete(m.mediaId).catch(() => {});
-      }
-      if (
-        target.avatarMediaId &&
-        !data.roles.some(
-          (other) =>
-            other.id !== target.id && other.avatarMediaId === target.avatarMediaId
-        )
-      ) {
-        mediaDelete(target.avatarMediaId).catch(() => {});
-      }
       data.roles = data.roles.filter((x) => x.id !== target.id);
       data.logs = (data.logs || []).filter((x) => x.roleId !== target.id);
       data.selected = null;
+      if(!saveLogged('role',`已删除角色及其存档：${target.name}`)){Object.assign(data,previous);return;}
       editingRoleId = null;
       deleteRoleId = null;
-      syslog('role', `已删除角色及其存档：${target.name}`);
-      save();
-      go('landing');
+      go('landing',undefined,false);
       notify('已删除角色');
       return;
     }
@@ -6401,6 +6439,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if (f.id === 'intermission-settings-form') {
       const p = role()?.play;
       if (!p || !p.paused) return;
+      const previous={...p,intermissionMessages:p.intermissionMessages?.slice()};
       ensureIntermission(p);
       for (const field of ['world', 'user', 'char'] as const) {
         p[field] = String(fd.get(field) || '')
@@ -6414,8 +6453,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         at: now(),
         status: 'active',
       });
-      syslog('intermission', '幕间修改剧本设定', { source: p.id });
-      save();
+      if(!saveLogged('intermission','幕间修改剧本设定',{source:p.id})){restoreFields(p,previous);return;}
       render();
       notify('设定已保存，返回演出后生效');
       return;
@@ -6436,10 +6474,14 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       const r = role();
       const text = String(fd.get('text') || '').trim();
       if (!r || !text) return;
-      createUserDiary(r, text, now());
+      const diaryCount=r.diaries.length,eventCount=r.events.length;
+      createUserDiary(r,text,now());
+      if(!saveLogged('diary','保存了一篇私人日记（默认未向角色公开）')){
+        r.diaries.length=diaryCount;
+        r.events.length=eventCount;
+        return;
+      }
       f.reset();
-      syslog('diary', '保存了一篇私人日记（默认未向角色公开）');
-      save();
       render();
       notify('私人日记已保存');
       return;
@@ -6452,6 +6494,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         notify('请先完成当前戏剧；不会覆盖未落幕的演出');
         return;
       }
+      const previous=r.play;
       r.play = {
         id: uid(),
         title: String(fd.get('title') || '无题'),
@@ -6469,8 +6512,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
           },
         ],
       };
-      save();
-      go('novel','play');
+      if(!save()){r.play=previous;return;}
+      go('novel','play',false);
       return;
     }
 
@@ -6478,13 +6521,14 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       const ownerType = f.dataset.frameAdjustOwner === 'user' ? 'user' : 'role';
       const targetOwner = ownerType === 'user' ? data.user : role();
       if (!targetOwner) return;
+      const previous={frameScale:targetOwner.frameScale,frameX:targetOwner.frameX,frameY:targetOwner.frameY};
       targetOwner.frameScale = Math.max(
         0.5,
         Math.min(3, Number(fd.get('size')) || 1.25)
       );
       targetOwner.frameX = Math.max(-80, Math.min(80, Number(fd.get('x')) || 0));
       targetOwner.frameY = Math.max(-80, Math.min(80, Number(fd.get('y')) || 0));
-      save();
+      if(!save()){Object.assign(targetOwner,previous);return;}
       render(false);
       notify('头像框尺寸与偏移位置已保存');
       return;
@@ -6493,12 +6537,13 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if (f.id === 'profile-form') {
       const r = role();
       if (!r) return;
+      const previous={profile:r.profile,traits:r.traits,relationship:r.relationship,notes:r.notes,userAlias:r.userAlias};
       r.profile = String(fd.get('profile') || '');
       r.traits = String(fd.get('traits') || '');
       r.relationship = String(fd.get('relationship') || '');
       r.notes = String(fd.get('notes') || '');
       r.userAlias = String(fd.get('userAlias') || '').trim();
-      save();
+      if(!save()){Object.assign(r,previous);return;}
       render(false);
       notify('人设已保存');
       return;
@@ -6608,12 +6653,13 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         formMode === 'edit' ? data.roles.find((x) => x.id === editingRoleId) : role()
       );
       syncModalAdjustInputsToStaged(ownerType, staged);
-      const selectionId=staged.frameId;
+      const selectionId=staged.frameId,world=data;
 
       void (async () => {
         try {
           const mediaId = makeUid('frm_u');
           await mediaPut(mediaId, f);
+          if(data!==world)return;
           const customId = makeUid('cf');
           const cleanName = f.name.replace(/\.[^.]+$/, '').slice(0, 32) || '自定义头像框';
           if (!Array.isArray(data.customFrames)) data.customFrames = [];
@@ -6623,7 +6669,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
             mediaId,
             createdAt: now(),
           });
-          if(!save()){data.customFrames=data.customFrames.filter(item=>item.id!==customId);await mediaDelete(mediaId).catch(()=>{});notify('素材记录保存失败，原头像框保持不变');return;}
+          if(!save()){data.customFrames=data.customFrames.filter(item=>item.id!==customId);return;}
           if(frameModalOwner!==ownerType || modalFrameDraft!==staged || staged.frameId!==selectionId){notify('素材已加入图库，当前新选择保持不变');return;}
           selectModalFrame(staged,{frameId:customId,frameMediaId:mediaId,frameData:''});
           if (frameModalOwner && document.querySelector('[data-testid="avatar-frame-modal"]')) {

@@ -11906,20 +11906,27 @@ channel.onmessage=async({data:job})=>{
       req.onsuccess = () => resolve(req.result);
     });
   }
-  async function mediaPut(id, blob) {
+  async function mediaAddMany(items) {
+    if (!items.length) return;
     const db = await mediaDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(MEDIA_STORE, "readwrite");
-      tx.objectStore(MEDIA_STORE).put(blob, id);
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      tx.onerror = () => {
-        db.close();
-        reject(tx.error || new Error("\u5A92\u4F53\u4FDD\u5B58\u5931\u8D25"));
-      };
-    });
+    try {
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(MEDIA_STORE, "readwrite", { durability: "strict" });
+        tx.oncomplete = () => resolve();
+        tx.onabort = () => reject(new Error("\u5A92\u4F53\u6682\u5B58\u5931\u8D25"));
+        const store2 = tx.objectStore(MEDIA_STORE);
+        try {
+          for (const { id, blob } of items) store2.add(blob, id);
+        } catch {
+          tx.abort();
+        }
+      });
+    } finally {
+      db.close();
+    }
+  }
+  function mediaPut(id, blob) {
+    return mediaAddMany([{ id, blob }]);
   }
   async function mediaGet(id) {
     const db = await mediaDB();
@@ -11929,63 +11936,34 @@ channel.onmessage=async({data:job})=>{
       q.onsuccess = () => resolve(q.result);
       q.onerror = () => reject(q.error);
       tx.oncomplete = () => db.close();
-      tx.onerror = () => db.close();
+      tx.onabort = tx.onerror = () => db.close();
     });
   }
-  async function mediaDelete(id) {
-    const db = await mediaDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(MEDIA_STORE, "readwrite");
-      tx.objectStore(MEDIA_STORE).delete(id);
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      tx.onerror = () => {
-        db.close();
-        reject(tx.error);
-      };
-    });
-  }
-  function collectReferencedMediaIds(data) {
-    const rawIds = [];
-    for (const font of data.customFonts || []) {
-      if (typeof font.mediaId === "string") rawIds.push(font.mediaId);
-    }
-    if (data.user?.avatarMediaId && typeof data.user.avatarMediaId === "string") {
-      rawIds.push(data.user.avatarMediaId);
-    }
-    if (data.user?.frameMediaId && typeof data.user.frameMediaId === "string") {
-      rawIds.push(data.user.frameMediaId);
-    }
-    for (const cf of data.customFrames || []) {
-      if (cf?.mediaId && typeof cf.mediaId === "string") {
-        rawIds.push(cf.mediaId);
+  var mediaFields = /* @__PURE__ */ new Set(["mediaId", "avatarMediaId", "frameMediaId", "wallpaperMediaId"]);
+  function* mediaReferences(world) {
+    const pending = [world];
+    while (pending.length) {
+      const value = pending.pop();
+      if (!value || typeof value !== "object") continue;
+      if (Array.isArray(value)) {
+        for (let i = value.length - 1; i >= 0; i--) pending.push(value[i]);
+        continue;
+      }
+      const record = value;
+      for (const [key2, field] of Object.entries(record)) {
+        if (!mediaFields.has(key2)) pending.push(field);
+        else if (typeof field === "string" && field) yield { record, key: key2, id: field };
+        else if (field != null && typeof field !== "string") throw Error("\u5B58\u6863\u9644\u4EF6\u5F15\u7528\u65E0\u6548");
       }
     }
-    for (const r of data.roles || []) {
-      if (typeof r.wallpaperMediaId === "string") rawIds.push(r.wallpaperMediaId);
-      if (r.avatarMediaId && typeof r.avatarMediaId === "string") {
-        rawIds.push(r.avatarMediaId);
-      }
-      if (r.frameMediaId && typeof r.frameMediaId === "string") {
-        rawIds.push(r.frameMediaId);
-      }
-      for (const m of r.chats || []) {
-        if (m.mediaId && typeof m.mediaId === "string") {
-          rawIds.push(m.mediaId);
-        }
-      }
-    }
-    return [...new Set(rawIds.filter(Boolean))];
   }
   async function buildBackupPayload(data) {
     const pack = JSON.parse(JSON.stringify(data));
     const mediaArr = [];
-    const ids = collectReferencedMediaIds(data);
+    const ids = [...new Set(Array.from(mediaReferences(pack), (ref) => ref.id))];
     for (const id of ids) {
       const media = await mediaGet(id);
-      if (!media) continue;
+      if (!media) throw Error("\u627E\u4E0D\u5230\u5B58\u6863\u5F15\u7528\u7684\u9644\u4EF6\uFF0C\u672A\u751F\u6210\u4E0D\u5B8C\u6574\u5907\u4EFD\u3002");
       const uri = await new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(String(reader.result));
@@ -12010,12 +11988,22 @@ channel.onmessage=async({data:job})=>{
     }
     return value;
   }
-  async function restoreMediaFromBackup(attachments) {
-    for (const item of attachments) {
-      if (!/^data:(audio|image|font)\/[a-z0-9+.-]+;base64,/i.test(item.data)) continue;
-      const blob = await (await fetch(item.data)).blob();
-      await mediaPut(item.id, blob);
+  async function stageBackupMedia(candidate, attachments) {
+    const refs = [...mediaReferences(candidate)];
+    const byId = new Map(attachments.map((item) => [item.id, item.data]));
+    const ids = [...new Set(refs.map((ref) => ref.id))];
+    if (ids.some((id) => !byId.has(id))) throw Error("\u5907\u4EFD\u7F3A\u5C11\u5B58\u6863\u5F15\u7528\u7684\u9644\u4EF6\uFF0C\u672A\u6062\u590D\u3002");
+    const mapping = /* @__PURE__ */ new Map();
+    const staged = [];
+    for (const oldId of ids) {
+      const response = await fetch(byId.get(oldId));
+      if (!response.ok) throw Error("\u5907\u4EFD\u9644\u4EF6\u65E0\u6CD5\u8BFB\u53D6\u3002");
+      const id = makeUid("media");
+      staged.push({ id, blob: await response.blob() });
+      mapping.set(oldId, id);
     }
+    await mediaAddMany(staged);
+    for (const { record, key: key2, id } of refs) record[key2] = mapping.get(id);
   }
 
   // src/core/appearance.ts
@@ -12063,21 +12051,22 @@ channel.onmessage=async({data:job})=>{
   var faces = /* @__PURE__ */ new Map();
   function appearanceFontFamily(data, role) {
     const font = data.customFonts?.find((f) => f.id === role?.customFontId);
-    return font ? `${customFontFamily(font.id)},${systemFont}` : (role?.font || data.font) === "serif" ? 'Georgia,"Songti SC",serif' : systemFont;
+    return font ? `${customFontFamily(font.mediaId)},${systemFont}` : (role?.font || data.font) === "serif" ? 'Georgia,"Songti SC",serif' : systemFont;
   }
   async function loadFont(font, blob) {
-    let pending = faces.get(font.id);
+    const id = font.mediaId;
+    let pending = faces.get(id);
     if (!pending) {
       pending = (async () => {
-        const file = blob || await mediaGet(font.mediaId);
+        const file = blob || await mediaGet(id);
         if (!file) throw new Error("\u627E\u4E0D\u5230\u5DF2\u4FDD\u5B58\u7684\u5B57\u4F53\u6587\u4EF6\uFF0C\u8BF7\u91CD\u65B0\u5BFC\u5165\u3002");
         const bytes = await file.arrayBuffer();
         fontFileType(new Uint8Array(bytes));
-        const face = await new FontFace(customFontFamily(font.id), bytes).load();
+        const face = await new FontFace(customFontFamily(id), bytes).load();
         document.fonts.add(face);
       })();
-      faces.set(font.id, pending);
-      pending.catch(() => faces.delete(font.id));
+      faces.set(id, pending);
+      pending.catch(() => faces.delete(id));
     }
     return pending;
   }
@@ -12087,8 +12076,8 @@ channel.onmessage=async({data:job})=>{
   }
   var themes = [["blue", "\u84DD\u8272"], ["green", "\u7EFF\u8272"], ["pink", "\u7C89\u8272"], ["coffee", "\u5361\u5E03\u5947\u8BFA"], ["night", "\u591C\u665A"]];
   function createTerminalAppearance(hooks) {
-    let host = null, owner = "", draft = null, version2 = 0, urls = [], fontRequest = null;
-    const drafts = /* @__PURE__ */ new Map();
+    let host = null, owner, world, draft = null, version2 = 0, urls = [], fontRequest = null;
+    let drafts = /* @__PURE__ */ new WeakMap(), appearanceSaving = false;
     const field = (name) => host?.querySelector(`[name="${name}"]`);
     const objectUrl = (blob) => {
       const url = URL.createObjectURL(blob);
@@ -12101,10 +12090,14 @@ channel.onmessage=async({data:job})=>{
       draft.mine = field("bubble-mine")?.value ?? draft.mine;
       draft.theirs = field("bubble-theirs")?.value ?? draft.theirs;
     }
-    const alive = (id) => id === version2 && host?.isConnected && hooks.role()?.id === owner;
-    function feedback(message) {
-      const status = host?.querySelector("[data-style-status]");
+    const current = () => host?.isConnected && owner && hooks.role() === owner && hooks.data() === world;
+    const alive = (id) => id === version2 && current();
+    function styleStatus(message, bubbles = false) {
+      const status = host?.querySelector(bubbles ? "[data-bubble-status]" : "[data-style-status]");
       if (status) status.textContent = message;
+    }
+    function feedback(message, bubbles = false) {
+      styleStatus(message, bubbles);
       hooks.notify(message);
     }
     function preview() {
@@ -12114,7 +12107,7 @@ channel.onmessage=async({data:job})=>{
       const sample = host.querySelector("[data-font-preview]");
       if (sample) {
         const font = draft.fonts.find((f) => f.id === draft?.font);
-        sample.style.fontFamily = font ? `${customFontFamily(font.id)},${systemFont}` : draft.font === "serif" ? 'Georgia,"Songti SC",serif' : systemFont;
+        sample.style.fontFamily = font ? `${customFontFamily(font.mediaId)},${systemFont}` : draft.font === "serif" ? 'Georgia,"Songti SC",serif' : systemFont;
       }
       host.querySelectorAll("[data-style-theme]").forEach((b) => {
         b.classList.toggle("active", b.dataset.styleTheme === draft?.theme);
@@ -12202,6 +12195,7 @@ channel.onmessage=async({data:job})=>{
         const font = { id: makeUid("font"), name, mediaId: makeUid("fontmedia"), blob };
         await loadFont(font, blob);
         if (!alive(id) || draft !== d) return;
+        version2++;
         d.fonts.push(font);
         d.font = font.id;
         fontOptions();
@@ -12234,10 +12228,11 @@ channel.onmessage=async({data:job})=>{
             URL.revokeObjectURL(url);
           }
           if (!alive(id) || draft !== d) return;
+          const previewVersion = ++version2;
           d.wallpaper = makeUid("wallpaper");
           d.wallpaperBlob = blob;
           await wallpaperPreview();
-          feedback("\u58C1\u7EB8\u5DF2\u8F7D\u5165\u9884\u89C8\uFF0C\u4FDD\u5B58\u5916\u89C2\u540E\u5E94\u7528\u3002");
+          if (alive(previewVersion)) feedback("\u58C1\u7EB8\u5DF2\u8F7D\u5165\u9884\u89C8\uFF0C\u4FDD\u5B58\u5916\u89C2\u540E\u5E94\u7528\u3002");
         } else if (kind === "mine" || kind === "theirs") {
           if (file.size > BUBBLE_CSS_LIMIT) throw new Error("CSS \u6587\u4EF6\u6700\u591A 12KB\u3002");
           const raw = await file.text();
@@ -12259,56 +12254,63 @@ channel.onmessage=async({data:job})=>{
       }
     }
     async function saveAppearance() {
-      if (!draft) return;
+      if (!draft || !owner || !world || !current() || appearanceSaving) return;
       read();
-      const d = draft, r = hooks.role(), data = hooks.data(), id = version2;
-      if (!r || r.id !== owner) return;
-      const uploaded = [];
-      const previous = { theme: r.theme, font: r.font, customFontId: r.customFontId, wallpaperMediaId: r.wallpaperMediaId, fonts: data.customFonts };
+      const d = draft, r = owner, data = world, id = version2;
       const button = host?.querySelector('[data-style-form="appearance"] button[type="submit"]');
+      const attachments = [];
+      const wallpaper = d.wallpaperBlob ? makeUid("wallpaper") : d.wallpaper;
+      if (d.wallpaperBlob) attachments.push({ id: wallpaper, blob: d.wallpaperBlob });
+      const fonts = d.fonts.map(({ id: id2, name, mediaId, blob }) => {
+        if (blob) {
+          mediaId = makeUid("fontmedia");
+          attachments.push({ id: mediaId, blob });
+        }
+        return { id: id2, name, mediaId };
+      });
+      appearanceSaving = true;
       if (button) button.disabled = true;
       try {
-        if (d.wallpaperBlob) {
-          await mediaPut(d.wallpaper, d.wallpaperBlob);
-          uploaded.push(d.wallpaper);
-        }
-        for (const font of d.fonts) {
-          if (font.blob) {
-            await mediaPut(font.mediaId, font.blob);
-            uploaded.push(font.mediaId);
+        if (attachments.length) {
+          try {
+            await mediaAddMany(attachments);
+          } catch {
+            if (alive(id)) feedback("\u58C1\u7EB8\u6216\u5B57\u4F53\u6587\u4EF6\u4FDD\u5B58\u5931\u8D25\uFF0C\u5916\u89C2\u8349\u7A3F\u4ECD\u4FDD\u7559\u3002");
+            return;
           }
         }
-        if (!alive(id)) throw new Error("\u9875\u9762\u6216\u89D2\u8272\u5DF2\u6539\u53D8\uFF0C\u5C1A\u672A\u5E94\u7528\u5916\u89C2\u3002");
+        if (!alive(id)) {
+          if (world === data && owner === r && draft === d && current()) styleStatus("\u5916\u89C2\u8349\u7A3F\u4ECD\u4FDD\u7559\uFF0C\u8BF7\u91CD\u65B0\u4FDD\u5B58\u3002");
+          return;
+        }
+        const previous = { theme: r.theme, font: r.font, customFontId: r.customFontId, wallpaperMediaId: r.wallpaperMediaId };
+        const previousFonts = data.customFonts;
         r.theme = d.theme;
         r.font = d.font === "serif" ? "serif" : "system";
-        r.customFontId = d.fonts.some((f) => f.id === d.font) ? d.font : "";
-        r.wallpaperMediaId = d.wallpaper;
-        data.customFonts = [...data.customFonts || []];
-        for (const { id: id2, name, mediaId } of d.fonts) {
-          if (!data.customFonts.some((f) => f.id === id2)) data.customFonts.push({ id: id2, name, mediaId });
+        r.customFontId = fonts.some((font) => font.id === d.font) ? d.font : "";
+        r.wallpaperMediaId = wallpaper;
+        data.customFonts = [...previousFonts || [], ...fonts.filter((font) => !previousFonts?.some((item) => item.id === font.id))];
+        if (!hooks.save()) {
+          Object.assign(r, previous);
+          data.customFonts = previousFonts;
+          styleStatus(hooks.saveError());
+          return;
         }
-        if (!hooks.save()) throw new Error("\u5916\u89C2\u672A\u4FDD\u5B58\uFF0C\u8BF7\u68C0\u67E5\u672C\u5730\u5B58\u50A8\u540E\u91CD\u8BD5\u3002");
+        d.wallpaper = wallpaper;
         d.wallpaperBlob = void 0;
-        d.fonts = d.fonts.map(({ id: id2, name, mediaId }) => ({ id: id2, name, mediaId }));
+        d.fonts = fonts;
+        preview();
         hooks.apply();
         hooks.notify("\u4E3B\u9898\u3001\u58C1\u7EB8\u548C\u5B57\u4F53\u5DF2\u4FDD\u5B58\u3002");
-      } catch (error) {
-        r.theme = previous.theme;
-        r.font = previous.font;
-        r.customFontId = previous.customFontId;
-        r.wallpaperMediaId = previous.wallpaperMediaId;
-        data.customFonts = previous.fonts;
-        await Promise.allSettled(uploaded.map(mediaDelete));
-        if (alive(id)) feedback(error instanceof Error ? error.message : "\u5916\u89C2\u4FDD\u5B58\u5931\u8D25\uFF0C\u539F\u8BBE\u7F6E\u5DF2\u4FDD\u7559\u3002");
       } finally {
+        appearanceSaving = false;
         if (button?.isConnected) button.disabled = false;
       }
     }
     function saveBubbles() {
-      if (!draft) return;
+      if (!draft || !owner || !current()) return;
       read();
-      const r = hooks.role();
-      if (!r || r.id !== owner) return;
+      const r = owner;
       try {
         if (draft.mine.length > BUBBLE_CSS_LIMIT || draft.theirs.length > BUBBLE_CSS_LIMIT) throw new Error("\u6BCF\u4FA7 CSS \u6700\u591A 12KB\u3002");
         const css = retargetBubbleCSS(draft.mine, "mine") + "\n" + retargetBubbleCSS(draft.theirs, "theirs");
@@ -12317,20 +12319,21 @@ channel.onmessage=async({data:job})=>{
         r.bubbleCSS = css.trim();
         if (!hooks.save()) {
           r.bubbleCSS = previous;
-          throw new Error("\u6C14\u6CE1\u4FDD\u5B58\u5931\u8D25\uFF0C\u539F\u8BBE\u7F6E\u548C\u5F53\u524D\u8349\u7A3F\u5DF2\u4FDD\u7559\u3002");
+          styleStatus(hooks.saveError(), true);
+          return;
         }
         hooks.apply();
-        hooks.notify("\u4E24\u4FA7\u6C14\u6CE1\u5DF2\u4FDD\u5B58\u3002");
+        feedback("\u4E24\u4FA7\u6C14\u6CE1\u5DF2\u4FDD\u5B58\u3002", true);
       } catch (error) {
-        feedback(error instanceof Error ? error.message : "\u6C14\u6CE1\u4FDD\u5B58\u5931\u8D25\u3002");
+        feedback(error instanceof Error ? error.message : "\u6C14\u6CE1\u4FDD\u5B58\u5931\u8D25\u3002", true);
       }
     }
     function savePreset(side) {
+      if (!draft || !current()) return;
       read();
-      if (!draft) return;
       const name = field("preset-name-" + side)?.value.trim();
       if (!name) {
-        feedback("\u8BF7\u586B\u5199\u9884\u8BBE\u5907\u6CE8\u540D\u3002");
+        feedback("\u8BF7\u586B\u5199\u9884\u8BBE\u5907\u6CE8\u540D\u3002", true);
         return;
       }
       try {
@@ -12341,14 +12344,15 @@ channel.onmessage=async({data:job})=>{
         data.bubblePresets = existing ? previous.map((p) => p.id === existing.id ? { ...p, name, css } : p) : [...previous || [], { id: makeUid("bubble"), name, css }];
         if (!hooks.save()) {
           data.bubblePresets = previous;
-          throw new Error("\u9884\u8BBE\u4FDD\u5B58\u5931\u8D25\uFF0C\u8349\u7A3F\u4ECD\u4FDD\u7559\u3002");
+          styleStatus(hooks.saveError(), true);
+          return;
         }
         presetOptions();
         const choice = host?.querySelector(`[data-bubble-preset="${side}"]`);
         if (choice) choice.value = (existing || data.bubblePresets.at(-1)).id;
-        feedback("\u5DF2\u5B58\u4E3A\u901A\u7528\u9884\u8BBE\uFF0C\u53EF\u5728\u4E24\u4FA7\u548C\u5176\u4ED6\u89D2\u8272\u4E2D\u9009\u62E9\u3002");
+        feedback("\u5DF2\u5B58\u4E3A\u901A\u7528\u9884\u8BBE\uFF0C\u53EF\u5728\u4E24\u4FA7\u548C\u5176\u4ED6\u89D2\u8272\u4E2D\u9009\u62E9\u3002", true);
       } catch (error) {
-        feedback(error instanceof Error ? error.message : "\u9884\u8BBE\u4FDD\u5B58\u5931\u8D25\u3002");
+        feedback(error instanceof Error ? error.message : "\u9884\u8BBE\u4FDD\u5B58\u5931\u8D25\u3002", true);
       }
     }
     const click = (event) => {
@@ -12440,12 +12444,14 @@ channel.onmessage=async({data:job})=>{
     return { detach, mount(element) {
       detach();
       host = element;
-      const r = hooks.role();
+      const r = hooks.role(), data = hooks.data();
       if (!host || !r) return;
-      owner = r.id;
-      draft = drafts.get(owner) || { theme: r.theme || "blue", font: r.customFontId || r.font || hooks.data().font, wallpaper: r.wallpaperMediaId || "", fonts: [...hooks.data().customFonts || []], mine: bubbleSideCSS(r.bubbleCSS || "", "mine"), theirs: bubbleSideCSS(r.bubbleCSS || "", "theirs") };
-      drafts.set(owner, draft);
-      for (const font of hooks.data().customFonts || []) if (!draft.fonts.some((f) => f.id === font.id)) draft.fonts.push(font);
+      if (world !== data) drafts = /* @__PURE__ */ new WeakMap();
+      world = data;
+      owner = r;
+      draft = drafts.get(r) || { theme: r.theme || "blue", font: r.customFontId || r.font || data.font, wallpaper: r.wallpaperMediaId || "", fonts: [...data.customFonts || []], mine: bubbleSideCSS(r.bubbleCSS || "", "mine"), theirs: bubbleSideCSS(r.bubbleCSS || "", "theirs") };
+      drafts.set(r, draft);
+      for (const font of data.customFonts || []) if (!draft.fonts.some((f) => f.id === font.id)) draft.fonts.push(font);
       host.addEventListener("click", click);
       host.addEventListener("input", input);
       host.addEventListener("change", input);
@@ -14662,7 +14668,7 @@ ${prevLogs}` : "",
       for (const item of data.roles) syncRoleDiaryTasks(item, data.settings, now());
       if (canUseRealModel(data.settings)) void processDiaryQueue();
     } });
-    const terminalAppearance = createTerminalAppearance({ data: () => data, role: () => role(), save: () => save(), apply: () => applyTerminalAppearance(), notify: (message) => notify(message) });
+    const terminalAppearance = createTerminalAppearance({ data: () => data, role: () => role(), save: () => save(), saveError: () => saveError(), apply: () => applyTerminalAppearance(), notify: (message) => notify(message) });
     const $ = (s) => document.querySelector(s);
     const esc = (s) => String(s ?? "").replace(
       /[&<>"']/g,
@@ -14729,22 +14735,27 @@ ${prevLogs}` : "",
         throw error;
       }
     }
-    async function saveAvatarPhoto(owner, blob) {
+    async function stageAvatarPhoto(blob) {
       const id = makeUid("ava");
       avatarLoadingIds.add(id);
       try {
         await mediaPut(id, blob);
         if (!await mediaSources.getDecoded(id)) throw new Error("\u5934\u50CF\u5C1A\u672A\u89E3\u7801");
-        const old = owner.avatarMediaId;
-        owner.avatarMediaId = id;
-        if (old && old !== id) await mediaDelete(old).catch(() => {
-        });
-      } catch (error) {
-        if (owner.avatarMediaId !== id) await mediaDelete(id).catch(() => {
-        });
-        throw error;
+        return id;
       } finally {
         avatarLoadingIds.delete(id);
+      }
+    }
+    const profileSaves = /* @__PURE__ */ new WeakSet();
+    async function stageFormAvatar(form, blob) {
+      profileSaves.add(form);
+      const submit = form.querySelector('[type="submit"]');
+      if (submit) submit.disabled = true;
+      try {
+        return await stageAvatarPhoto(blob);
+      } finally {
+        profileSaves.delete(form);
+        if (submit) submit.disabled = false;
       }
     }
     let detailId = "";
@@ -15348,7 +15359,6 @@ ${prevLogs}` : "",
       const appliedDraft = { ...modalFrameDraft };
       const { baseOwner } = getModalBaseOwnerAndDisplayName(ownerType);
       if (baseOwner && !saveFrameOnly(baseOwner, appliedDraft, save)) {
-        notify("\u5934\u50CF\u6846\u4FDD\u5B58\u5931\u8D25\uFF0C\u539F\u8BBE\u7F6E\u5DF2\u4FDD\u7559\uFF0C\u8BF7\u91CD\u8BD5");
         return false;
       }
       if (ownerType === "role") {
@@ -15563,19 +15573,42 @@ ${prevLogs}` : "",
         reason: "\u6211\u73B0\u5728\u6709\u7A7A\u3002\u6765\uFF0C\u8BA4\u771F\u804A\u4E00\u4F1A\u513F\u3002"
       };
     }
-    const save = () => {
+    const saveError = () => {
+      switch (saveSession.error) {
+        case "uncertain":
+          return "\u5B58\u6863\u5199\u5165\u7ED3\u679C\u4E0D\u786E\u5B9A\uFF0C\u8BF7\u5237\u65B0\u6838\u5BF9\u3002\u65B0\u65E7\u9644\u4EF6\u5747\u4FDD\u7559\u3002";
+        case "changed":
+          return "\u672C\u673A\u5B58\u6863\u5DF2\u53D8\u5316\uFF0C\u672A\u8986\u76D6\u3002\u8BF7\u5237\u65B0\u540E\u7EE7\u7EED\u3002";
+        case "unavailable":
+          return "\u65E0\u6CD5\u8BFB\u53D6\u5F53\u524D\u5B58\u6863\uFF0C\u672A\u5199\u5165\u3002\u8BF7\u5237\u65B0\u540E\u7EE7\u7EED\u3002";
+        default:
+          return "\u5B58\u6863\u672A\u4FDD\u5B58\uFF0C\u539F\u8BB0\u5F55\u4FDD\u7559\u3002";
+      }
+    };
+    const save = (world = data) => {
       try {
-        const raw = JSON.stringify(data);
-        if (!saveSession.write(raw)) {
-          notify(saveSession.error === "changed" ? "\u672C\u673A\u5B58\u6863\u5DF2\u53D8\u5316\uFF0C\u672A\u8986\u76D6\u3002\u8BF7\u5237\u65B0\u540E\u7EE7\u7EED\u3002" : "\u5B58\u6863\u5199\u5165\u672A\u786E\u8BA4\uFF0C\u539F\u6570\u636E\u4FDD\u7559\u3002\u8BF7\u91CD\u65B0\u8BFB\u53D6\u540E\u7EE7\u7EED\u3002");
+        if (!saveSession.write(JSON.stringify(world))) {
+          notify(saveError());
           return false;
         }
         return true;
       } catch {
-        notify("\u5B58\u50A8\u7A7A\u95F4\u4E0D\u8DB3\uFF0C\u8BF7\u5148\u5BFC\u51FA\u6216\u6E05\u7406\u6570\u636E");
+        notify("\u5B58\u6863\u65E0\u6CD5\u5E8F\u5217\u5316\uFF0C\u672A\u5199\u5165\u3002");
         return false;
       }
     };
+    function saveLogged(type, detail, extra) {
+      const logs = data.logs;
+      data.logs = [...logs || []];
+      syslog(type, detail, extra);
+      if (save()) return true;
+      data.logs = logs;
+      return false;
+    }
+    function restoreFields(value, snapshot3) {
+      for (const key2 of Object.keys(value)) if (!Object.hasOwn(snapshot3, key2)) Reflect.deleteProperty(value, key2);
+      Object.assign(value, snapshot3);
+    }
     const notify = (msg) => {
       if (typeof document.createElement !== "function") return;
       document.querySelector(".toast")?.remove();
@@ -16025,9 +16058,11 @@ ${prevLogs}` : "",
       });
       return true;
     }
-    function revisePhoneSchedule(r) {
-      activeChatRequests.get(r.id)?.abort();
-      chatTyping.delete(r.id);
+    function revisePhoneSchedule(r, cancel = true) {
+      if (cancel) {
+        activeChatRequests.get(r.id)?.abort();
+        chatTyping.delete(r.id);
+      }
       r.meetingPlan = meetingPlan(r, now());
       if (!r.chatTiming) return;
       reviseChatTiming(r, now());
@@ -17833,6 +17868,8 @@ ${prevLogs}` : "",
         notify("\u8FD8\u6CA1\u6709\u53EF\u56DE\u9000\u7684\u620F\u5185\u56DE\u5408");
         return;
       }
+      const previous = { ...p, messages: p.messages.slice(), revisions: p.revisions?.slice(), intermissionMessages: p.intermissionMessages?.slice() };
+      const events = r.events;
       const rejected = p.messages.splice(lastMe);
       const entryIds = new Set(rejected.map((m) => m.id));
       r.events = r.events.filter(
@@ -17851,10 +17888,13 @@ ${prevLogs}` : "",
         at: now(),
         status: "active"
       });
-      syslog("intermission", `\u56DE\u9000\u4E00\u8F6E\u620F\u5185\u4E92\u52A8\uFF1A${entryIds.size} \u6761\u6D88\u606F`, {
+      if (!saveLogged("intermission", `\u56DE\u9000\u4E00\u8F6E\u620F\u5185\u4E92\u52A8\uFF1A${entryIds.size} \u6761\u6D88\u606F`, {
         source: p.id
-      });
-      save();
+      })) {
+        restoreFields(p, previous);
+        r.events = events;
+        return;
+      }
       render();
       notify("\u620F\u5185\u56DE\u5408\u5DF2\u56DE\u9000\uFF0C\u5E55\u95F4\u4FDD\u7559\u4FEE\u8BA2\u8BB0\u5F55");
     }
@@ -18202,7 +18242,7 @@ ${prevLogs}` : "",
         event.returnValue = "";
       }
     });
-    function go(v, kind) {
+    function go(v, kind, persist = true) {
       if (kind) novelViewKind = kind;
       if (v === "intermission") novelViewKind = "play";
       captureMeetingDraft();
@@ -18263,7 +18303,7 @@ ${prevLogs}` : "",
         deliverPending(role());
       }
       view = v;
-      save();
+      if (persist) save();
       render(!preserveStage);
       if (role()) resumeLocalSceneReplies(role());
     }
@@ -19051,6 +19091,7 @@ ${prevLogs}` : "",
       if (!r) return;
       if (kind === "play" && r.play) {
         const p = r.play;
+        const { endedAt } = p, plays = r.plays.length, events = r.events.length, chats = r.chats.length;
         p.endedAt = now();
         r.plays.push(p);
         const activePlayMsgs = getActiveMessages(p.messages);
@@ -19079,6 +19120,14 @@ ${prevLogs}` : "",
           status: "active"
         });
         r.play = null;
+        if (!save()) {
+          p.endedAt = endedAt;
+          r.play = p;
+          r.plays.length = plays;
+          r.events.length = events;
+          r.chats.length = chats;
+          return;
+        }
       } else if (kind === "scene" && r.scene) {
         captureMeetingDraft();
         try {
@@ -19093,8 +19142,7 @@ ${prevLogs}` : "",
         else refreshSystemLogs();
         return;
       }
-      save();
-      go("chat");
+      go("chat", void 0, false);
     }
     async function exportData() {
       try {
@@ -19113,11 +19161,19 @@ ${prevLogs}` : "",
         notify("\u9644\u4EF6\u5907\u4EFD\u5931\u8D25\uFF1A" + msg);
       }
     }
+    let restoringBackup = false;
     function importBackup(file) {
-      if (!file) return;
+      if (!file || restoringBackup) return;
+      restoringBackup = true;
       const fr = new FileReader();
+      fr.onerror = () => {
+        restoringBackup = false;
+        notify("\u65E0\u6CD5\u8BFB\u53D6\u5907\u4EFD\u6587\u4EF6\u3002");
+      };
       fr.onload = async () => {
         try {
+          const previous = data, baseline = saveSession.raw;
+          if (!saveSession.current()) throw Error(saveError());
           let parsed;
           try {
             parsed = JSON.parse(String(fr.result));
@@ -19127,33 +19183,31 @@ ${prevLogs}` : "",
           const d = validateStoredWorld(parsed);
           const attachments = validateBackupAttachments(d._media);
           delete d._media;
+          const fontCount = Array.isArray(d.customFonts) ? d.customFonts.length : 0;
+          const bubbleCount = Array.isArray(d.bubblePresets) ? d.bubblePresets.length : 0;
           const next = normalizeAndMigrateData(d);
+          if ((next.customFonts?.length || 0) < fontCount || (next.bubblePresets?.length || 0) < bubbleCount) throw Error("\u5907\u4EFD\u4E2D\u7684\u5916\u89C2\u8BB0\u5F55\u65E0\u6CD5\u5B8C\u6574\u6062\u590D\u3002");
           try {
             next.focus = ensureFocusStateNormalized(next.focus, next.roles);
           } catch {
             throw new Error("\u4E13\u6CE8\u5907\u4EFD\u7ED3\u6784\u65E0\u6548");
           }
           next.selected = null;
-          try {
-            await restoreMediaFromBackup(attachments);
-          } catch {
-            throw new Error("\u9644\u4EF6\u5199\u5165\u672A\u5B8C\u6210\uFF0C\u90E8\u5206\u9644\u4EF6\u53EF\u80FD\u5DF2\u5199\u5165\uFF1B\u672A\u66FF\u6362\u4E16\u754C\u5B58\u6863");
-          }
-          const previous = data;
+          await stageBackupMedia(next, attachments);
+          if (data !== previous || saveSession.raw !== baseline) throw Error("\u6682\u5B58\u671F\u95F4\u4E16\u754C\u5DF2\u53D8\u5316\uFF0C\u672A\u66FF\u6362\u5B58\u6863\u3002");
+          if (!save(next)) throw Error(saveError());
           data = next;
-          if (!save()) {
-            data = previous;
-            throw new Error("\u4E16\u754C\u5B58\u6863\u5199\u5165\u672A\u786E\u8BA4\uFF0C\u90E8\u5206\u9644\u4EF6\u53EF\u80FD\u5DF2\u5199\u5165\uFF1B\u8BF7\u91CD\u65B0\u8BFB\u53D6");
-          }
           mediaSources.clear();
           document.querySelectorAll("[data-hydrated-key]").forEach((el) => delete el.dataset.hydratedKey);
           token = readDeviceApiKey(localStorage, data.settings.endpoint);
           terminalApi.reset();
-          go("landing");
+          go("landing", void 0, false);
           notify("\u5DF2\u5BFC\u5165\u5907\u4EFD\u53CA\u5A92\u4F53\u9644\u4EF6");
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           notify("\u5907\u4EFD\u5BFC\u5165\u5931\u8D25\uFF1A" + msg);
+        } finally {
+          restoringBackup = false;
         }
       };
       fr.readAsText(file);
@@ -19501,15 +19555,20 @@ ${prevLogs}` : "",
       }
       if (act === "sharediary") {
         if (!r || !b.dataset.id) return;
+        const diary = r.diaries.find((d) => d.id === b.dataset.id && d.speaker === "me");
+        const previous = diary ? structuredClone(diary) : void 0, eventCount = r.events.length;
         const res = shareDiaryWithRole(r, b.dataset.id, now());
         if (!res.ok) {
           notify(res.reason || "\u5206\u4EAB\u5931\u8D25");
           return;
         }
-        syslog("diary", `\u5411 ${r.name} \u4E3B\u52A8\u5206\u4EAB\u4E86\u4E00\u7BC7\u4E2A\u4EBA\u65E5\u8BB0`, {
+        if (!saveLogged("diary", `\u5411 ${r.name} \u4E3B\u52A8\u5206\u4EAB\u4E86\u4E00\u7BC7\u4E2A\u4EBA\u65E5\u8BB0`, {
           diaryId: b.dataset.id
-        });
-        save();
+        })) {
+          if (diary && previous) restoreFields(diary, previous);
+          r.events.length = eventCount;
+          return;
+        }
         render(false);
         notify(`\u5DF2\u5C06\u8FD9\u7BC7\u65E5\u8BB0\u5206\u4EAB\u7ED9 ${r.name}`);
         return;
@@ -19574,19 +19633,23 @@ ${prevLogs}` : "",
       if (act === "retractmsg") {
         if (!r || !b.dataset.id) return;
         const scope = b.dataset.scope || "chat";
+        const previous = structuredClone(r);
         const res = retractMessage(r, scope, b.dataset.id, now());
         if (!res.ok) {
           notify(res.reason || "\u64A4\u56DE\u5931\u8D25");
           return;
         }
-        if (scope === "chat") revisePhoneSchedule(r);
+        if (scope === "chat") revisePhoneSchedule(r, false);
+        if (!saveLogged("revision", `\u64A4\u56DE ${scope} \u6D88\u606F`, { targetMessageId: b.dataset.id, revisionId: res.revision?.id })) {
+          restoreFields(r, previous);
+          return;
+        }
+        if (scope === "chat") {
+          activeChatRequests.get(r.id)?.abort();
+          chatTyping.delete(r.id);
+        }
         if (quotingMessage?.id === b.dataset.id) quotingMessage = null;
         if (editingMessageId === b.dataset.id) editingMessageId = null;
-        syslog("revision", `\u64A4\u56DE ${scope} \u6D88\u606F`, {
-          targetMessageId: b.dataset.id,
-          revisionId: res.revision?.id
-        });
-        save();
         render(false);
         notify("\u6D88\u606F\u5DF2\u64A4\u56DE\uFF0C\u5DF2\u4ECE\u6B63\u5F0F\u4E0A\u4E0B\u6587\u4E0E\u8BB0\u5FC6\u4E2D\u79FB\u9664");
         return;
@@ -19603,18 +19666,24 @@ ${prevLogs}` : "",
           return;
         }
         ensureIntermission(r.play);
+        const previous = r.play.paused;
         r.play.paused = true;
-        syslog("intermission", "\u7528\u6237\u4E3B\u52A8\u6682\u505C\u6F14\u51FA", { source: r.play.id });
-        save();
-        go("intermission");
+        if (!saveLogged("intermission", "\u7528\u6237\u4E3B\u52A8\u6682\u505C\u6F14\u51FA", { source: r.play.id })) {
+          r.play.paused = previous;
+          return;
+        }
+        go("intermission", void 0, false);
         return;
       }
       if (act === "resumeplay") {
         if (!r?.play) return;
+        const previous = r.play.paused;
         r.play.paused = false;
-        syslog("intermission", "\u8FD4\u56DE\u620F\u5185\u6F14\u51FA", { source: r.play.id });
-        save();
-        go("novel", "play");
+        if (!saveLogged("intermission", "\u8FD4\u56DE\u620F\u5185\u6F14\u51FA", { source: r.play.id })) {
+          r.play.paused = previous;
+          return;
+        }
+        go("novel", "play", false);
         return;
       }
       if (act === "rollbackplay") {
@@ -19678,17 +19747,25 @@ ${prevLogs}` : "",
         return;
       }
       if (act === "clearlogs") {
+        const previous = data.logs;
         data.logs = [];
-        save();
+        if (!save()) {
+          data.logs = previous;
+          return;
+        }
         render();
         return;
       }
       if (act === "clearframe") {
         if (!r) return;
+        const previous = { frameId: r.frameId, frameData: r.frameData, frameMediaId: r.frameMediaId };
         r.frameId = "none";
         r.frameData = "";
         r.frameMediaId = "";
-        save();
+        if (!save()) {
+          Object.assign(r, previous);
+          return;
+        }
         render(false);
         notify("\u5DF2\u79FB\u9664\u5F53\u524D\u89D2\u8272\u5934\u50CF\u6846");
         return;
@@ -19861,7 +19938,7 @@ ${prevLogs}` : "",
       }
       if (act === "confirmterminalframeupload") {
         if (!stagedTerminalFrameBlob) return;
-        const blobToSave = stagedTerminalFrameBlob;
+        const blobToSave = stagedTerminalFrameBlob, world = data;
         const nameInput = document.getElementById(
           "terminal-staged-frame-name"
         );
@@ -19870,17 +19947,20 @@ ${prevLogs}` : "",
           try {
             const mediaId = makeUid("frm_u");
             await mediaPut(mediaId, blobToSave);
+            if (data !== world || stagedTerminalFrameBlob !== blobToSave) return;
             const customId = makeUid("cf");
-            if (!Array.isArray(data.customFrames)) data.customFrames = [];
-            data.customFrames.unshift({
+            const previous = data.customFrames;
+            data.customFrames = [{
               id: customId,
               name: cleanName,
               mediaId,
               createdAt: now()
-            });
+            }, ...previous || []];
+            if (!saveLogged("ui", `\u7EC8\u7AEF\u5165\u5E93\u81EA\u5B9A\u4E49\u5934\u50CF\u6846\u7D20\u6750\uFF1A${cleanName}`)) {
+              data.customFrames = previous;
+              return;
+            }
             resetStagedTerminalFrame();
-            syslog("ui", `\u7EC8\u7AEF\u5165\u5E93\u81EA\u5B9A\u4E49\u5934\u50CF\u6846\u7D20\u6750\uFF1A${cleanName}`);
-            save();
             render(false);
             notify(`\u5DF2\u5C06\u300C${cleanName}\u300D\u52A0\u5165\u5934\u50CF\u6846\u56FE\u5E93\uFF0C\u53EF\u5728\u4EBA\u7269\u7F16\u8F91\u9875\u9009\u7528`);
           } catch (err) {
@@ -19902,7 +19982,9 @@ ${prevLogs}` : "",
         const idx = list.findIndex((x) => x.id === customId);
         if (idx < 0) return;
         const removed = list[idx];
-        const usesAsset = (owner) => owner.frameId === removed.id || Boolean(removed.mediaId && owner.frameMediaId === removed.mediaId) || Boolean(removed.dataUrl && owner.frameData === removed.dataUrl);
+        const sharesMedia = list.some((item) => item !== removed && item.mediaId && item.mediaId === removed.mediaId);
+        const sharesData = list.some((item) => item !== removed && item.dataUrl && item.dataUrl === removed.dataUrl);
+        const usesAsset = (owner) => owner.frameId === removed.id || Boolean(!sharesMedia && removed.mediaId && owner.frameMediaId === removed.mediaId) || Boolean(!sharesData && removed.dataUrl && owner.frameData === removed.dataUrl);
         const affected = [data.user, ...data.roles, draftUserFrame, draftRoleFrame, modalFrameDraft].filter((owner) => Boolean(owner) && usesAsset(owner));
         const snapshots = affected.map((owner) => ({ owner, frameId: owner.frameId, frameMediaId: owner.frameMediaId, frameData: owner.frameData }));
         list.splice(idx, 1);
@@ -19910,12 +19992,9 @@ ${prevLogs}` : "",
         if (!save()) {
           list.splice(idx, 0, removed);
           for (const { owner, ...fields } of snapshots) Object.assign(owner, fields);
-          notify("\u5220\u9664\u672A\u4FDD\u5B58\uFF0C\u539F\u7D20\u6750\u548C\u8BBE\u7F6E\u5DF2\u4FDD\u7559");
           return;
         }
         for (const [key2, choice] of modalFrameChoices) if (usesAsset(choice)) modalFrameChoices.delete(key2);
-        if (removed.mediaId) void mediaDelete(removed.mediaId).catch(() => {
-        });
         if (frameModalOwner && document.querySelector('[data-testid="avatar-frame-modal"]')) {
           patchFrameModalBodyAndTabsInPlace(frameModalOwner);
         } else {
@@ -19933,7 +20012,7 @@ ${prevLogs}` : "",
         syncModalAdjustInputsToStaged(ownerType, staged);
         const remoteUrl = staged?.frameData || "";
         if (!staged || !/^https:\/\//i.test(remoteUrl)) return;
-        const selectionId = staged.frameId;
+        const selectionId = staged.frameId, world = data;
         void (async () => {
           try {
             const resp = await fetch(remoteUrl, { mode: "cors" });
@@ -19941,6 +20020,7 @@ ${prevLogs}` : "",
             const blob = await resp.blob();
             const mediaId = makeUid("frm_cache");
             await mediaPut(mediaId, blob);
+            if (data !== world) return;
             if (!Array.isArray(data.customFrames)) data.customFrames = [];
             const presetInfo = findPresetFrameByIdOrUrl(
               selectionId || remoteUrl
@@ -19955,9 +20035,6 @@ ${prevLogs}` : "",
             data.customFrames.unshift(cachedFrame);
             if (!save()) {
               data.customFrames = data.customFrames.filter((item) => item !== cachedFrame);
-              await mediaDelete(mediaId).catch(() => {
-              });
-              notify("\u7F13\u5B58\u8BB0\u5F55\u4FDD\u5B58\u5931\u8D25\uFF0C\u539F\u5934\u50CF\u6846\u4FDD\u6301\u4E0D\u53D8");
               return;
             }
             if (frameModalOwner !== ownerType || modalFrameDraft !== staged || staged.frameId !== selectionId || staged.frameData !== remoteUrl) {
@@ -20025,24 +20102,31 @@ ${prevLogs}` : "",
         const msgId = f.dataset.id || editingMessageId;
         const scope = f.dataset.scope || editingMessageScope;
         if (!r || !msgId) return;
+        const previous = structuredClone(r);
         const newText = String(fd.get("editText") || "").trim();
         const res = editMessage(r, scope, msgId, newText, now());
         if (!res.ok) {
           notify(res.reason || "\u4FEE\u6539\u5931\u8D25");
           return;
         }
-        editingMessageId = null;
-        editingMessageDraft = "";
-        syslog("revision", `\u7F16\u8F91 ${scope} \u6D88\u606F`, {
-          targetMessageId: msgId,
-          revisionId: res.revision?.id
-        });
         if (scope === "chat") {
           syncRoleMemory(r, now());
-          revisePhoneSchedule(r);
+          revisePhoneSchedule(r, false);
           if (r.chats.find((m) => m.id === msgId)?.speaker === "me") enqueueChat(r, msgId, now());
         }
-        save();
+        if (!saveLogged("revision", `\u7F16\u8F91 ${scope} \u6D88\u606F`, {
+          targetMessageId: msgId,
+          revisionId: res.revision?.id
+        })) {
+          restoreFields(r, previous);
+          return;
+        }
+        if (scope === "chat") {
+          activeChatRequests.get(r.id)?.abort();
+          chatTyping.delete(r.id);
+        }
+        editingMessageId = null;
+        editingMessageDraft = "";
         render(false);
         notify("\u6D88\u606F\u5DF2\u4FEE\u6539\uFF0C\u65E7\u7248\u672C\u5DF2\u5F52\u6863\u5E76\u4ECE\u6B63\u5F0F\u4E0A\u4E0B\u6587\u79FB\u9664");
         return;
@@ -20058,6 +20142,21 @@ ${prevLogs}` : "",
         return;
       }
       if (f.id === "user-profile-form") {
+        if (profileSaves.has(f)) return;
+        const world = data, version2 = userAvatarUploadVersion;
+        let avatarId = draftUserAvatarRemove ? "" : void 0;
+        if (draftUserAvatarBlob) {
+          try {
+            avatarId = await stageFormAvatar(f, draftUserAvatarBlob);
+          } catch {
+            notify("\u4E2A\u4EBA\u5934\u50CF\u6682\u5B58\u5931\u8D25\uFF0C\u8D44\u6599\u672A\u4FEE\u6539\u3002");
+            return;
+          }
+          if (data !== world || version2 !== userAvatarUploadVersion || !f.isConnected) return;
+        }
+        const previous = data.user;
+        data.user = { ...previous };
+        if (avatarId !== void 0) data.user.avatarMediaId = avatarId;
         for (const k of [
           "name",
           "pronouns",
@@ -20085,33 +20184,32 @@ ${prevLogs}` : "",
           data.user.frameY = draftUserFrame.frameY;
           data.user.frameLayoutVersion = draftUserFrame.frameLayoutVersion;
         }
-        try {
-          if (draftUserAvatarBlob) {
-            await saveAvatarPhoto(data.user, draftUserAvatarBlob);
-          } else if (draftUserAvatarRemove) {
-            const oldId = data.user.avatarMediaId;
-            data.user.avatarMediaId = "";
-            if (oldId) {
-              await mediaDelete(oldId).catch(() => {
-              });
-            }
-          }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          notify("\u4E2A\u4EBA\u5934\u50CF\u4FDD\u5B58\u5931\u8D25\uFF1A" + msg);
+        if (!saveLogged("identity", "\u66F4\u65B0\u7528\u6237\u5168\u5C40\u8D44\u6599\u4E0E\u5934\u50CF\u6846")) {
+          data.user = previous;
+          return;
         }
         resetUserAvatarDraft();
-        syslog("identity", "\u66F4\u65B0\u7528\u6237\u5168\u5C40\u8D44\u6599\u4E0E\u5934\u50CF\u6846");
-        save();
-        go("landing");
+        go("landing", void 0, false);
         notify("\u6211\u7684\u8D44\u6599\u4E0E\u5934\u50CF\u6846\u5DF2\u4FDD\u5B58");
         return;
       }
       if (f.id === "role-form") {
         const name = String(fd.get("name") || "").trim();
-        if (!name) return;
-        const isNew = formMode !== "edit";
-        let r = formMode === "edit" ? data.roles.find((x) => x.id === editingRoleId) || null : null;
+        if (!name || profileSaves.has(f)) return;
+        const world = data, version2 = roleAvatarUploadVersion, isNew = formMode !== "edit";
+        let r = isNew ? void 0 : data.roles.find((x) => x.id === editingRoleId);
+        if (!isNew && !r) return;
+        let avatarId = draftRoleAvatarRemove ? "" : void 0;
+        if (draftRoleAvatarBlob) {
+          try {
+            avatarId = await stageFormAvatar(f, draftRoleAvatarBlob);
+          } catch {
+            notify("\u89D2\u8272\u5934\u50CF\u6682\u5B58\u5931\u8D25\uFF0C\u8D44\u6599\u672A\u4FEE\u6539\u3002");
+            return;
+          }
+          if (data !== world || version2 !== roleAvatarUploadVersion || !f.isConnected || r && !world.roles.includes(r)) return;
+        }
+        const rolesBefore = data.roles, selectedBefore = data.selected, roleBefore = r ? { ...r } : void 0;
         if (!r) {
           r = createRole(
             name,
@@ -20122,7 +20220,7 @@ ${prevLogs}` : "",
           );
           r.relationship = "";
           initNewRoleFirstMessageState(r, data.settings, now());
-          data.roles.push(r);
+          data.roles = [...rolesBefore, r];
         }
         for (const k of [
           "name",
@@ -20135,6 +20233,7 @@ ${prevLogs}` : "",
         ]) {
           r[k] = String(fd.get(k) || "").trim().slice(0, 2e4);
         }
+        if (avatarId !== void 0) r.avatarMediaId = avatarId;
         if (draftRoleFrame) {
           const wrap = document.getElementById("frame-adjust-role");
           if (wrap) {
@@ -20153,26 +20252,15 @@ ${prevLogs}` : "",
           r.frameY = draftRoleFrame.frameY;
           r.frameLayoutVersion = draftRoleFrame.frameLayoutVersion;
         }
-        try {
-          if (draftRoleAvatarBlob) {
-            await saveAvatarPhoto(r, draftRoleAvatarBlob);
-          } else if (draftRoleAvatarRemove) {
-            const oldId = r.avatarMediaId;
-            r.avatarMediaId = "";
-            if (oldId) {
-              await mediaDelete(oldId).catch(() => {
-              });
-            }
-          }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          notify("\u89D2\u8272\u5934\u50CF\u4FDD\u5B58\u5931\u8D25\uFF1A" + msg);
+        data.selected = r.id;
+        if (!saveLogged("role", `${isNew ? "\u521B\u5EFA" : "\u7F16\u8F91"}\u89D2\u8272\uFF1A${r.name}`)) {
+          if (roleBefore) restoreFields(r, roleBefore);
+          data.roles = rolesBefore;
+          data.selected = selectedBefore;
+          return;
         }
         resetRoleAvatarDraft();
-        data.selected = r.id;
-        syslog("role", `${formMode === "edit" ? "\u7F16\u8F91" : "\u521B\u5EFA"}\u89D2\u8272\uFF1A${r.name}`);
-        save();
-        go(formMode === "edit" ? roleFormReturnView : "home");
+        go(isNew ? "home" : roleFormReturnView, void 0, false);
         notify(formMode === "edit" ? "\u89D2\u8272\u8D44\u6599\u4E0E\u5934\u50CF\u6846\u4FEE\u6539\u5DF2\u4FDD\u5B58" : `\u5DF2\u521B\u5EFA\u89D2\u8272 ${r.name}`);
         if (isNew && canUseRealModel(data.settings)) {
           generateRoleFirstMessage(r);
@@ -20186,8 +20274,10 @@ ${prevLogs}` : "",
           notify("\u540D\u5B57\u4E0D\u5339\u914D\uFF0C\u672A\u5220\u9664\u89D2\u8272");
           return;
         }
+        const previous = { focus: data.focus, roles: data.roles, logs: data.logs, selected: data.selected };
         ensureFocusData();
         if (data.focus?.active) {
+          data.focus.active = { ...data.focus.active };
           data.focus.active.participantRoleIds = (data.focus.active.participantRoleIds || []).filter((id) => id !== target.id);
           data.focus.active.invitedRoleIds = (data.focus.active.invitedRoleIds || []).filter((id) => id !== target.id);
           data.focus.active.participants = (data.focus.active.participants || []).filter((p) => p.roleId !== target.id);
@@ -20200,24 +20290,16 @@ ${prevLogs}` : "",
             (id) => id !== target.id
           );
         }
-        for (const m of target.chats || []) {
-          if (m.mediaId) mediaDelete(m.mediaId).catch(() => {
-          });
-        }
-        if (target.avatarMediaId && !data.roles.some(
-          (other) => other.id !== target.id && other.avatarMediaId === target.avatarMediaId
-        )) {
-          mediaDelete(target.avatarMediaId).catch(() => {
-          });
-        }
         data.roles = data.roles.filter((x) => x.id !== target.id);
         data.logs = (data.logs || []).filter((x) => x.roleId !== target.id);
         data.selected = null;
+        if (!saveLogged("role", `\u5DF2\u5220\u9664\u89D2\u8272\u53CA\u5176\u5B58\u6863\uFF1A${target.name}`)) {
+          Object.assign(data, previous);
+          return;
+        }
         editingRoleId = null;
         deleteRoleId = null;
-        syslog("role", `\u5DF2\u5220\u9664\u89D2\u8272\u53CA\u5176\u5B58\u6863\uFF1A${target.name}`);
-        save();
-        go("landing");
+        go("landing", void 0, false);
         notify("\u5DF2\u5220\u9664\u89D2\u8272");
         return;
       }
@@ -20239,6 +20321,7 @@ ${prevLogs}` : "",
       if (f.id === "intermission-settings-form") {
         const p = role()?.play;
         if (!p || !p.paused) return;
+        const previous = { ...p, intermissionMessages: p.intermissionMessages?.slice() };
         ensureIntermission(p);
         for (const field of ["world", "user", "char"]) {
           p[field] = String(fd.get(field) || "").trim().slice(0, 2e4);
@@ -20250,8 +20333,10 @@ ${prevLogs}` : "",
           at: now(),
           status: "active"
         });
-        syslog("intermission", "\u5E55\u95F4\u4FEE\u6539\u5267\u672C\u8BBE\u5B9A", { source: p.id });
-        save();
+        if (!saveLogged("intermission", "\u5E55\u95F4\u4FEE\u6539\u5267\u672C\u8BBE\u5B9A", { source: p.id })) {
+          restoreFields(p, previous);
+          return;
+        }
         render();
         notify("\u8BBE\u5B9A\u5DF2\u4FDD\u5B58\uFF0C\u8FD4\u56DE\u6F14\u51FA\u540E\u751F\u6548");
         return;
@@ -20270,10 +20355,14 @@ ${prevLogs}` : "",
         const r = role();
         const text2 = String(fd.get("text") || "").trim();
         if (!r || !text2) return;
+        const diaryCount = r.diaries.length, eventCount = r.events.length;
         createUserDiary(r, text2, now());
+        if (!saveLogged("diary", "\u4FDD\u5B58\u4E86\u4E00\u7BC7\u79C1\u4EBA\u65E5\u8BB0\uFF08\u9ED8\u8BA4\u672A\u5411\u89D2\u8272\u516C\u5F00\uFF09")) {
+          r.diaries.length = diaryCount;
+          r.events.length = eventCount;
+          return;
+        }
         f.reset();
-        syslog("diary", "\u4FDD\u5B58\u4E86\u4E00\u7BC7\u79C1\u4EBA\u65E5\u8BB0\uFF08\u9ED8\u8BA4\u672A\u5411\u89D2\u8272\u516C\u5F00\uFF09");
-        save();
         render();
         notify("\u79C1\u4EBA\u65E5\u8BB0\u5DF2\u4FDD\u5B58");
         return;
@@ -20285,6 +20374,7 @@ ${prevLogs}` : "",
           notify("\u8BF7\u5148\u5B8C\u6210\u5F53\u524D\u620F\u5267\uFF1B\u4E0D\u4F1A\u8986\u76D6\u672A\u843D\u5E55\u7684\u6F14\u51FA");
           return;
         }
+        const previous = r.play;
         r.play = {
           id: uid(),
           title: String(fd.get("title") || "\u65E0\u9898"),
@@ -20304,21 +20394,28 @@ ${prevLogs}` : "",
             }
           ]
         };
-        save();
-        go("novel", "play");
+        if (!save()) {
+          r.play = previous;
+          return;
+        }
+        go("novel", "play", false);
         return;
       }
       if (f.dataset.frameAdjustOwner || f.id === "frame-adjust") {
         const ownerType = f.dataset.frameAdjustOwner === "user" ? "user" : "role";
         const targetOwner = ownerType === "user" ? data.user : role();
         if (!targetOwner) return;
+        const previous = { frameScale: targetOwner.frameScale, frameX: targetOwner.frameX, frameY: targetOwner.frameY };
         targetOwner.frameScale = Math.max(
           0.5,
           Math.min(3, Number(fd.get("size")) || 1.25)
         );
         targetOwner.frameX = Math.max(-80, Math.min(80, Number(fd.get("x")) || 0));
         targetOwner.frameY = Math.max(-80, Math.min(80, Number(fd.get("y")) || 0));
-        save();
+        if (!save()) {
+          Object.assign(targetOwner, previous);
+          return;
+        }
         render(false);
         notify("\u5934\u50CF\u6846\u5C3A\u5BF8\u4E0E\u504F\u79FB\u4F4D\u7F6E\u5DF2\u4FDD\u5B58");
         return;
@@ -20326,12 +20423,16 @@ ${prevLogs}` : "",
       if (f.id === "profile-form") {
         const r = role();
         if (!r) return;
+        const previous = { profile: r.profile, traits: r.traits, relationship: r.relationship, notes: r.notes, userAlias: r.userAlias };
         r.profile = String(fd.get("profile") || "");
         r.traits = String(fd.get("traits") || "");
         r.relationship = String(fd.get("relationship") || "");
         r.notes = String(fd.get("notes") || "");
         r.userAlias = String(fd.get("userAlias") || "").trim();
-        save();
+        if (!save()) {
+          Object.assign(r, previous);
+          return;
+        }
         render(false);
         notify("\u4EBA\u8BBE\u5DF2\u4FDD\u5B58");
         return;
@@ -20457,11 +20558,12 @@ ${prevLogs}` : "",
           formMode === "edit" ? data.roles.find((x) => x.id === editingRoleId) : role()
         );
         syncModalAdjustInputsToStaged(ownerType, staged);
-        const selectionId = staged.frameId;
+        const selectionId = staged.frameId, world = data;
         void (async () => {
           try {
             const mediaId = makeUid("frm_u");
             await mediaPut(mediaId, f);
+            if (data !== world) return;
             const customId = makeUid("cf");
             const cleanName = f.name.replace(/\.[^.]+$/, "").slice(0, 32) || "\u81EA\u5B9A\u4E49\u5934\u50CF\u6846";
             if (!Array.isArray(data.customFrames)) data.customFrames = [];
@@ -20473,9 +20575,6 @@ ${prevLogs}` : "",
             });
             if (!save()) {
               data.customFrames = data.customFrames.filter((item) => item.id !== customId);
-              await mediaDelete(mediaId).catch(() => {
-              });
-              notify("\u7D20\u6750\u8BB0\u5F55\u4FDD\u5B58\u5931\u8D25\uFF0C\u539F\u5934\u50CF\u6846\u4FDD\u6301\u4E0D\u53D8");
               return;
             }
             if (frameModalOwner !== ownerType || modalFrameDraft !== staged || staged.frameId !== selectionId) {

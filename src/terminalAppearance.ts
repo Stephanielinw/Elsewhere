@@ -1,6 +1,6 @@
 import {escHtml as esc} from './core/footprints';
 import type {AppData,RoleData,ThemeName} from './core/types';
-import {mediaGet,mediaPut,mediaDelete} from './core/media';
+import {mediaGet,mediaAddMany} from './core/media';
 import {makeUid} from './core/revisions';
 import {safeBubbleCSS,BUBBLE_CSS_LIMIT} from './core/bubbleCss';
 import {bubbleSideCSS,retargetBubbleCSS,customFontFamily,fontFileType,wallpaperFileType,safeFontUrl,FONT_MAX_BYTES,WALLPAPER_MAX_BYTES,type BubbleSide} from './core/appearance';
@@ -11,11 +11,12 @@ const systemFont='-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif';
 const faces=new Map<string,Promise<void>>();
 export function appearanceFontFamily(data:AppData,role?:RoleData):string {
   const font=data.customFonts?.find(f=>f.id===role?.customFontId);
-  return font?`${customFontFamily(font.id)},${systemFont}`:(role?.font||data.font)==='serif'?'Georgia,"Songti SC",serif':systemFont;
+  return font?`${customFontFamily(font.mediaId)},${systemFont}`:(role?.font||data.font)==='serif'?'Georgia,"Songti SC",serif':systemFont;
 }
 async function loadFont(font:FontItem,blob?:Blob):Promise<void>{
-  let pending=faces.get(font.id);
-  if(!pending){pending=(async()=>{const file=blob||await mediaGet(font.mediaId);if(!file)throw new Error('找不到已保存的字体文件，请重新导入。');const bytes=await file.arrayBuffer();fontFileType(new Uint8Array(bytes));const face=await new FontFace(customFontFamily(font.id),bytes).load();document.fonts.add(face);})();faces.set(font.id,pending);pending.catch(()=>faces.delete(font.id));}
+  const id=font.mediaId;
+  let pending=faces.get(id);
+  if(!pending){pending=(async()=>{const file=blob||await mediaGet(id);if(!file)throw new Error('找不到已保存的字体文件，请重新导入。');const bytes=await file.arrayBuffer();fontFileType(new Uint8Array(bytes));const face=await new FontFace(customFontFamily(id),bytes).load();document.fonts.add(face);})();faces.set(id,pending);pending.catch(()=>faces.delete(id));}
   return pending;
 }
 export async function hydrateAppearanceFont(data:AppData,role?:RoleData):Promise<void>{
@@ -26,18 +27,20 @@ interface Draft {
   fonts:(FontItem&{blob?:Blob})[];mine:string;theirs:string;
 }
 const themes:[ThemeName,string][]=[['blue','蓝色'],['green','绿色'],['pink','粉色'],['coffee','卡布奇诺'],['night','夜晚']];
-export function createTerminalAppearance(hooks:{data:()=>AppData;role:()=>RoleData|undefined;save:()=>boolean;apply:()=>void;notify:(text:string)=>void}){
-  let host:HTMLElement|null=null,owner='',draft:Draft|null=null,version=0,urls:string[]=[],fontRequest:AbortController|null=null;
-  const drafts=new Map<string,Draft>();
+export function createTerminalAppearance(hooks:{data:()=>AppData;role:()=>RoleData|undefined;save:()=>boolean;saveError:()=>string;apply:()=>void;notify:(text:string)=>void}){
+  let host:HTMLElement|null=null,owner:RoleData|undefined,world:AppData|undefined,draft:Draft|null=null,version=0,urls:string[]=[],fontRequest:AbortController|null=null;
+  let drafts=new WeakMap<RoleData,Draft>(),appearanceSaving=false;
   const field=(name:string)=>host?.querySelector<HTMLInputElement|HTMLSelectElement|HTMLTextAreaElement>(`[name="${name}"]`);
   const objectUrl=(blob:Blob)=>{const url=URL.createObjectURL(blob);urls.push(url);return url};
   function read(){if(!draft)return;draft.font=field('appearance-font')?.value||draft.font;draft.mine=field('bubble-mine')?.value??draft.mine;draft.theirs=field('bubble-theirs')?.value??draft.theirs;}
-  const alive=(id:number)=>id===version&&host?.isConnected&&hooks.role()?.id===owner;
-  function feedback(message:string){const status=host?.querySelector<HTMLElement>('[data-style-status]');if(status)status.textContent=message;hooks.notify(message);}
+  const current=()=>host?.isConnected&&owner&&hooks.role()===owner&&hooks.data()===world;
+  const alive=(id:number)=>id===version&&current();
+  function styleStatus(message:string,bubbles=false){const status=host?.querySelector<HTMLElement>(bubbles?'[data-bubble-status]':'[data-style-status]');if(status)status.textContent=message;}
+  function feedback(message:string,bubbles=false){styleStatus(message,bubbles);hooks.notify(message);}
   function preview(){
     if(!host||!draft)return;
     const style=host.querySelector('style[data-bubble-preview-css]');if(style)style.textContent=safeBubbleCSS(draft.mine+'\n'+draft.theirs).replace(/\.chat-view /g,'.bubble-preview ');
-    const sample=host.querySelector<HTMLElement>('[data-font-preview]');if(sample){const font=draft.fonts.find(f=>f.id===draft?.font);sample.style.fontFamily=font?`${customFontFamily(font.id)},${systemFont}`:draft.font==='serif'?'Georgia,"Songti SC",serif':systemFont;}
+    const sample=host.querySelector<HTMLElement>('[data-font-preview]');if(sample){const font=draft.fonts.find(f=>f.id===draft?.font);sample.style.fontFamily=font?`${customFontFamily(font.mediaId)},${systemFont}`:draft.font==='serif'?'Georgia,"Songti SC",serif':systemFont;}
     host.querySelectorAll<HTMLButtonElement>('[data-style-theme]').forEach(b=>{b.classList.toggle('active',b.dataset.styleTheme===draft?.theme);b.setAttribute('aria-pressed',String(b.dataset.styleTheme===draft?.theme));});
     const wall=host.querySelector<HTMLElement>('[data-wallpaper-preview]');if(wall)wall.dataset.theme=draft.theme;
   }
@@ -51,23 +54,64 @@ export function createTerminalAppearance(hooks:{data:()=>AppData;role:()=>RoleDa
   }
   async function importFont(){if(!draft||!host)return;read();const name=field('font-name')?.value.trim(),file=host.querySelector<HTMLInputElement>('[name="font-file"]')?.files?.[0],url=field('font-url')?.value.trim();if(!name){feedback('请先填写字体备注名。');return;}if(!file&&!url){feedback('请选择字体文件或填写字体 URL。');return;}
     fontRequest?.abort();const controller=new AbortController();fontRequest=controller;const id=++version,d=draft;const button=host.querySelector<HTMLButtonElement>('[data-style-action="import-font"]');if(button)button.disabled=true;const timer=setTimeout(()=>controller.abort(),15000);
-    try{let blob:Blob;if(file)blob=file;else{const response=await fetch(safeFontUrl(url!),{credentials:'omit',redirect:'error',signal:controller.signal});if(!response.ok)throw new Error('字体下载失败，请检查地址和跨域权限。');if(Number(response.headers.get('content-length'))>FONT_MAX_BYTES)throw new Error('字体最多 20MB。');blob=await response.blob();}if(!blob.size||blob.size>FONT_MAX_BYTES)throw new Error('字体文件为空或超过 20MB。');const bytes=await blob.arrayBuffer();blob=new Blob([bytes],{type:fontFileType(new Uint8Array(bytes))});const font={id:makeUid('font'),name,mediaId:makeUid('fontmedia'),blob};await loadFont(font,blob);if(!alive(id)||draft!==d)return;d.fonts.push(font);d.font=font.id;fontOptions();preview();const panel=host?.querySelector<HTMLElement>('[data-font-import]');if(panel)panel.hidden=true;feedback('字体已载入预览，保存外观后保留。');}
+    try{let blob:Blob;if(file)blob=file;else{const response=await fetch(safeFontUrl(url!),{credentials:'omit',redirect:'error',signal:controller.signal});if(!response.ok)throw new Error('字体下载失败，请检查地址和跨域权限。');if(Number(response.headers.get('content-length'))>FONT_MAX_BYTES)throw new Error('字体最多 20MB。');blob=await response.blob();}if(!blob.size||blob.size>FONT_MAX_BYTES)throw new Error('字体文件为空或超过 20MB。');const bytes=await blob.arrayBuffer();blob=new Blob([bytes],{type:fontFileType(new Uint8Array(bytes))});const font={id:makeUid('font'),name,mediaId:makeUid('fontmedia'),blob};await loadFont(font,blob);if(!alive(id)||draft!==d)return;version++;d.fonts.push(font);d.font=font.id;fontOptions();preview();const panel=host?.querySelector<HTMLElement>('[data-font-import]');if(panel)panel.hidden=true;feedback('字体已载入预览，保存外观后保留。');}
     catch(error){if(alive(id))feedback(error instanceof Error&&error.name!=='TypeError'&&error.name!=='AbortError'?error.message:'字体导入失败或超时，请检查文件与跨域权限。');}
     finally{clearTimeout(timer);if(fontRequest===controller)fontRequest=null;if(button?.isConnected)button.disabled=false;}
   }
   async function importFile(input:HTMLInputElement){const file=input.files?.[0],kind=input.dataset.styleFile;if(!file||!draft)return;input.value='';read();const id=++version,d=draft;
-    try{if(kind==='wallpaper'){if(!file.size||file.size>WALLPAPER_MAX_BYTES)throw new Error('壁纸文件为空或超过 10MB。');const bytes=await file.arrayBuffer(),blob=new Blob([bytes],{type:wallpaperFileType(new Uint8Array(bytes))}),img=new Image(),url=URL.createObjectURL(blob);try{img.src=url;await img.decode();}finally{URL.revokeObjectURL(url)}if(!alive(id)||draft!==d)return;d.wallpaper=makeUid('wallpaper');d.wallpaperBlob=blob;await wallpaperPreview();feedback('壁纸已载入预览，保存外观后应用。');}
+    try{if(kind==='wallpaper'){if(!file.size||file.size>WALLPAPER_MAX_BYTES)throw new Error('壁纸文件为空或超过 10MB。');const bytes=await file.arrayBuffer(),blob=new Blob([bytes],{type:wallpaperFileType(new Uint8Array(bytes))}),img=new Image(),url=URL.createObjectURL(blob);try{img.src=url;await img.decode();}finally{URL.revokeObjectURL(url)}if(!alive(id)||draft!==d)return;const previewVersion=++version;d.wallpaper=makeUid('wallpaper');d.wallpaperBlob=blob;await wallpaperPreview();if(alive(previewVersion))feedback('壁纸已载入预览，保存外观后应用。');}
       else if(kind==='mine'||kind==='theirs'){if(file.size>BUBBLE_CSS_LIMIT)throw new Error('CSS 文件最多 12KB。');const raw=await file.text();if(!raw.trim())throw new Error('CSS 文件为空。');const css=retargetBubbleCSS(raw,kind);if(!alive(id)||draft!==d)return;d[kind]=css;const editor=field('bubble-'+kind);if(editor)editor.value=css;const name=field('preset-name-'+kind);if(name)name.value=file.name.replace(/\.css$/i,'');const selected=host?.querySelector<HTMLSelectElement>(`[data-bubble-preset="${kind}"]`);if(selected)selected.value='';preview();feedback('CSS 已载入预览，尚未应用到聊天。');}
     }catch(error){if(alive(id))feedback(error instanceof Error?error.message:'文件读取失败，原设置未改变。');}
   }
-  async function saveAppearance(){if(!draft)return;read();const d=draft,r=hooks.role(),data=hooks.data(),id=version;if(!r||r.id!==owner)return;const uploaded:string[]=[];const previous={theme:r.theme,font:r.font,customFontId:r.customFontId,wallpaperMediaId:r.wallpaperMediaId,fonts:data.customFonts};
-    const button=host?.querySelector<HTMLButtonElement>('[data-style-form="appearance"] button[type="submit"]');if(button)button.disabled=true;
-    try{if(d.wallpaperBlob){await mediaPut(d.wallpaper,d.wallpaperBlob);uploaded.push(d.wallpaper)}for(const font of d.fonts){if(font.blob){await mediaPut(font.mediaId,font.blob);uploaded.push(font.mediaId)}}if(!alive(id))throw new Error('页面或角色已改变，尚未应用外观。');r.theme=d.theme;r.font=d.font==='serif'?'serif':'system';r.customFontId=d.fonts.some(f=>f.id===d.font)?d.font:'';r.wallpaperMediaId=d.wallpaper;data.customFonts=[...(data.customFonts||[])];for(const {id,name,mediaId} of d.fonts){if(!data.customFonts.some(f=>f.id===id))data.customFonts.push({id,name,mediaId})}if(!hooks.save())throw new Error('外观未保存，请检查本地存储后重试。');d.wallpaperBlob=undefined;d.fonts=d.fonts.map(({id,name,mediaId})=>({id,name,mediaId}));hooks.apply();hooks.notify('主题、壁纸和字体已保存。');}
-    catch(error){r.theme=previous.theme;r.font=previous.font;r.customFontId=previous.customFontId;r.wallpaperMediaId=previous.wallpaperMediaId;data.customFonts=previous.fonts;await Promise.allSettled(uploaded.map(mediaDelete));if(alive(id))feedback(error instanceof Error?error.message:'外观保存失败，原设置已保留。');}
-    finally{if(button?.isConnected)button.disabled=false;}
+  async function saveAppearance(){
+    if(!draft||!owner||!world||!current()||appearanceSaving)return;
+    read();
+    const d=draft,r=owner,data=world,id=version;
+    const button=host?.querySelector<HTMLButtonElement>('[data-style-form="appearance"] button[type="submit"]');
+    const attachments:{id:string;blob:Blob}[]=[];
+    const wallpaper=d.wallpaperBlob?makeUid('wallpaper'):d.wallpaper;
+    if(d.wallpaperBlob)attachments.push({id:wallpaper,blob:d.wallpaperBlob});
+    const fonts=d.fonts.map(({id,name,mediaId,blob})=>{
+      if(blob){mediaId=makeUid('fontmedia');attachments.push({id:mediaId,blob});}
+      return {id,name,mediaId};
+    });
+    appearanceSaving=true;
+    if(button)button.disabled=true;
+    try{
+      if(attachments.length){
+        try{await mediaAddMany(attachments);}
+        catch{if(alive(id))feedback('壁纸或字体文件保存失败，外观草稿仍保留。');return;}
+      }
+      if(!alive(id)){
+        if(world===data&&owner===r&&draft===d&&current())styleStatus('外观草稿仍保留，请重新保存。');
+        return;
+      }
+      const previous={theme:r.theme,font:r.font,customFontId:r.customFontId,wallpaperMediaId:r.wallpaperMediaId};
+      const previousFonts=data.customFonts;
+      r.theme=d.theme;
+      r.font=d.font==='serif'?'serif':'system';
+      r.customFontId=fonts.some(font=>font.id===d.font)?d.font:'';
+      r.wallpaperMediaId=wallpaper;
+      data.customFonts=[...(previousFonts||[]),...fonts.filter(font=>!previousFonts?.some(item=>item.id===font.id))];
+      if(!hooks.save()){
+        Object.assign(r,previous);
+        data.customFonts=previousFonts;
+        styleStatus(hooks.saveError());
+        return;
+      }
+      d.wallpaper=wallpaper;
+      d.wallpaperBlob=undefined;
+      d.fonts=fonts;
+      preview();
+      hooks.apply();
+      hooks.notify('主题、壁纸和字体已保存。');
+    }finally{
+      appearanceSaving=false;
+      if(button?.isConnected)button.disabled=false;
+    }
   }
-  function saveBubbles(){if(!draft)return;read();const r=hooks.role();if(!r||r.id!==owner)return;try{if(draft.mine.length>BUBBLE_CSS_LIMIT||draft.theirs.length>BUBBLE_CSS_LIMIT)throw new Error('每侧 CSS 最多 12KB。');const css=retargetBubbleCSS(draft.mine,'mine')+'\n'+retargetBubbleCSS(draft.theirs,'theirs');if(css.length>BUBBLE_CSS_LIMIT)throw new Error('两侧 CSS 合计最多 12KB。');const previous=r.bubbleCSS;r.bubbleCSS=css.trim();if(!hooks.save()){r.bubbleCSS=previous;throw new Error('气泡保存失败，原设置和当前草稿已保留。')}hooks.apply();hooks.notify('两侧气泡已保存。');}catch(error){feedback(error instanceof Error?error.message:'气泡保存失败。');}}
-  function savePreset(side:BubbleSide){read();if(!draft)return;const name=field('preset-name-'+side)?.value.trim();if(!name){feedback('请填写预设备注名。');return;}try{if(draft[side].length>BUBBLE_CSS_LIMIT)throw new Error('CSS 最多 12KB。');const css=retargetBubbleCSS(draft[side],side);if(!css.trim())throw new Error('请先导入或填写 CSS。');const data=hooks.data(),previous=data.bubblePresets,selected=host?.querySelector<HTMLSelectElement>(`[data-bubble-preset="${side}"]`)?.value,existing=previous?.find(p=>p.id===selected);data.bubblePresets=existing?previous!.map(p=>p.id===existing.id?{...p,name,css}:p):[...(previous||[]),{id:makeUid('bubble'),name,css}];if(!hooks.save()){data.bubblePresets=previous;throw new Error('预设保存失败，草稿仍保留。')}presetOptions();const choice=host?.querySelector<HTMLSelectElement>(`[data-bubble-preset="${side}"]`);if(choice)choice.value=(existing||data.bubblePresets.at(-1)!).id;feedback('已存为通用预设，可在两侧和其他角色中选择。');}catch(error){feedback(error instanceof Error?error.message:'预设保存失败。');}}
+  function saveBubbles(){if(!draft||!owner||!current())return;read();const r=owner;try{if(draft.mine.length>BUBBLE_CSS_LIMIT||draft.theirs.length>BUBBLE_CSS_LIMIT)throw new Error('每侧 CSS 最多 12KB。');const css=retargetBubbleCSS(draft.mine,'mine')+'\n'+retargetBubbleCSS(draft.theirs,'theirs');if(css.length>BUBBLE_CSS_LIMIT)throw new Error('两侧 CSS 合计最多 12KB。');const previous=r.bubbleCSS;r.bubbleCSS=css.trim();if(!hooks.save()){r.bubbleCSS=previous;styleStatus(hooks.saveError(),true);return;}hooks.apply();feedback('两侧气泡已保存。',true);}catch(error){feedback(error instanceof Error?error.message:'气泡保存失败。',true);}}
+  function savePreset(side:BubbleSide){if(!draft||!current())return;read();const name=field('preset-name-'+side)?.value.trim();if(!name){feedback('请填写预设备注名。',true);return;}try{if(draft[side].length>BUBBLE_CSS_LIMIT)throw new Error('CSS 最多 12KB。');const css=retargetBubbleCSS(draft[side],side);if(!css.trim())throw new Error('请先导入或填写 CSS。');const data=hooks.data(),previous=data.bubblePresets,selected=host?.querySelector<HTMLSelectElement>(`[data-bubble-preset="${side}"]`)?.value,existing=previous?.find(p=>p.id===selected);data.bubblePresets=existing?previous!.map(p=>p.id===existing.id?{...p,name,css}:p):[...(previous||[]),{id:makeUid('bubble'),name,css}];if(!hooks.save()){data.bubblePresets=previous;styleStatus(hooks.saveError(),true);return;}presetOptions();const choice=host?.querySelector<HTMLSelectElement>(`[data-bubble-preset="${side}"]`);if(choice)choice.value=(existing||data.bubblePresets.at(-1)!).id;feedback('已存为通用预设，可在两侧和其他角色中选择。',true);}catch(error){feedback(error instanceof Error?error.message:'预设保存失败。',true);}}
   const click=(event:Event)=>{const target=event.target instanceof Element?event.target.closest<HTMLElement>('[data-style-action],[data-style-theme]'):null;if(!target||!draft)return;event.preventDefault();event.stopPropagation();read();const action=target.dataset.styleAction,side=target.dataset.side==='mine'?'mine':'theirs';if(target.dataset.styleTheme){version++;draft.theme=target.dataset.styleTheme as ThemeName;preview();return;}if(action==='font-open'||action==='font-cancel'){const panel=host?.querySelector<HTMLElement>('[data-font-import]');if(panel)panel.hidden=action==='font-cancel';if(action==='font-cancel'){version++;fontRequest?.abort();fontRequest=null;}}if(action==='import-font')void importFont();if(action==='clear-wallpaper'){version++;draft.wallpaper='';draft.wallpaperBlob=undefined;void wallpaperPreview()}if(action==='clear-bubble'){draft[side]='';const editor=field('bubble-'+side);if(editor)editor.value='';preview()}if(action==='save-preset')savePreset(side);};
   const input=(event:Event)=>{const target=event.target;if(!(target instanceof HTMLInputElement||target instanceof HTMLTextAreaElement||target instanceof HTMLSelectElement)||!target.closest('[data-style-panel]')||!draft)return;event.stopPropagation();read();if(target.matches('[data-bubble-preset]')&&event.type==='change'){const side=target.dataset.bubblePreset==='mine'?'mine':'theirs',preset=hooks.data().bubblePresets?.find(p=>p.id===target.value);if(preset){draft[side]=retargetBubbleCSS(preset.css,side);const editor=field('bubble-'+side);if(editor)editor.value=draft[side];const name=field('preset-name-'+side);if(name)name.value=preset.name;}}
     if(event.type==='input'&&target.matches('[name^="bubble-"],[name="font-name"],[name="font-url"]'))version++;
@@ -75,5 +119,14 @@ export function createTerminalAppearance(hooks:{data:()=>AppData;role:()=>RoleDa
     if(event.type==='change'&&target instanceof HTMLInputElement&&target.dataset.styleFile)void importFile(target);preview();};
   const submit=(event:Event)=>{const form=event.target;if(!(form instanceof HTMLFormElement)||!form.dataset.styleForm)return;event.preventDefault();event.stopPropagation();if(form.dataset.styleForm==='appearance')void saveAppearance();else saveBubbles();};
   function detach(){read();version++;fontRequest?.abort();fontRequest=null;if(host){host.removeEventListener('click',click);host.removeEventListener('input',input);host.removeEventListener('change',input);host.removeEventListener('submit',submit);}host=null;for(const url of urls)URL.revokeObjectURL(url);urls=[];}
-  return {detach,mount(element:HTMLElement|null){detach();host=element;const r=hooks.role();if(!host||!r)return;owner=r.id;draft=drafts.get(owner)||{theme:r.theme||'blue',font:r.customFontId||r.font||hooks.data().font,wallpaper:r.wallpaperMediaId||'',fonts:[...(hooks.data().customFonts||[])],mine:bubbleSideCSS(r.bubbleCSS||'','mine'),theirs:bubbleSideCSS(r.bubbleCSS||'','theirs')};drafts.set(owner,draft);for(const font of hooks.data().customFonts||[])if(!draft.fonts.some(f=>f.id===font.id))draft.fonts.push(font);host.addEventListener('click',click);host.addEventListener('input',input);host.addEventListener('change',input);host.addEventListener('submit',submit);render();const id=version;const selectedFont=draft.fonts.find(f=>f.id===draft?.font);if(selectedFont)void loadFont(selectedFont,selectedFont.blob).catch(()=>{if(alive(id)&&draft?.font===selectedFont.id)feedback('字体读取失败，请重新导入。')});}};
+  return {detach,mount(element:HTMLElement|null){
+    detach();host=element;
+    const r=hooks.role(),data=hooks.data();if(!host||!r)return;
+    if(world!==data)drafts=new WeakMap();
+    world=data;owner=r;
+    draft=drafts.get(r)||{theme:r.theme||'blue',font:r.customFontId||r.font||data.font,wallpaper:r.wallpaperMediaId||'',fonts:[...(data.customFonts||[])],mine:bubbleSideCSS(r.bubbleCSS||'','mine'),theirs:bubbleSideCSS(r.bubbleCSS||'','theirs')};
+    drafts.set(r,draft);for(const font of data.customFonts||[])if(!draft.fonts.some(f=>f.id===font.id))draft.fonts.push(font);
+    host.addEventListener('click',click);host.addEventListener('input',input);host.addEventListener('change',input);host.addEventListener('submit',submit);
+    render();const id=version;const selectedFont=draft.fonts.find(f=>f.id===draft?.font);if(selectedFont)void loadFont(selectedFont,selectedFont.blob).catch(()=>{if(alive(id)&&draft?.font===selectedFont.id)feedback('字体读取失败，请重新导入。')});
+  }};
 }

@@ -36,3 +36,10 @@ test('appearance metadata import tolerates damaged new fields and preserves exis
  assert.equal(normalized.roles[0].theme,'pink');
  assert.equal(normalized.roles[0].bubbleCSS,'.message.mine .bubble{color:blue}');
 });
+
+test('backup media references include archived scenes and queued message copies',()=>{
+ const data=defaults(),r=data.roles[0];
+ r.meetings=[{id:'archived',messages:[{mediaId:'archived-photo'}]} as NonNullable<typeof r.meetings>[number]];
+ r.pendingReplies=[{sources:[{mediaId:'queued-photo'}]} as NonNullable<typeof r.pendingReplies>[number]];
+ assert.deepEqual(new Set(collectReferencedMediaIds(data)),new Set(['archived-photo','queued-photo']));
+});

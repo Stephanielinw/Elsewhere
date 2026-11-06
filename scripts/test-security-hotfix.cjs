@@ -139,11 +139,14 @@ async function main(){
       await p.locator('#landing-backup-file').waitFor({state:'attached'});
       const before=await read(p);
       await p.evaluate(()=>{
-        const originalSet=Storage.prototype.setItem,originalRemove=Storage.prototype.removeItem,originalPut=IDBObjectStore.prototype.put;
+        const originalSet=Storage.prototype.setItem,originalRemove=Storage.prototype.removeItem;
         window.hotfixWrites=[];
         Storage.prototype.setItem=function(key,value){window.hotfixWrites.push(key);return originalSet.call(this,key,value);};
         Storage.prototype.removeItem=function(key){window.hotfixWrites.push(key);return originalRemove.call(this,key);};
-        IDBObjectStore.prototype.put=function(...args){window.hotfixWrites.push('media-write');return originalPut.apply(this,args);};
+        for(const method of ['add','put']){
+          const write=IDBObjectStore.prototype[method];
+          IDBObjectStore.prototype[method]=function(...args){window.hotfixWrites.push('media-write');return write.apply(this,args);};
+        }
       });
       const reject = async backup => {
         await p.evaluate(()=>document.querySelector('.toast')?.remove());
@@ -212,20 +215,23 @@ async function main(){
       await p.locator('#landing-backup-file').waitFor({state:'attached'});
       const before=await read(p);
       await p.evaluate(({storageKey})=>{
-        const set=Storage.prototype.setItem,put=IDBObjectStore.prototype.put;
-        window.hotfixMediaWrites=0;
+        const set=Storage.prototype.setItem,add=IDBObjectStore.prototype.add;
+        window.hotfixMediaWrites=[];
         Storage.prototype.setItem=function(key,value){
           if(key===storageKey&&JSON.parse(value).failThisFixture)throw new DOMException('synthetic quota','QuotaExceededError');
           return set.call(this,key,value);
         };
-        IDBObjectStore.prototype.put=function(...args){if(args[1]==='synthetic-media')window.hotfixMediaWrites++;return put.apply(this,args);};
+        IDBObjectStore.prototype.add=function(...args){if(this.name==='blobs')window.hotfixMediaWrites.push(args[1]);return add.apply(this,args);};
       },{storageKey});
       const next=world(1,false,'写入失败');next.failThisFixture=true;
+      next.roles[0].avatarMediaId='synthetic-media';
       next._media=[{id:'synthetic-media',data:'data:image/png;base64,AAAA'}];
       await upload(p,next);
-      await p.locator('.toast').filter({hasText:'部分附件可能已写入'}).waitFor();
+      await p.locator('.toast').filter({hasText:'备份导入失败：存档未保存'}).waitFor();
       assert.equal(await read(p),before);
-      assert.equal(await p.evaluate(()=>window.hotfixMediaWrites),1);
+      const stagedIds=await p.evaluate(()=>window.hotfixMediaWrites);
+      assert.equal(stagedIds.length,1);
+      assert.notEqual(stagedIds[0],'synthetic-media');
       assert.equal(await p.locator('[data-action=enter]').first().textContent().then(text=>text.includes('甲0')),true);
     });
     const contaminated=world(1,false);contaminated.settings.temperature=malicious;

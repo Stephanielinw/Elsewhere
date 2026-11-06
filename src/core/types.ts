@@ -562,6 +562,7 @@ export interface ApiSettings {
 export interface AppData {
   version: number;
   diaryWorldId?: string;
+  draftWorldId?: string;
   theme: ThemeName;
   font: 'system' | 'serif';
   offset: number;

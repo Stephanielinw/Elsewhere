@@ -215,14 +215,16 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   const activeChatRequests = new Map<string,AbortController>();
   const chatTyping = new Set<string>();
   let chatPanel = '';
-  const chatDrafts = new WeakMap<RoleData,string>();
-  let chatDraftOwner:RoleData|undefined;
-  let novelDraft = '';
+  type DraftMode = 'chat' | NovelKind | 'intermission';
+  type DraftBinding = {
+    world:AppData; owner:RoleData; mode:DraftMode; stage:SceneData|PlayData|null;
+    form:HTMLFormElement; input:HTMLTextAreaElement;
+  };
+  const draftMemory = new Map<string,string>();
+  const draftWorldCandidates = new WeakMap<AppData,string>();
+  let mountedDrafts:DraftBinding[] = [];
   let novelViewKind:NovelKind='scene';
-  let meetingDraftTimer:ReturnType<typeof setTimeout>|undefined;
-  let meetingDraftDirty=false;
   let systemLogDate:string|null=null;
-  let intermissionDraft = '';
   type VoiceOperation = {
     id:number;world:AppData;owner:RoleData;
     phase:'waiting'|'recording'|'finishing'|'saving'|'done';
@@ -1410,12 +1412,30 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     return false;
   }
   const save = (world=data): boolean => {
+    const originalId=world.draftWorldId;
+    let assigned=false,confirmed=false;
     try {
+      if(!draftNamespace(world)&&saveSession.hasWriter()){
+        const candidate=draftWorldCandidates.get(world)||crypto.getRandomValues(new Uint32Array(4))
+          .reduce((id,part)=>id+part.toString(16).padStart(8,'0'),'');
+        draftWorldCandidates.set(world,candidate);
+        world.draftWorldId=candidate;
+        assigned=true;
+      }
       if(!saveSession.write(JSON.stringify(world))){notify(saveError());refreshSaveAccess();return false;}
+      confirmed=true;
+      if(assigned&&world===data){
+        for(const [scope,value] of draftMemory)storeDraft(scope,value);
+      }
       return true;
     } catch {
       notify('存档无法序列化，未写入。');
       return false;
+    } finally {
+      if(assigned&&!confirmed){
+        if(originalId===undefined)delete world.draftWorldId;
+        else world.draftWorldId=originalId;
+      }
     }
   };
   function saveLogged(type:string,detail:string,extra?:Record<string,unknown>):boolean{
@@ -1533,7 +1553,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       const result=commitSceneDecision(r,decision,now(),uid(),save,{requestId:ticket.requestId,replyIds:replies.map(m=>m.id),contextIds:ticket.contextIds});
       traceStorage('scene-save-confirmed',{hasScene:!!r.scene,result});
       if(result==='left'){
-        if(!archiveMeeting(r,now(),save))throw new Error('见面归档未完成');
+        if(!archiveScene(r))throw new Error('见面归档未完成');
         if(role()===r&&view==='novel'&&novelViewKind==='scene')go('chat');
       }else if(result==='none'&&!save())throw new Error('状态确认保存失败');
       if(result!=='none')syslog('scene-state','同次生成的场景事件已保存',{roleId:r.id,action:decision.action,source:ticket.sceneId||r.scene?.id});
@@ -3032,7 +3052,6 @@ export function initElsewhereApp(saveSession:SaveSession): void {
 
   function screenChat(): string {
     const r = role()!;
-    chatDraftOwner=r;
     const offline=!!(chatSceneEntry(r.chatTiming)||r.chatTiming?.inFlight?.entry);
     const focused = isFocused(r);
     const pawStateClass = focused ? 'is-dark' : 'is-light';
@@ -3065,7 +3084,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       </div>`
      : ''
  }
- <form class="compose" id="message-form"><textarea id="message-input" rows="1" placeholder="发送信息" aria-label="输入消息">${esc(readChatDraft(r))}</textarea><button type="button" class="compose-plus" data-action="chatpanel" data-panel="more" aria-label="打开聊天功能" aria-expanded="${chatPanel==='more'}">${chatPanel==='more'?attachmentIcon('close'):attachmentIcon('more')}</button><button type="button" class="compose-offline" data-action="offline-round" aria-label="线下模式" aria-pressed="${offline}" ${canChooseChatScene(r.chatTiming,now())&&!ongoing(r)?'':'disabled'} title="选择本轮聚合结束后进入面对面">线下</button><button class="send-btn" aria-label="发送消息">${uiIcon('send')}</button></form>`,
+ <form class="compose" id="message-form"><textarea id="message-input" data-scoped-draft rows="1" placeholder="发送信息" aria-label="输入消息"></textarea><button type="button" class="compose-plus" data-action="chatpanel" data-panel="more" aria-label="打开聊天功能" aria-expanded="${chatPanel==='more'}">${chatPanel==='more'?attachmentIcon('close'):attachmentIcon('more')}</button><button type="button" class="compose-offline" data-action="offline-round" aria-label="线下模式" aria-pressed="${offline}" ${canChooseChatScene(r.chatTiming,now())&&!ongoing(r)?'':'disabled'} title="选择本轮聚合结束后进入面对面">线下</button><button class="send-btn" aria-label="发送消息">${uiIcon('send')}</button></form>`,
       false
     );
   }
@@ -4055,9 +4074,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
           : ''
       }
       ${openingPending?`<div class="chat-feedback" role="status" data-scene-opening="${esc(opening.status)}"><p>${busy?'正在准备或生成本轮面对面回复。':opening.status==='unsent'?'场景已保存，首次请求尚未发送。':'首次请求或保存结果未确认。可先刷新核对，重试可能再次计费。'}</p>${busy?'':`<button type="button" class="btn secondary" data-action="resume-scene-opening">${opening.status==='unsent'?'继续本轮':'重新发送首次请求'}</button>`}</div>`:''}
-      <form class="compose" id="novel-form" data-role-id="${esc(r.id)}" data-scene-id="${isPlay?'':esc(p.id)}"><textarea id="novel-input" ${showBackstage?'disabled':''} placeholder="写下你说的话或行动..." rows="1">${esc(
-        isPlay?novelDraft:r.scene?.draft||''
-      )}</textarea><button class="btn" ${
+      <form class="compose" id="novel-form" data-role-id="${esc(r.id)}" data-scene-id="${isPlay?'':esc(p.id)}"><textarea id="novel-input" data-scoped-draft ${showBackstage?'disabled':''} placeholder="写下你说的话或行动..." rows="1"></textarea><button class="btn" ${
         busy||showBackstage||openingPending ? 'disabled' : ''
       }>${uiIcon('send')}</button>${data.settings.mode==='api'&&!showBackstage&&!openingPending&&activeMessages.at(-1)?.speaker==='me'?`<button type="button" class="btn secondary" data-action="retry-novel" ${busy?'disabled':''} title="不重复添加用户消息">重试回复</button>`:''}</form></section>${showBackstage?renderIntermissionPanel(r,p as PlayData):''}</div>`,
       false
@@ -4113,26 +4130,26 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       )}</textarea><button class="btn small full">保存修改后的演出设定</button></form><button class="btn secondary full" data-action="rollbackplay" ${
         lastTurns.length ? '' : 'disabled'
       }>回退刚才一轮戏内互动</button><p class="sub">仅回退戏内已演的最后一轮；旧版本留在幕间修订档案，戏内正式剧情不再引用它。演员仍可能记得你们试过另一种演法。</p></details>
- <form class="compose intermission-compose" id="intermission-form"><textarea id="intermission-input" placeholder="和戏外的${esc(r.name)}聊聊……" rows="1" required ${busy?'disabled':''}>${esc(intermissionDraft)}</textarea><button class="btn" type="submit" ${busy?'disabled':''} aria-label="发送幕间消息（不触发 AI）" title="仅发送你的消息">发送</button><button type="button" class="btn intermission-paw" data-action="intermissionreply" ${busy?'disabled':''} aria-label="让 AI 回复幕间讨论" title="仅点爪印才触发 AI 回复">${catPawSvg(true)}<span>AI 回复</span></button></form></aside>`;
+ <form class="compose intermission-compose" id="intermission-form"><textarea id="intermission-input" data-scoped-draft placeholder="和戏外的${esc(r.name)}聊聊……" rows="1" required ${busy?'disabled':''}></textarea><button class="btn" type="submit" ${busy?'disabled':''} aria-label="发送幕间消息（不触发 AI）" title="仅发送你的消息">发送</button><button type="button" class="btn intermission-paw" data-action="intermissionreply" ${busy?'disabled':''} aria-label="让 AI 回复幕间讨论" title="仅点爪印才触发 AI 回复">${catPawSvg(true)}<span>AI 回复</span></button></form></aside>`;
   }
 
-  function submitIntermission(text:string):void {
-    const r=role(),p=r?.play;
-    if(!r||!p||busy||!p.paused||!text.trim())return;
+  function submitIntermission(draft:DraftBinding,text:string):void {
+    const p=draft.owner.play!;
     ensureIntermission(p);
     const message:ChatMessage={id:uid(),speaker:'me',text:text.trim(),at:now(),status:'active'};
     p.intermissionMessages!.push(message);
-    if(!save()){p.intermissionMessages!.pop();intermissionDraft=text;const input=$<HTMLTextAreaElement>('#intermission-input');if(input)input.value=text;return;}
-    intermissionDraft='';
+    if(!save()){p.intermissionMessages!.pop();return;}
+    clearSubmittedDraft(draft);
     syslog('intermission','幕间用户发言已保存；等待爪印触发回复',{source:p.id});
     render(false);const area=$('#intermission-scroll');if(area)area.scrollTop=area.scrollHeight;
     $<HTMLTextAreaElement>('#intermission-input')?.focus({preventScroll:true});
   }
 
-  async function requestIntermissionReply():Promise<void> {
-    const r=role(),p=r?.play;
-    if(!r||!p||busy||!p.paused)return;
-    if(intermissionDraft.trim()){notify('这段文字尚未发送，请先点发送，再点爪印。');return;}
+  async function requestIntermissionReply(form:HTMLFormElement|null):Promise<void> {
+    const draft=form&&currentDraft(form);
+    if(!draft||draft.mode!=='intermission'||busy)return;
+    const r=draft.owner,p=r.play!;
+    if(draft.input.value.trim()){notify('这段文字尚未发送，请先点发送，再点爪印。');return;}
     const latest=getActiveMessages(p.intermissionMessages||[]).filter(m=>m.speaker==='me').at(-1);
     if(!latest){notify('先发送一条幕间消息，再点爪印请 AI 回复。');return;}
     if(!canUseRealModel(data.settings)){notify('请先在终端连接 API；当前发言已保存在本地。');return;}
@@ -4484,45 +4501,121 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     }
   }
 
-  function captureMeetingDraft(persist=true):void {
-    const form=$<HTMLFormElement>('#novel-form'),input=$<HTMLTextAreaElement>('#novel-input');
-    const owner=data.roles.find(r=>r.id===form?.dataset.roleId),scene=owner?.scene;
-    if(input&&scene&&form?.dataset.sceneId===scene.id&&scene.draft!==input.value){scene.draft=input.value;meetingDraftDirty=true;}
-    if(persist&&meetingDraftDirty){clearTimeout(meetingDraftTimer);if(save())meetingDraftDirty=false;}
+  function draftNamespace(world:AppData):string {
+    const id=world.draftWorldId;
+    return typeof id==='string'&&/^[a-f0-9]{32}$/.test(id)?`elsewhere-draft-v1:${id}:`:'';
   }
 
-  const chatDraftRound=(r:RoleData)=>r.chatTiming?.round?.id||r.chatTiming?.inFlight?.roundId||r.scene?.opening?.roundId||r.meetings?.at(-1)?.opening?.roundId;
-  function readChatDraft(r:RoleData):string {
-    const remembered=chatDrafts.get(r);
-    if(remembered!==undefined)return remembered;
-    const id=chatDraftRound(r);
-    if(!id)return '';
-    try{
-      const draft=JSON.parse(sessionStorage.getItem('elsewhere-chat-draft:'+r.id)||'null');
-      return draft?.roundId===id&&typeof draft.text==='string'?draft.text:'';
-    }catch{return '';}
+  function draftScope(owner:RoleData,mode:DraftMode,stage:SceneData|PlayData|null):string {
+    return JSON.stringify([owner.id,mode,stage?.id??null]);
   }
-  function captureChatDraft():void {
-    const input=$<HTMLTextAreaElement>('#message-input'),owner=chatDraftOwner;
-    if(!input||!owner||!data.roles.includes(owner))return;
-    chatDrafts.set(owner,input.value);
-    const id=chatDraftRound(owner);
-    if(!id)return;
-    try{
-      const key='elsewhere-chat-draft:'+owner.id;
-      if(input.value)sessionStorage.setItem(key,JSON.stringify({roundId:id,text:input.value}));else sessionStorage.removeItem(key);
-    }catch{/* Keep the draft in this page when tab storage is unavailable. */}
+
+  function readDraft({world,owner,mode,stage}:DraftBinding):string {
+    const scope=draftScope(owner,mode,stage),namespace=draftNamespace(world);
+    let value=draftMemory.get(scope);
+    if(value===undefined&&namespace){
+      try{value=sessionStorage.getItem(namespace+scope)??undefined;}catch{/* Keep drafts in this document. */}
+    }
+    return value??(mode==='scene'?(stage as SceneData).draft??'':'');
   }
+
+  function storeDraft(scope:string,value:string):void {
+    draftMemory.set(scope,value);
+    const namespace=draftNamespace(data);
+    if(namespace){
+      try{sessionStorage.setItem(namespace+scope,value);}catch{/* Keep drafts in this document. */}
+    }
+  }
+
+  function clearDrafts(matches:(scope:string)=>boolean):void {
+    for(const scope of draftMemory.keys())if(matches(scope))draftMemory.delete(scope);
+    const namespace=draftNamespace(data);
+    if(!namespace)return;
+    try{
+      for(const key of Object.keys(sessionStorage)){
+        if(key.startsWith(namespace)&&matches(key.slice(namespace.length)))sessionStorage.removeItem(key);
+      }
+    }catch{/* Tab storage is optional. */}
+  }
+
+  function clearRoleDrafts(r:RoleData):void {
+    const prefix=JSON.stringify([r.id]).slice(0,-1)+',';
+    clearDrafts(scope=>scope.startsWith(prefix));
+  }
+
+  function clearSubmittedDraft(draft:DraftBinding):void {
+    draft.input.value='';
+    const scope=draftScope(draft.owner,draft.mode,draft.stage);
+    clearDrafts(key=>key===scope);
+    // A failed tab-storage removal must not restore sent text in this document.
+    draftMemory.set(scope,'');
+  }
+
+  function draftIsMounted(draft:DraftBinding):boolean {
+    const {world,owner,mode,stage,form,input}=draft;
+    return world===data&&data.roles.includes(owner)&&appRoot.contains(form)&&form.contains(input)&&
+      (mode==='chat'||(mode==='scene'?owner.scene:owner.play)===stage);
+  }
+
+  function captureDrafts(target?:EventTarget|null):void {
+    for(const draft of mountedDrafts){
+      if(draftIsMounted(draft)&&(target===draft.input||target===undefined&&draft.input.value!==readDraft(draft))){
+        storeDraft(draftScope(draft.owner,draft.mode,draft.stage),draft.input.value);
+      }
+    }
+  }
+
+  function bindDrafts():void {
+    mountedDrafts=[];
+    const owner=role();
+    if(!owner)return;
+    const bind=(id:string,mode:DraftMode,stage:SceneData|PlayData|null)=>{
+      const input=$<HTMLTextAreaElement>(id),form=input?.form;
+      if(!input||!form)return;
+      const draft={world:data,owner,mode,stage,form,input};
+      input.value=readDraft(draft);
+      mountedDrafts.push(draft);
+    };
+    if(view==='chat')bind('#message-input','chat',null);
+    if((view==='novel'||view==='intermission')&&novelViewKind==='play'&&owner.play){
+      bind('#novel-input','play',owner.play);
+      bind('#intermission-input','intermission',owner.play);
+    }
+    if(view==='novel'&&novelViewKind==='scene'&&owner.scene)bind('#novel-input','scene',owner.scene);
+  }
+
+  function currentDraft(form:HTMLFormElement):DraftBinding|undefined {
+    const draft=mountedDrafts.find(d=>d.form===form);
+    if(!draft||!draftIsMounted(draft)||draft.owner!==role())return;
+    if(draft.stage?.endedAt!==undefined)return;
+    const {owner,mode}=draft;
+    if(mode==='chat'&&view==='chat')return draft;
+    if(mode==='intermission'&&view==='intermission'&&owner.play?.paused)return draft;
+    if(view!=='novel'||mode!==novelViewKind)return;
+    if(mode==='play'&&!owner.play?.paused)return draft;
+    if(mode==='scene'&&(!owner.scene?.opening||owner.scene.opening.status==='archived'))return draft;
+  }
+
+  function archiveScene(r:RoleData):SceneData|null {
+    const scene=r.scene;
+    if(!scene)return null;
+    const previous=scene.draft;
+    const archived=archiveMeeting(r,now(),()=>{
+      delete scene.draft;
+      if(save())return true;
+      if(previous!==undefined)scene.draft=previous;
+      return false;
+    });
+    if(archived){
+      const scope=draftScope(r,'scene',scene);
+      clearDrafts(key=>key===scope);
+    }
+    return archived;
+  }
+
   function render(scroll = true): void {
-    captureMeetingDraft();
+    captureDrafts();
     if(view==='home' && homeTasks.isOpen()){homeTasks.refresh();return;}
-    if(view==='chat')captureChatDraft();
-    if ($<HTMLFormElement>('#novel-form')?.dataset.sceneId==='' && $('#novel-input')) {
-      novelDraft = ($('#novel-input') as HTMLTextAreaElement).value;
-    }
-    if (view === 'intermission' && $('#intermission-input')) {
-      intermissionDraft = ($('#intermission-input') as HTMLTextAreaElement).value;
-    }
     if (editingMessageId && $('#inline-edit-form textarea')) {
       editingMessageDraft = (
         $('#inline-edit-form textarea') as HTMLTextAreaElement
@@ -4589,6 +4682,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     terminalAppearance.detach();
     homePager.detach();
     renderWithAvatars(app,markup);
+    bindDrafts();
     refreshSaveAccess();
     clearMediaURLs();
     novelDisplay.mount(app);
@@ -4611,11 +4705,11 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   }
 
   let leavingPresets=false;
-  window.addEventListener('beforeunload',(event)=>{captureMeetingDraft();if(fruitManager.hasUnsaved()){event.preventDefault();event.returnValue='';}});
+  window.addEventListener('beforeunload',(event)=>{captureDrafts();if(fruitManager.hasUnsaved()){event.preventDefault();event.returnValue='';}});
   function go(v: string,kind?:NovelKind,persist=true,settlingScene=false): void {
     if(kind)novelViewKind=kind;
     if(v==='intermission')novelViewKind='play';
-    captureMeetingDraft();
+    captureDrafts();
     if(v!=='home')homeTasks.close();
     if(v==='landing'&&data.selected&&novelTasks.cancel(data.selected))busy=false;
     const preserveStage=(view==='novel'&&v==='intermission')||(view==='intermission'&&v==='novel');
@@ -4632,7 +4726,6 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       notify('专注期间已锁定，先结束本轮才能切换手机');
       return;
     }
-    if(view==='chat')captureChatDraft();
     if (v !== view) {
       editingMessageId = null;
       editingMessageDraft = '';
@@ -5375,42 +5468,31 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     catch{cancelVoiceOperation(op);render(false);notify('无法确认录音结尾，未发送。');}
   }
 
-  async function submitText(
-    kind: 'chat' | 'scene' | 'play',
-    text: string
-  ): Promise<void> {
-    const r=role();
-    if(!r||!text.trim())return;
+  async function submitText(draft:DraftBinding,text:string):Promise<void> {
+    const {mode:kind,owner:r,stage:p}=draft;
+    if(kind==='intermission')return;
     if(kind==='chat'){
       const item:ChatMessage={id:uid(),speaker:'me',text:text.trim(),at:now(),kind:'chat',status:'active',quote:quotingMessage||null};
       if(acceptPhoneMessage(r,item)){
-        const input=$<HTMLTextAreaElement>('#message-input');if(input)input.value='';
-        captureChatDraft();render(false);
+        clearSubmittedDraft(draft);
+        render(false);
       }
       return;
     }
-    if(busy)return;
-    const p=kind==='play'?r.play:r.scene;
-    if(!p){notify('请先打开当前场景');return;}
-    if(kind==='scene'&&r.scene?.opening&&r.scene.opening.status!=='archived')return;
-    if(kind==='play'&&r.play?.paused){
-      go('intermission');
-      notify('正在幕间，需先返回戏剧才能推进剧情');
-      return;
-    }
+    if(!p)return;
+    const scene=kind==='scene'?p as SceneData:null,legacyDraft=scene?.draft;
     const events=r.events.length,at=now(),useKind=kind;
     const obj:ChatMessage={id:uid(),speaker:'me',text:text.trim(),at,kind,status:'active',quote:quotingMessage||null};
     busy=true;quotingMessage=null;
     p.messages.push(obj);
     entry(r,kind==='play'?'drama':'scene',kind==='play'?'你在戏里说过':'你在见面时说过',obj.text,at,{source:p.id,messageId:obj.id,speaker:'me',knownBy:['user',r.id]});
-    syslog('chat',`${useKind} 用户消息已提交`,{source:obj.id});
-    if(!save()){
+    if(scene)delete scene.draft;
+    if(!saveLogged('chat',`${useKind} 用户消息已提交`,{source:obj.id})){
       p.messages.pop();r.events.length=events;quotingMessage=obj.quote||null;
-      if(kind==='play')novelDraft=obj.text;
-      if(kind==='scene'&&r.scene)r.scene.draft=obj.text;
-      const input=$<HTMLTextAreaElement>('#novel-input');if(input)input.value=obj.text;
+      if(scene&&legacyDraft!==undefined)scene.draft=legacyDraft;
       busy=false;render(false);return;
     }
+    clearSubmittedDraft(draft);
     render();
     if(awaitingNainOpening(r)&&!canUseRealModel(data.settings)){busy=false;render(false);notify('你的消息已保存；连接 API 后才能生成角色首条回复。');return;}
     const submittedStage=useKind==='scene'?r.scene:r.play;
@@ -5589,9 +5671,10 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         r.chats.length=chats;
         return;
       }
+      const performance=draftScope(r,'play',p),backstage=draftScope(r,'intermission',p);
+      clearDrafts(scope=>scope===performance||scope===backstage);
     } else if (kind==='scene'&&r.scene) {
-      captureMeetingDraft();
-      try{archiveMeeting(r,now(),save);}catch(error){notify(error instanceof Error?error.message:'见面未能归档，现场已保留');return;}
+      try{archiveScene(r);}catch(error){notify(error instanceof Error?error.message:'见面未能归档，现场已保留');return;}
       if(returnToChat)go('chat');
       else if(view==='home')render(false);
       else if(view==='chat')patchDynamicRegionsOnTick();
@@ -5644,10 +5727,11 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         try {next.focus = ensureFocusStateNormalized(next.focus,next.roles);}
         catch {throw new Error('专注备份结构无效');}
         next.selected = null;
+        delete next.draftWorldId;
         await stageBackupMedia(next,attachments);
         if(data!==previous||saveSession.raw!==baseline)throw Error('暂存期间世界已变化，未替换存档。');
         if(!save(next))throw Error(saveError());
-        try{for(const owner of next.roles)sessionStorage.removeItem('elsewhere-chat-draft:'+owner.id);}catch{/* Per-tab draft storage is optional. */}
+        clearDrafts(()=>true);
         suspendVoiceOperations(false);
         data = next;
         mediaSources.clear();
@@ -5702,7 +5786,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       const result=resetNainStart(data,r.id,saveSession.storage,now());
       if(data!==result.data)suspendVoiceOperations(false);
       data=result.data;
-      if(result.cleaned){chatDrafts.delete(r);novelDraft='';intermissionDraft='';render(false);notify('奈恩已恢复到等待 API 首条消息的起点，恢复副本已保存。');}
+      if(result.cleaned){clearRoleDrafts(r);render(false);notify('奈恩已恢复到等待 API 首条消息的起点，恢复副本已保存。');}
       else notify(result.error||'当前角色已经清理过，未重复执行。');
       return;
     }
@@ -5730,7 +5814,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       busy=true;render(false);
       void generateNovelReply(current,kind,latest.text).catch(error=>notify('生成未完成：'+(error instanceof Error?error.message:'连接异常'))).finally(()=>{busy=novelTasks.has(data.selected||'');if(view==='novel'&&role()===current)render(false);});return;
     }
-    if(act==='intermissionreply'){void requestIntermissionReply();return;}
+    if(act==='intermissionreply'){void requestIntermissionReply(b.closest('form'));return;}
     if (act === 'chatpanel') {
       setChatPanel(chatPanel===b.dataset.panel?'':b.dataset.panel||'');
       render(false);
@@ -5773,7 +5857,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       return;
     }
     if (act === 'enter') {
-      captureMeetingDraft();
+      captureDrafts();
       if (activeFocus()?.phase === 'work') {
         go('focus');
         return;
@@ -5825,7 +5909,6 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     }
     if (act === 'chatroleedit') {
       if (!r) return;
-      captureChatDraft();
       formMode = 'edit';
       editingRoleId = r.id;
       roleFormReturnView = 'chat';
@@ -6715,6 +6798,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       data.logs = (data.logs || []).filter((x) => x.roleId !== target.id);
       data.selected = null;
       if(!saveLogged('role',`已删除角色及其存档：${target.name}`)){Object.assign(data,previous);return;}
+      clearRoleDrafts(target);
       editingRoleId = null;
       deleteRoleId = null;
       go('landing',undefined,false);
@@ -6722,20 +6806,15 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       return;
     }
 
-    if (f.id === 'message-form') {
-      const inputEl = $('#message-input') as HTMLTextAreaElement | null;
-      const t = inputEl?.value || '';
-      if(isComposing||!t.trim())return;
-      void submitText('chat',t);
-      return;
-    }
-
-    if (f.id === 'intermission-form') {
-      const inputEl = $('#intermission-input') as HTMLTextAreaElement | null;
-      const t = String(fd.get('text') || inputEl?.value || '').trim();
-      intermissionDraft = '';
-      if (inputEl) inputEl.value = '';
-      submitIntermission(t);
+    if (f.id==='message-form'||f.id==='novel-form'||f.id==='intermission-form') {
+      const draft=currentDraft(f);
+      if(!draft||isComposing||draft.mode!=='chat'&&busy)return;
+      const text=draft.input.value;
+      if(!text.trim())return;
+      captureDrafts(draft.input);
+      if(!checkWriteAccess())return;
+      if(draft.mode==='intermission')submitIntermission(draft,text);
+      else void submitText(draft,text);
       return;
     }
 
@@ -6759,18 +6838,6 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if(!saveLogged('intermission','幕间修改剧本设定',{source:p.id})){restoreFields(p,previous);return;}
       render();
       notify('设定已保存，返回演出后生效');
-      return;
-    }
-
-    if (f.id === 'novel-form') {
-      const inputEl = $('#novel-input') as HTMLTextAreaElement | null;
-      const t = inputEl?.value || '';
-      const opening=f.dataset.sceneId?role()?.scene?.opening:undefined;
-      if(busy||!t.trim()||opening&&opening.status!=='archived'||!checkWriteAccess())return;
-      if(f.dataset.sceneId==='')novelDraft = '';
-      if (inputEl) inputEl.value = '';
-      captureMeetingDraft();
-      submitText(novelViewKind,t);
       return;
     }
 
@@ -7019,9 +7086,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
 
   appRoot.addEventListener('input', (e) => {
     const el = e.target as HTMLTextAreaElement | HTMLInputElement;
-    if (el.id === 'message-input') captureChatDraft();
-    if (el.id === 'novel-input') {if($<HTMLFormElement>('#novel-form')?.dataset.sceneId==='')novelDraft=el.value;captureMeetingDraft(false);clearTimeout(meetingDraftTimer);meetingDraftTimer=setTimeout(()=>captureMeetingDraft(),300);}
-    if (el.id === 'intermission-input') intermissionDraft = el.value;
+    if(el.hasAttribute('data-scoped-draft')){captureDrafts(el);return;}
     if (el.id === 'focus-task-input') {
       focusTaskInputDraft = el.value;
       return;
@@ -7117,6 +7182,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   }
   window.addEventListener('storage',event=>{if(event.key===STORAGE_KEY||event.key===null)refreshSaveAccess();});
   window.addEventListener('pagehide',()=>{
+    captureDrafts();
     voicePageHidden=true;
     suspendVoiceOperations(true);
   });
@@ -7128,7 +7194,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   document.addEventListener('visibilitychange',()=>{
     if(document.hidden&&(voiceOperation?.phase==='waiting'||voiceOperation?.phase==='recording'))leaveVoicePanel();
     else if(!document.hidden&&!voicePageHidden&&view==='chat'&&chatPanel==='voice')render(false);
-    captureMeetingDraft(document.hidden&&saveSession.hasWriter());
+    if(document.hidden)captureDrafts();
     if(!document.hidden){refreshSaveAccess();if(view==='home')homeTasks.refresh();}
   });
   window.addEventListener(SAVE_ACCESS_EVENT,refreshSaveAccess);

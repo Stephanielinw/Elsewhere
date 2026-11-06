@@ -86,7 +86,7 @@ export function captureUIState(root: Document | HTMLElement = document): UIPrese
   const inputs: Record<string, string> = {};
 
   root.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('input, textarea, select').forEach((el) => {
-    if (el.type === 'file' || el.type === 'checkbox' || el.type === 'radio') return;
+    if (el.hasAttribute('data-scoped-draft') || el.type === 'file' || el.type === 'checkbox' || el.type === 'radio') return;
     const key = el.id
       ? `#${el.id}`
       : el.getAttribute('data-preset-content') !== null

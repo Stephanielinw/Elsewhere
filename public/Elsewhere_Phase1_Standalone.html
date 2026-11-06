@@ -14005,7 +14005,7 @@ channel.onmessage=async({data:job})=>{
     const active = doc.activeElement;
     const inputs = {};
     root.querySelectorAll("input, textarea, select").forEach((el) => {
-      if (el.type === "file" || el.type === "checkbox" || el.type === "radio") return;
+      if (el.hasAttribute("data-scoped-draft") || el.type === "file" || el.type === "checkbox" || el.type === "radio") return;
       const key2 = el.id ? `#${el.id}` : el.getAttribute("data-preset-content") !== null ? `[data-preset-content="${el.getAttribute("data-preset-content")}"]` : el.name ? el.closest("form")?.id ? `#${el.closest("form").id} [name="${el.name}"]` : `[name="${el.name}"]` : "";
       if (key2) {
         inputs[key2] = el.value;
@@ -14765,14 +14765,11 @@ ${prevLogs}` : "",
     const activeChatRequests = /* @__PURE__ */ new Map();
     const chatTyping = /* @__PURE__ */ new Set();
     let chatPanel = "";
-    const chatDrafts = /* @__PURE__ */ new WeakMap();
-    let chatDraftOwner;
-    let novelDraft = "";
+    const draftMemory = /* @__PURE__ */ new Map();
+    const draftWorldCandidates = /* @__PURE__ */ new WeakMap();
+    let mountedDrafts = [];
     let novelViewKind = "scene";
-    let meetingDraftTimer;
-    let meetingDraftDirty = false;
     let systemLogDate = null;
-    let intermissionDraft = "";
     const voiceLimit = 8 * 1024 * 1024;
     let voiceOperation = null, voiceSequence = 0, voicePageHidden = false;
     const voiceFinishing = /* @__PURE__ */ new Map();
@@ -15665,16 +15662,33 @@ ${prevLogs}` : "",
       return false;
     }
     const save = (world = data) => {
+      const originalId = world.draftWorldId;
+      let assigned = false, confirmed = false;
       try {
+        if (!draftNamespace(world) && saveSession.hasWriter()) {
+          const candidate = draftWorldCandidates.get(world) || crypto.getRandomValues(new Uint32Array(4)).reduce((id, part) => id + part.toString(16).padStart(8, "0"), "");
+          draftWorldCandidates.set(world, candidate);
+          world.draftWorldId = candidate;
+          assigned = true;
+        }
         if (!saveSession.write(JSON.stringify(world))) {
           notify(saveError());
           refreshSaveAccess();
           return false;
         }
+        confirmed = true;
+        if (assigned && world === data) {
+          for (const [scope, value] of draftMemory) storeDraft(scope, value);
+        }
         return true;
       } catch {
         notify("\u5B58\u6863\u65E0\u6CD5\u5E8F\u5217\u5316\uFF0C\u672A\u5199\u5165\u3002");
         return false;
+      } finally {
+        if (assigned && !confirmed) {
+          if (originalId === void 0) delete world.draftWorldId;
+          else world.draftWorldId = originalId;
+        }
       }
     };
     function saveLogged(type, detail, extra) {
@@ -15780,7 +15794,7 @@ ${prevLogs}` : "",
         const result = commitSceneDecision(r, decision, now(), uid(), save, { requestId: ticket.requestId, replyIds: replies.map((m) => m.id), contextIds: ticket.contextIds });
         traceStorage("scene-save-confirmed", { hasScene: !!r.scene, result });
         if (result === "left") {
-          if (!archiveMeeting(r, now(), save)) throw new Error("\u89C1\u9762\u5F52\u6863\u672A\u5B8C\u6210");
+          if (!archiveScene(r)) throw new Error("\u89C1\u9762\u5F52\u6863\u672A\u5B8C\u6210");
           if (role() === r && view === "novel" && novelViewKind === "scene") go("chat");
         } else if (result === "none" && !save()) throw new Error("\u72B6\u6001\u786E\u8BA4\u4FDD\u5B58\u5931\u8D25");
         if (result !== "none") syslog("scene-state", "\u540C\u6B21\u751F\u6210\u7684\u573A\u666F\u4E8B\u4EF6\u5DF2\u4FDD\u5B58", { roleId: r.id, action: decision.action, source: ticket.sceneId || r.scene?.id });
@@ -17200,7 +17214,6 @@ ${prevLogs}` : "",
     }
     function screenChat() {
       const r = role();
-      chatDraftOwner = r;
       const offline = !!(chatSceneEntry(r.chatTiming) || r.chatTiming?.inFlight?.entry);
       const focused = isFocused(r);
       const pawStateClass = focused ? "is-dark" : "is-light";
@@ -17225,7 +17238,7 @@ ${prevLogs}` : "",
         )}\uFF1A\u300C${esc(quotingMessage.text)}\u300D</div>
         <button type="button" data-action="cancelquote" aria-label="\u53D6\u6D88\u5F15\u7528">\u53D6\u6D88\u5F15\u7528</button>
       </div>` : ""}
- <form class="compose" id="message-form"><textarea id="message-input" rows="1" placeholder="\u53D1\u9001\u4FE1\u606F" aria-label="\u8F93\u5165\u6D88\u606F">${esc(readChatDraft(r))}</textarea><button type="button" class="compose-plus" data-action="chatpanel" data-panel="more" aria-label="\u6253\u5F00\u804A\u5929\u529F\u80FD" aria-expanded="${chatPanel === "more"}">${chatPanel === "more" ? attachmentIcon("close") : attachmentIcon("more")}</button><button type="button" class="compose-offline" data-action="offline-round" aria-label="\u7EBF\u4E0B\u6A21\u5F0F" aria-pressed="${offline}" ${canChooseChatScene(r.chatTiming, now()) && !ongoing(r) ? "" : "disabled"} title="\u9009\u62E9\u672C\u8F6E\u805A\u5408\u7ED3\u675F\u540E\u8FDB\u5165\u9762\u5BF9\u9762">\u7EBF\u4E0B</button><button class="send-btn" aria-label="\u53D1\u9001\u6D88\u606F">${uiIcon("send")}</button></form>`,
+ <form class="compose" id="message-form"><textarea id="message-input" data-scoped-draft rows="1" placeholder="\u53D1\u9001\u4FE1\u606F" aria-label="\u8F93\u5165\u6D88\u606F"></textarea><button type="button" class="compose-plus" data-action="chatpanel" data-panel="more" aria-label="\u6253\u5F00\u804A\u5929\u529F\u80FD" aria-expanded="${chatPanel === "more"}">${chatPanel === "more" ? attachmentIcon("close") : attachmentIcon("more")}</button><button type="button" class="compose-offline" data-action="offline-round" aria-label="\u7EBF\u4E0B\u6A21\u5F0F" aria-pressed="${offline}" ${canChooseChatScene(r.chatTiming, now()) && !ongoing(r) ? "" : "disabled"} title="\u9009\u62E9\u672C\u8F6E\u805A\u5408\u7ED3\u675F\u540E\u8FDB\u5165\u9762\u5BF9\u9762">\u7EBF\u4E0B</button><button class="send-btn" aria-label="\u53D1\u9001\u6D88\u606F">${uiIcon("send")}</button></form>`,
         false
       );
     }
@@ -17891,9 +17904,7 @@ ${prevLogs}` : "",
               <button type="button" data-action="cancelquote">\u53D6\u6D88\u5F15\u7528</button>
             </div>` : ""}
       ${openingPending ? `<div class="chat-feedback" role="status" data-scene-opening="${esc(opening.status)}"><p>${busy ? "\u6B63\u5728\u51C6\u5907\u6216\u751F\u6210\u672C\u8F6E\u9762\u5BF9\u9762\u56DE\u590D\u3002" : opening.status === "unsent" ? "\u573A\u666F\u5DF2\u4FDD\u5B58\uFF0C\u9996\u6B21\u8BF7\u6C42\u5C1A\u672A\u53D1\u9001\u3002" : "\u9996\u6B21\u8BF7\u6C42\u6216\u4FDD\u5B58\u7ED3\u679C\u672A\u786E\u8BA4\u3002\u53EF\u5148\u5237\u65B0\u6838\u5BF9\uFF0C\u91CD\u8BD5\u53EF\u80FD\u518D\u6B21\u8BA1\u8D39\u3002"}</p>${busy ? "" : `<button type="button" class="btn secondary" data-action="resume-scene-opening">${opening.status === "unsent" ? "\u7EE7\u7EED\u672C\u8F6E" : "\u91CD\u65B0\u53D1\u9001\u9996\u6B21\u8BF7\u6C42"}</button>`}</div>` : ""}
-      <form class="compose" id="novel-form" data-role-id="${esc(r.id)}" data-scene-id="${isPlay ? "" : esc(p.id)}"><textarea id="novel-input" ${showBackstage ? "disabled" : ""} placeholder="\u5199\u4E0B\u4F60\u8BF4\u7684\u8BDD\u6216\u884C\u52A8..." rows="1">${esc(
-          isPlay ? novelDraft : r.scene?.draft || ""
-        )}</textarea><button class="btn" ${busy || showBackstage || openingPending ? "disabled" : ""}>${uiIcon("send")}</button>${data.settings.mode === "api" && !showBackstage && !openingPending && activeMessages.at(-1)?.speaker === "me" ? `<button type="button" class="btn secondary" data-action="retry-novel" ${busy ? "disabled" : ""} title="\u4E0D\u91CD\u590D\u6DFB\u52A0\u7528\u6237\u6D88\u606F">\u91CD\u8BD5\u56DE\u590D</button>` : ""}</form></section>${showBackstage ? renderIntermissionPanel(r, p) : ""}</div>`,
+      <form class="compose" id="novel-form" data-role-id="${esc(r.id)}" data-scene-id="${isPlay ? "" : esc(p.id)}"><textarea id="novel-input" data-scoped-draft ${showBackstage ? "disabled" : ""} placeholder="\u5199\u4E0B\u4F60\u8BF4\u7684\u8BDD\u6216\u884C\u52A8..." rows="1"></textarea><button class="btn" ${busy || showBackstage || openingPending ? "disabled" : ""}>${uiIcon("send")}</button>${data.settings.mode === "api" && !showBackstage && !openingPending && activeMessages.at(-1)?.speaker === "me" ? `<button type="button" class="btn secondary" data-action="retry-novel" ${busy ? "disabled" : ""} title="\u4E0D\u91CD\u590D\u6DFB\u52A0\u7528\u6237\u6D88\u606F">\u91CD\u8BD5\u56DE\u590D</button>` : ""}</form></section>${showBackstage ? renderIntermissionPanel(r, p) : ""}</div>`,
         false
       );
     }
@@ -17929,32 +17940,29 @@ ${prevLogs}` : "",
       )}\u7684\u620F\u5185\u89D2\u8272</label><textarea name="char" class="field">${esc(
         p.char || ""
       )}</textarea><button class="btn small full">\u4FDD\u5B58\u4FEE\u6539\u540E\u7684\u6F14\u51FA\u8BBE\u5B9A</button></form><button class="btn secondary full" data-action="rollbackplay" ${lastTurns.length ? "" : "disabled"}>\u56DE\u9000\u521A\u624D\u4E00\u8F6E\u620F\u5185\u4E92\u52A8</button><p class="sub">\u4EC5\u56DE\u9000\u620F\u5185\u5DF2\u6F14\u7684\u6700\u540E\u4E00\u8F6E\uFF1B\u65E7\u7248\u672C\u7559\u5728\u5E55\u95F4\u4FEE\u8BA2\u6863\u6848\uFF0C\u620F\u5185\u6B63\u5F0F\u5267\u60C5\u4E0D\u518D\u5F15\u7528\u5B83\u3002\u6F14\u5458\u4ECD\u53EF\u80FD\u8BB0\u5F97\u4F60\u4EEC\u8BD5\u8FC7\u53E6\u4E00\u79CD\u6F14\u6CD5\u3002</p></details>
- <form class="compose intermission-compose" id="intermission-form"><textarea id="intermission-input" placeholder="\u548C\u620F\u5916\u7684${esc(r.name)}\u804A\u804A\u2026\u2026" rows="1" required ${busy ? "disabled" : ""}>${esc(intermissionDraft)}</textarea><button class="btn" type="submit" ${busy ? "disabled" : ""} aria-label="\u53D1\u9001\u5E55\u95F4\u6D88\u606F\uFF08\u4E0D\u89E6\u53D1 AI\uFF09" title="\u4EC5\u53D1\u9001\u4F60\u7684\u6D88\u606F">\u53D1\u9001</button><button type="button" class="btn intermission-paw" data-action="intermissionreply" ${busy ? "disabled" : ""} aria-label="\u8BA9 AI \u56DE\u590D\u5E55\u95F4\u8BA8\u8BBA" title="\u4EC5\u70B9\u722A\u5370\u624D\u89E6\u53D1 AI \u56DE\u590D">${catPawSvg(true)}<span>AI \u56DE\u590D</span></button></form></aside>`;
+ <form class="compose intermission-compose" id="intermission-form"><textarea id="intermission-input" data-scoped-draft placeholder="\u548C\u620F\u5916\u7684${esc(r.name)}\u804A\u804A\u2026\u2026" rows="1" required ${busy ? "disabled" : ""}></textarea><button class="btn" type="submit" ${busy ? "disabled" : ""} aria-label="\u53D1\u9001\u5E55\u95F4\u6D88\u606F\uFF08\u4E0D\u89E6\u53D1 AI\uFF09" title="\u4EC5\u53D1\u9001\u4F60\u7684\u6D88\u606F">\u53D1\u9001</button><button type="button" class="btn intermission-paw" data-action="intermissionreply" ${busy ? "disabled" : ""} aria-label="\u8BA9 AI \u56DE\u590D\u5E55\u95F4\u8BA8\u8BBA" title="\u4EC5\u70B9\u722A\u5370\u624D\u89E6\u53D1 AI \u56DE\u590D">${catPawSvg(true)}<span>AI \u56DE\u590D</span></button></form></aside>`;
     }
-    function submitIntermission(text2) {
-      const r = role(), p = r?.play;
-      if (!r || !p || busy || !p.paused || !text2.trim()) return;
+    function submitIntermission(draft, text2) {
+      const p = draft.owner.play;
       ensureIntermission(p);
       const message = { id: uid(), speaker: "me", text: text2.trim(), at: now(), status: "active" };
       p.intermissionMessages.push(message);
       if (!save()) {
         p.intermissionMessages.pop();
-        intermissionDraft = text2;
-        const input = $("#intermission-input");
-        if (input) input.value = text2;
         return;
       }
-      intermissionDraft = "";
+      clearSubmittedDraft(draft);
       syslog("intermission", "\u5E55\u95F4\u7528\u6237\u53D1\u8A00\u5DF2\u4FDD\u5B58\uFF1B\u7B49\u5F85\u722A\u5370\u89E6\u53D1\u56DE\u590D", { source: p.id });
       render(false);
       const area = $("#intermission-scroll");
       if (area) area.scrollTop = area.scrollHeight;
       $("#intermission-input")?.focus({ preventScroll: true });
     }
-    async function requestIntermissionReply() {
-      const r = role(), p = r?.play;
-      if (!r || !p || busy || !p.paused) return;
-      if (intermissionDraft.trim()) {
+    async function requestIntermissionReply(form) {
+      const draft = form && currentDraft(form);
+      if (!draft || draft.mode !== "intermission" || busy) return;
+      const r = draft.owner, p = r.play;
+      if (draft.input.value.trim()) {
         notify("\u8FD9\u6BB5\u6587\u5B57\u5C1A\u672A\u53D1\u9001\uFF0C\u8BF7\u5148\u70B9\u53D1\u9001\uFF0C\u518D\u70B9\u722A\u5370\u3002");
         return;
       }
@@ -18299,56 +18307,116 @@ ${prevLogs}` : "",
         }
       }
     }
-    function captureMeetingDraft(persist = true) {
-      const form = $("#novel-form"), input = $("#novel-input");
-      const owner = data.roles.find((r) => r.id === form?.dataset.roleId), scene = owner?.scene;
-      if (input && scene && form?.dataset.sceneId === scene.id && scene.draft !== input.value) {
-        scene.draft = input.value;
-        meetingDraftDirty = true;
+    function draftNamespace(world) {
+      const id = world.draftWorldId;
+      return typeof id === "string" && /^[a-f0-9]{32}$/.test(id) ? `elsewhere-draft-v1:${id}:` : "";
+    }
+    function draftScope(owner, mode, stage2) {
+      return JSON.stringify([owner.id, mode, stage2?.id ?? null]);
+    }
+    function readDraft({ world, owner, mode, stage: stage2 }) {
+      const scope = draftScope(owner, mode, stage2), namespace = draftNamespace(world);
+      let value = draftMemory.get(scope);
+      if (value === void 0 && namespace) {
+        try {
+          value = sessionStorage.getItem(namespace + scope) ?? void 0;
+        } catch {
+        }
       }
-      if (persist && meetingDraftDirty) {
-        clearTimeout(meetingDraftTimer);
-        if (save()) meetingDraftDirty = false;
+      return value ?? (mode === "scene" ? stage2.draft ?? "" : "");
+    }
+    function storeDraft(scope, value) {
+      draftMemory.set(scope, value);
+      const namespace = draftNamespace(data);
+      if (namespace) {
+        try {
+          sessionStorage.setItem(namespace + scope, value);
+        } catch {
+        }
       }
     }
-    const chatDraftRound = (r) => r.chatTiming?.round?.id || r.chatTiming?.inFlight?.roundId || r.scene?.opening?.roundId || r.meetings?.at(-1)?.opening?.roundId;
-    function readChatDraft(r) {
-      const remembered = chatDrafts.get(r);
-      if (remembered !== void 0) return remembered;
-      const id = chatDraftRound(r);
-      if (!id) return "";
+    function clearDrafts(matches) {
+      for (const scope of draftMemory.keys()) if (matches(scope)) draftMemory.delete(scope);
+      const namespace = draftNamespace(data);
+      if (!namespace) return;
       try {
-        const draft = JSON.parse(sessionStorage.getItem("elsewhere-chat-draft:" + r.id) || "null");
-        return draft?.roundId === id && typeof draft.text === "string" ? draft.text : "";
+        for (const key2 of Object.keys(sessionStorage)) {
+          if (key2.startsWith(namespace) && matches(key2.slice(namespace.length))) sessionStorage.removeItem(key2);
+        }
       } catch {
-        return "";
       }
     }
-    function captureChatDraft() {
-      const input = $("#message-input"), owner = chatDraftOwner;
-      if (!input || !owner || !data.roles.includes(owner)) return;
-      chatDrafts.set(owner, input.value);
-      const id = chatDraftRound(owner);
-      if (!id) return;
-      try {
-        const key2 = "elsewhere-chat-draft:" + owner.id;
-        if (input.value) sessionStorage.setItem(key2, JSON.stringify({ roundId: id, text: input.value }));
-        else sessionStorage.removeItem(key2);
-      } catch {
+    function clearRoleDrafts(r) {
+      const prefix = JSON.stringify([r.id]).slice(0, -1) + ",";
+      clearDrafts((scope) => scope.startsWith(prefix));
+    }
+    function clearSubmittedDraft(draft) {
+      draft.input.value = "";
+      const scope = draftScope(draft.owner, draft.mode, draft.stage);
+      clearDrafts((key2) => key2 === scope);
+      draftMemory.set(scope, "");
+    }
+    function draftIsMounted(draft) {
+      const { world, owner, mode, stage: stage2, form, input } = draft;
+      return world === data && data.roles.includes(owner) && appRoot.contains(form) && form.contains(input) && (mode === "chat" || (mode === "scene" ? owner.scene : owner.play) === stage2);
+    }
+    function captureDrafts(target) {
+      for (const draft of mountedDrafts) {
+        if (draftIsMounted(draft) && (target === draft.input || target === void 0 && draft.input.value !== readDraft(draft))) {
+          storeDraft(draftScope(draft.owner, draft.mode, draft.stage), draft.input.value);
+        }
       }
+    }
+    function bindDrafts() {
+      mountedDrafts = [];
+      const owner = role();
+      if (!owner) return;
+      const bind = (id, mode, stage2) => {
+        const input = $(id), form = input?.form;
+        if (!input || !form) return;
+        const draft = { world: data, owner, mode, stage: stage2, form, input };
+        input.value = readDraft(draft);
+        mountedDrafts.push(draft);
+      };
+      if (view === "chat") bind("#message-input", "chat", null);
+      if ((view === "novel" || view === "intermission") && novelViewKind === "play" && owner.play) {
+        bind("#novel-input", "play", owner.play);
+        bind("#intermission-input", "intermission", owner.play);
+      }
+      if (view === "novel" && novelViewKind === "scene" && owner.scene) bind("#novel-input", "scene", owner.scene);
+    }
+    function currentDraft(form) {
+      const draft = mountedDrafts.find((d) => d.form === form);
+      if (!draft || !draftIsMounted(draft) || draft.owner !== role()) return;
+      if (draft.stage?.endedAt !== void 0) return;
+      const { owner, mode } = draft;
+      if (mode === "chat" && view === "chat") return draft;
+      if (mode === "intermission" && view === "intermission" && owner.play?.paused) return draft;
+      if (view !== "novel" || mode !== novelViewKind) return;
+      if (mode === "play" && !owner.play?.paused) return draft;
+      if (mode === "scene" && (!owner.scene?.opening || owner.scene.opening.status === "archived")) return draft;
+    }
+    function archiveScene(r) {
+      const scene = r.scene;
+      if (!scene) return null;
+      const previous = scene.draft;
+      const archived = archiveMeeting(r, now(), () => {
+        delete scene.draft;
+        if (save()) return true;
+        if (previous !== void 0) scene.draft = previous;
+        return false;
+      });
+      if (archived) {
+        const scope = draftScope(r, "scene", scene);
+        clearDrafts((key2) => key2 === scope);
+      }
+      return archived;
     }
     function render(scroll = true) {
-      captureMeetingDraft();
+      captureDrafts();
       if (view === "home" && homeTasks.isOpen()) {
         homeTasks.refresh();
         return;
-      }
-      if (view === "chat") captureChatDraft();
-      if ($("#novel-form")?.dataset.sceneId === "" && $("#novel-input")) {
-        novelDraft = $("#novel-input").value;
-      }
-      if (view === "intermission" && $("#intermission-input")) {
-        intermissionDraft = $("#intermission-input").value;
       }
       if (editingMessageId && $("#inline-edit-form textarea")) {
         editingMessageDraft = $("#inline-edit-form textarea").value;
@@ -18372,6 +18440,7 @@ ${prevLogs}` : "",
       terminalAppearance.detach();
       homePager.detach();
       renderWithAvatars(app, markup);
+      bindDrafts();
       refreshSaveAccess();
       clearMediaURLs();
       novelDisplay.mount(app);
@@ -18397,7 +18466,7 @@ ${prevLogs}` : "",
     }
     let leavingPresets = false;
     window.addEventListener("beforeunload", (event) => {
-      captureMeetingDraft();
+      captureDrafts();
       if (fruitManager.hasUnsaved()) {
         event.preventDefault();
         event.returnValue = "";
@@ -18406,7 +18475,7 @@ ${prevLogs}` : "",
     function go(v, kind, persist = true, settlingScene = false) {
       if (kind) novelViewKind = kind;
       if (v === "intermission") novelViewKind = "play";
-      captureMeetingDraft();
+      captureDrafts();
       if (v !== "home") homeTasks.close();
       if (v === "landing" && data.selected && novelTasks.cancel(data.selected)) busy = false;
       const preserveStage = view === "novel" && v === "intermission" || view === "intermission" && v === "novel";
@@ -18432,7 +18501,6 @@ ${prevLogs}` : "",
         notify("\u4E13\u6CE8\u671F\u95F4\u5DF2\u9501\u5B9A\uFF0C\u5148\u7ED3\u675F\u672C\u8F6E\u624D\u80FD\u5207\u6362\u624B\u673A");
         return;
       }
-      if (view === "chat") captureChatDraft();
       if (v !== view) {
         editingMessageId = null;
         editingMessageDraft = "";
@@ -19218,50 +19286,36 @@ ${prevLogs}` : "",
         notify("\u65E0\u6CD5\u786E\u8BA4\u5F55\u97F3\u7ED3\u5C3E\uFF0C\u672A\u53D1\u9001\u3002");
       }
     }
-    async function submitText(kind, text2) {
-      const r = role();
-      if (!r || !text2.trim()) return;
+    async function submitText(draft, text2) {
+      const { mode: kind, owner: r, stage: p } = draft;
+      if (kind === "intermission") return;
       if (kind === "chat") {
         const item = { id: uid(), speaker: "me", text: text2.trim(), at: now(), kind: "chat", status: "active", quote: quotingMessage || null };
         if (acceptPhoneMessage(r, item)) {
-          const input = $("#message-input");
-          if (input) input.value = "";
-          captureChatDraft();
+          clearSubmittedDraft(draft);
           render(false);
         }
         return;
       }
-      if (busy) return;
-      const p = kind === "play" ? r.play : r.scene;
-      if (!p) {
-        notify("\u8BF7\u5148\u6253\u5F00\u5F53\u524D\u573A\u666F");
-        return;
-      }
-      if (kind === "scene" && r.scene?.opening && r.scene.opening.status !== "archived") return;
-      if (kind === "play" && r.play?.paused) {
-        go("intermission");
-        notify("\u6B63\u5728\u5E55\u95F4\uFF0C\u9700\u5148\u8FD4\u56DE\u620F\u5267\u624D\u80FD\u63A8\u8FDB\u5267\u60C5");
-        return;
-      }
+      if (!p) return;
+      const scene = kind === "scene" ? p : null, legacyDraft = scene?.draft;
       const events = r.events.length, at = now(), useKind = kind;
       const obj = { id: uid(), speaker: "me", text: text2.trim(), at, kind, status: "active", quote: quotingMessage || null };
       busy = true;
       quotingMessage = null;
       p.messages.push(obj);
       entry2(r, kind === "play" ? "drama" : "scene", kind === "play" ? "\u4F60\u5728\u620F\u91CC\u8BF4\u8FC7" : "\u4F60\u5728\u89C1\u9762\u65F6\u8BF4\u8FC7", obj.text, at, { source: p.id, messageId: obj.id, speaker: "me", knownBy: ["user", r.id] });
-      syslog("chat", `${useKind} \u7528\u6237\u6D88\u606F\u5DF2\u63D0\u4EA4`, { source: obj.id });
-      if (!save()) {
+      if (scene) delete scene.draft;
+      if (!saveLogged("chat", `${useKind} \u7528\u6237\u6D88\u606F\u5DF2\u63D0\u4EA4`, { source: obj.id })) {
         p.messages.pop();
         r.events.length = events;
         quotingMessage = obj.quote || null;
-        if (kind === "play") novelDraft = obj.text;
-        if (kind === "scene" && r.scene) r.scene.draft = obj.text;
-        const input = $("#novel-input");
-        if (input) input.value = obj.text;
+        if (scene && legacyDraft !== void 0) scene.draft = legacyDraft;
         busy = false;
         render(false);
         return;
       }
+      clearSubmittedDraft(draft);
       render();
       if (awaitingNainOpening(r) && !canUseRealModel(data.settings)) {
         busy = false;
@@ -19483,10 +19537,11 @@ ${prevLogs}` : "",
           r.chats.length = chats;
           return;
         }
+        const performance = draftScope(r, "play", p), backstage = draftScope(r, "intermission", p);
+        clearDrafts((scope) => scope === performance || scope === backstage);
       } else if (kind === "scene" && r.scene) {
-        captureMeetingDraft();
         try {
-          archiveMeeting(r, now(), save);
+          archiveScene(r);
         } catch (error) {
           notify(error instanceof Error ? error.message : "\u89C1\u9762\u672A\u80FD\u5F52\u6863\uFF0C\u73B0\u573A\u5DF2\u4FDD\u7559");
           return;
@@ -19548,13 +19603,11 @@ ${prevLogs}` : "",
             throw new Error("\u4E13\u6CE8\u5907\u4EFD\u7ED3\u6784\u65E0\u6548");
           }
           next.selected = null;
+          delete next.draftWorldId;
           await stageBackupMedia(next, attachments);
           if (data !== previous || saveSession.raw !== baseline) throw Error("\u6682\u5B58\u671F\u95F4\u4E16\u754C\u5DF2\u53D8\u5316\uFF0C\u672A\u66FF\u6362\u5B58\u6863\u3002");
           if (!save(next)) throw Error(saveError());
-          try {
-            for (const owner of next.roles) sessionStorage.removeItem("elsewhere-chat-draft:" + owner.id);
-          } catch {
-          }
+          clearDrafts(() => true);
           suspendVoiceOperations(false);
           data = next;
           mediaSources.clear();
@@ -19610,9 +19663,7 @@ ${prevLogs}` : "",
         if (data !== result.data) suspendVoiceOperations(false);
         data = result.data;
         if (result.cleaned) {
-          chatDrafts.delete(r);
-          novelDraft = "";
-          intermissionDraft = "";
+          clearRoleDrafts(r);
           render(false);
           notify("\u5948\u6069\u5DF2\u6062\u590D\u5230\u7B49\u5F85 API \u9996\u6761\u6D88\u606F\u7684\u8D77\u70B9\uFF0C\u6062\u590D\u526F\u672C\u5DF2\u4FDD\u5B58\u3002");
         } else notify(result.error || "\u5F53\u524D\u89D2\u8272\u5DF2\u7ECF\u6E05\u7406\u8FC7\uFF0C\u672A\u91CD\u590D\u6267\u884C\u3002");
@@ -19667,7 +19718,7 @@ ${prevLogs}` : "",
         return;
       }
       if (act === "intermissionreply") {
-        void requestIntermissionReply();
+        void requestIntermissionReply(b.closest("form"));
         return;
       }
       if (act === "chatpanel") {
@@ -19719,7 +19770,7 @@ ${prevLogs}` : "",
         return;
       }
       if (act === "enter") {
-        captureMeetingDraft();
+        captureDrafts();
         if (activeFocus()?.phase === "work") {
           go("focus");
           return;
@@ -19771,7 +19822,6 @@ ${prevLogs}` : "",
       }
       if (act === "chatroleedit") {
         if (!r) return;
-        captureChatDraft();
         formMode = "edit";
         editingRoleId = r.id;
         roleFormReturnView = "chat";
@@ -20701,25 +20751,22 @@ ${prevLogs}` : "",
           Object.assign(data, previous);
           return;
         }
+        clearRoleDrafts(target);
         editingRoleId = null;
         deleteRoleId = null;
         go("landing", void 0, false);
         notify("\u5DF2\u5220\u9664\u89D2\u8272");
         return;
       }
-      if (f.id === "message-form") {
-        const inputEl = $("#message-input");
-        const t = inputEl?.value || "";
-        if (isComposing || !t.trim()) return;
-        void submitText("chat", t);
-        return;
-      }
-      if (f.id === "intermission-form") {
-        const inputEl = $("#intermission-input");
-        const t = String(fd.get("text") || inputEl?.value || "").trim();
-        intermissionDraft = "";
-        if (inputEl) inputEl.value = "";
-        submitIntermission(t);
+      if (f.id === "message-form" || f.id === "novel-form" || f.id === "intermission-form") {
+        const draft = currentDraft(f);
+        if (!draft || isComposing || draft.mode !== "chat" && busy) return;
+        const text2 = draft.input.value;
+        if (!text2.trim()) return;
+        captureDrafts(draft.input);
+        if (!checkWriteAccess()) return;
+        if (draft.mode === "intermission") submitIntermission(draft, text2);
+        else void submitText(draft, text2);
         return;
       }
       if (f.id === "intermission-settings-form") {
@@ -20743,17 +20790,6 @@ ${prevLogs}` : "",
         }
         render();
         notify("\u8BBE\u5B9A\u5DF2\u4FDD\u5B58\uFF0C\u8FD4\u56DE\u6F14\u51FA\u540E\u751F\u6548");
-        return;
-      }
-      if (f.id === "novel-form") {
-        const inputEl = $("#novel-input");
-        const t = inputEl?.value || "";
-        const opening = f.dataset.sceneId ? role()?.scene?.opening : void 0;
-        if (busy || !t.trim() || opening && opening.status !== "archived" || !checkWriteAccess()) return;
-        if (f.dataset.sceneId === "") novelDraft = "";
-        if (inputEl) inputEl.value = "";
-        captureMeetingDraft();
-        submitText(novelViewKind, t);
         return;
       }
       if (f.id === "diary-form") {
@@ -21027,14 +21063,10 @@ ${prevLogs}` : "",
     });
     appRoot.addEventListener("input", (e) => {
       const el = e.target;
-      if (el.id === "message-input") captureChatDraft();
-      if (el.id === "novel-input") {
-        if ($("#novel-form")?.dataset.sceneId === "") novelDraft = el.value;
-        captureMeetingDraft(false);
-        clearTimeout(meetingDraftTimer);
-        meetingDraftTimer = setTimeout(() => captureMeetingDraft(), 300);
+      if (el.hasAttribute("data-scoped-draft")) {
+        captureDrafts(el);
+        return;
       }
-      if (el.id === "intermission-input") intermissionDraft = el.value;
       if (el.id === "focus-task-input") {
         focusTaskInputDraft = el.value;
         return;
@@ -21116,6 +21148,7 @@ ${prevLogs}` : "",
       if (event.key === STORAGE_KEY || event.key === null) refreshSaveAccess();
     });
     window.addEventListener("pagehide", () => {
+      captureDrafts();
       voicePageHidden = true;
       suspendVoiceOperations(true);
     });
@@ -21127,7 +21160,7 @@ ${prevLogs}` : "",
     document.addEventListener("visibilitychange", () => {
       if (document.hidden && (voiceOperation?.phase === "waiting" || voiceOperation?.phase === "recording")) leaveVoicePanel();
       else if (!document.hidden && !voicePageHidden && view === "chat" && chatPanel === "voice") render(false);
-      captureMeetingDraft(document.hidden && saveSession.hasWriter());
+      if (document.hidden) captureDrafts();
       if (!document.hidden) {
         refreshSaveAccess();
         if (view === "home") homeTasks.refresh();

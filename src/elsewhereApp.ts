@@ -1765,11 +1765,11 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     return true;
   }
 
-  function revisePhoneSchedule(r:RoleData,cancel=true):void {
+  function revisePhoneSchedule(r:RoleData,cancel=true,editedOrWithdrawnId?:string):void {
     if(cancel){activeChatRequests.get(r.id)?.abort();chatTyping.delete(r.id);}
     r.meetingPlan=meetingPlan(r,now());
     if(!r.chatTiming)return;
-    reviseChatTiming(r,now());
+    reviseChatTiming(r,now(),editedOrWithdrawnId);
   }
 
   async function requestAiLiveLogForActiveSession(
@@ -5852,7 +5852,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         notify(res.reason || '撤回失败');
         return;
       }
-      if(scope==='chat')revisePhoneSchedule(r,false);
+      if(scope==='chat')revisePhoneSchedule(r,false,b.dataset.id);
       if(!saveLogged('revision',`撤回 ${scope} 消息`,{targetMessageId:b.dataset.id,revisionId:res.revision?.id})){
         restoreFields(r,previous);
         return;
@@ -6281,7 +6281,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         notify(res.reason || '修改失败');
         return;
       }
-      if(scope==='chat'){syncRoleMemory(r,now());revisePhoneSchedule(r,false);if(r.chats.find(m=>m.id===msgId)?.speaker==='me')enqueueChat(r,msgId,now());}
+      if(scope==='chat'){syncRoleMemory(r,now());revisePhoneSchedule(r,false,msgId);}
       if(!saveLogged('revision', `编辑 ${scope} 消息`, {
         targetMessageId: msgId,
         revisionId: res.revision?.id,

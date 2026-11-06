@@ -1,3 +1,5 @@
+import {getActiveMessages} from './messageProvenance';
+export {getActiveMessages} from './messageProvenance';
 import {reconcileSceneSources} from './sceneRevisions';
 import {syncRoleMemory} from './memory';
 import type {
@@ -28,15 +30,6 @@ export function getScopeMessages(role: RoleData, scope: RevisionScope): ChatMess
 }
 
 /**
- * Returns only formal, active messages (excluding retracted/deleted/superseded messages).
- * Used by both UI rendering and model prompt assembly.
- */
-export function getActiveMessages(messages: ChatMessage[] | undefined | null): ChatMessage[] {
-  if (!Array.isArray(messages)) return [];
-  return messages.filter((m) => m && !['retracted','superseded','deleted'].includes(String(m.status)));
-}
-
-/**
  * Returns only formal, active events (excluding retracted or superseded events).
  * Used by memory retrieval, monitor timeline, and memories view.
  */
@@ -47,13 +40,7 @@ export function getActiveEvents(events: EventRecord[] | undefined | null): Event
 
 function findLinkedEvents(role: RoleData, msg: ChatMessage): EventRecord[] {
   if (!Array.isArray(role.events)) return [];
-  return role.events.filter((e) => {
-    if (e.status === 'retracted' || e.status === 'superseded') return false;
-    if (e.messageId && e.messageId === msg.id) return true;
-    // Fallback matching for legacy events created before messageId was attached
-    if (e.detail === msg.text && Math.abs((e.at || 0) - (msg.at || 0)) <= 1000) return true;
-    return false;
-  });
+  return getActiveEvents(role.events).filter(e=>e.messageId===msg.id);
 }
 
 function invalidateChatSource(role:RoleData,msg:ChatMessage,nowTs:number):void {

@@ -2288,24 +2288,102 @@ html,body{overflow:hidden;background:var(--bg)}
 <div id="app"></div>
 <script>
 (() => {
+  // src/core/messageProvenance.ts
+  function getActiveMessages(messages) {
+    return Array.isArray(messages) ? messages.filter((m) => m && !["retracted", "superseded", "deleted"].includes(String(m.status))) : [];
+  }
+  function messageAvailableAt(m, at) {
+    return Number.isFinite(m.at) && m.at <= at && typeof m.text === "string" && (m.editedAt === void 0 ? !(m.revisionCount && m.revisionCount > 0) : Number.isFinite(m.editedAt) && m.editedAt >= m.at && m.editedAt <= at);
+  }
+  function matchesMessageSource(m, s) {
+    return !!m && !!s && m.id === s.id && m.at === s.at && m.text === s.text && (m.revisionCount || 0) === (s.revisionCount || 0);
+  }
+  function scopedMessages(messages, at) {
+    const eligible = getActiveMessages(messages).filter((m) => messageAvailableAt(m, at));
+    const counts = /* @__PURE__ */ new Map();
+    for (const m of eligible) counts.set(m.id, (counts.get(m.id) || 0) + 1);
+    return eligible.filter((m) => counts.get(m.id) === 1);
+  }
+  function withValidQuote(m, sources, at) {
+    const q = m.quote;
+    if (!q) return m;
+    const source = sources.get(q.id);
+    return source && source.speaker === q.speaker && source.at === q.at && source.id !== m.id && messageAvailableAt(source, Math.min(at, m.at)) && typeof q.text === "string" && q.text.length > 0 && source.text.startsWith(q.text) ? m : { ...m, quote: null };
+  }
+  function stageMessagesAt(messages, at) {
+    const effective = scopedMessages(messages, at);
+    const sources = new Map(effective.map((m) => [m.id, m]));
+    return effective.map((m) => withValidQuote(m, sources, at));
+  }
+  function phoneMessagesAt(r, at) {
+    return stageMessagesAt(r.chats, at);
+  }
+  function sceneMessagesAt(r, messages, at) {
+    const originals = scopedMessages(r.chats, at);
+    const phoneById = new Map(originals.map((m) => [m.id, m]));
+    const effective = scopedMessages(messages, at).filter((m) => {
+      if (!m.sourceMessageId) return true;
+      const source = phoneById.get(m.sourceMessageId);
+      return source?.speaker === m.speaker && matchesMessageSource(source, { ...m, id: m.sourceMessageId, revisionCount: m.revisionCount || 0 });
+    });
+    const sceneById = new Map(effective.map((m) => [m.id, m]));
+    return effective.map((m) => withValidQuote(m, m.sourceMessageId ? phoneById : sceneById, at));
+  }
+  var roleScenes = (r) => [...new Map([...r.meetings || [], ...r.scene ? [r.scene] : []].filter(Boolean).map((s) => [s.id, s])).values()];
+  var rolePlays = (r) => [...new Map([...r.plays || [], ...r.play ? [r.play] : []].filter(Boolean).map((p) => [p.id, p])).values()];
+  function messageSourceIndex(r, at, includePlays = false) {
+    const messages = [
+      ...phoneMessagesAt(r, at),
+      ...roleScenes(r).flatMap((s) => sceneMessagesAt(r, s.messages, at)),
+      ...includePlays ? rolePlays(r).flatMap((p) => [...stageMessagesAt(p.messages, at), ...stageMessagesAt(p.intermissionMessages, at)]) : []
+    ];
+    const unique = /* @__PURE__ */ new Map(), ambiguous = /* @__PURE__ */ new Set();
+    for (const m of messages) {
+      if (unique.has(m.id)) {
+        unique.delete(m.id);
+        ambiguous.add(m.id);
+      } else if (!ambiguous.has(m.id)) unique.set(m.id, m);
+    }
+    return unique;
+  }
+  function scenePlaceAt(r, scene, at) {
+    const unknown = "\u5730\u70B9\u672A\u786E\u8BA4";
+    if (!Number.isFinite(scene.startedAt) || scene.startedAt > at) return unknown;
+    const sources = [...phoneMessagesAt(r, at), ...sceneMessagesAt(r, scene.messages, at)];
+    const valid = (refs) => Array.isArray(refs) && refs.every((ref) => {
+      const matches = sources.filter((m) => m.id === ref.id);
+      return matches.length === 1 && matchesMessageSource(matches[0], ref);
+    });
+    const positions = [];
+    const add = (state2) => {
+      const proof = state2.locationEvidence;
+      if (proof && Number.isFinite(proof.at) && proof.at >= scene.startedAt && proof.at <= at && valid(proof.sources) && valid(state2.agreement?.sources || [])) positions.push({ where: state2.where, at: proof.at });
+    };
+    const changes = r.events.filter((e) => e.sceneChange?.sceneId === scene.id);
+    if (!changes.some((e) => e.sceneChange?.after.locationEvidence?.at === scene.locationEvidence?.at && e.sceneChange?.after.where === scene.where)) add(scene);
+    for (const e of r.events) {
+      if (e.knownBy?.length && !e.knownBy.includes(r.id)) continue;
+      const change = e.sceneChange;
+      if (change?.sceneId === scene.id) {
+        if (e.status !== "retracted") add(change.before);
+        if (e.at <= at && e.status !== "retracted" && e.status !== "superseded" && valid(change.sources)) add(change.after);
+      }
+      if (e.source === scene.id && e.title === "\u66F4\u6B63\u672C\u6B21\u89C1\u9762\u5730\u70B9" && e.where && e.at <= at && e.status !== "retracted" && e.status !== "superseded") positions.push({ where: e.where, at: e.at });
+    }
+    if (positions.length) return positions.sort((a, b) => b.at - a.at)[0].where || unknown;
+    if (!scene.locationEvidence && !scene.agreement && scene.endedAt !== void 0 && scene.endedAt <= at && !r.events.some((e) => e.sceneChange?.sceneId === scene.id || e.source === scene.id && e.title === "\u66F4\u6B63\u672C\u6B21\u89C1\u9762\u5730\u70B9")) return scene.where || unknown;
+    return unknown;
+  }
+
   // src/core/sceneRevisions.ts
   var place = (s) => ({ where: s.where, agreement: s.agreement, locationEvidence: s.locationEvidence });
   function reconcileSceneSources(r) {
-    const phone = new Map(r.chats.filter((m) => !["retracted", "superseded", "deleted"].includes(String(m.status))).map((m) => [m.id, m]));
-    const active = new Map([...r.chats, ...r.scene?.messages || []].filter((m) => {
-      if (["retracted", "superseded", "deleted"].includes(String(m.status))) return false;
-      if (!m.sourceMessageId) return true;
-      const source = phone.get(m.sourceMessageId);
-      return source?.text === m.text && source.at === m.at && (source.revisionCount || 0) === (m.revisionCount || 0);
-    }).map((m) => [m.id, m]));
+    const active = new Map([...phoneMessagesAt(r, Infinity), ...sceneMessagesAt(r, r.scene?.messages, Infinity)].map((m) => [m.id, m]));
     for (const event of [...r.events].reverse()) {
       const change = event.sceneChange;
       if (!change) continue;
       if (!r.scene || r.scene.endedAt !== void 0 || change.sceneId !== r.scene.id) continue;
-      const valid = change.sources.every((s) => {
-        const m = active.get(s.id);
-        return m?.text === s.text && m.at === s.at && (m.revisionCount || 0) === s.revisionCount;
-      });
+      const valid = change.sources.every((s) => matchesMessageSource(active.get(s.id), s));
       if (valid && event.status !== "retracted" && event.status !== "superseded") continue;
       if (!valid && event.status !== "retracted") event.status = "superseded";
       const scene = r.scene;
@@ -2326,7 +2404,7 @@ html,body{overflow:hidden;background:var(--bg)}
     return text2.replace(/```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)/g, "").replace(/“[^”]*”|「[^」]*」|『[^』]*』|"[^"\n]*"|^\s*>[^\n]*(?:\n|$)/gm, "");
   }
   function derive(r, at) {
-    const messages = getActiveMessages(r.chats).filter((m) => m.at <= at && (!m.kind || m.kind === "chat")).sort((a, b) => a.at - b.at);
+    const messages = phoneMessagesAt(r, at).filter((m) => !m.kind || m.kind === "chat").sort((a, b) => a.at - b.at);
     const records = [];
     for (const [index, m] of messages.entries()) {
       if (m.speaker !== "me" || uncertain.test(m.text)) continue;
@@ -2385,8 +2463,8 @@ html,body{overflow:hidden;background:var(--bg)}
     return records;
   }
   function sourceValid(r, s, at, user = false) {
-    const m = getActiveMessages(r.chats).find((m2) => m2.id === s.id && m2.at <= at && (!m2.kind || m2.kind === "chat"));
-    return Boolean(m && (!user || m.speaker === "me") && m.text === s.text && m.at === s.at && (m.revisionCount || 0) === s.revisionCount);
+    const m = phoneMessagesAt(r, at).find((m2) => m2.id === s.id && (!m2.kind || m2.kind === "chat"));
+    return Boolean(m && (!user || m.speaker === "me") && matchesMessageSource(m, s));
   }
   function sourceChanged(r, s, at) {
     return r.chats.some((m) => m.id === s.id && m.at <= at && !sourceValid(r, s, at));
@@ -2448,15 +2526,16 @@ html,body{overflow:hidden;background:var(--bg)}
     const subject = f.layer === "relationship" ? f.mutual ? "\u53CC\u65B9\u660E\u786E\u786E\u8BA4\u7684\u5173\u7CFB" : "\u7528\u6237\u5BF9\u5173\u7CFB\u7684\u660E\u786E\u8868\u8FF0\uFF08\u4E0D\u4EE3\u66FF\u53E6\u4E00\u65B9\u540C\u610F\uFF09" : "\u7528\u6237\u660E\u786E\u81EA\u8FF0";
     return `${subject} \xB7 ${f.attribute} \xB7 ${f.polarity === "deny" ? "\u5DF2\u5426\u8BA4" : "\u5F53\u524D\u9648\u8FF0"}\uFF1A${f.value}` + (compact ? "" : `\uFF08\u6765\u6E90\u6D88\u606F ${f.source.id}\uFF0C${new Date(f.at).toISOString()}\uFF09`);
   }
-  function memoryMessageIndex(r, messages = [...r.chats, ...r.scene?.messages || [], ...(r.meetings || []).flatMap((s) => s.messages), ...r.play?.messages || [], ...r.play?.intermissionMessages || [], ...(r.plays || []).flatMap((p) => [...p.messages, ...p.intermissionMessages || []])]) {
-    return new Map(getActiveMessages(messages).map((m) => [m.id, m]));
+  function memoryMessageIndex(r, at = Infinity) {
+    return messageSourceIndex(r, at);
   }
-  function eventSourceValid(r, e, at, allMessages = memoryMessageIndex(r), rejected) {
+  function eventSourceValid(r, e, at, allMessages = memoryMessageIndex(r, at), rejected) {
     if (e.kind === "diary" && !e.knownBy?.includes(r.id)) return false;
     if (e.at > at || e.status === "retracted" || e.status === "superseded" || e.knownBy?.length && !e.knownBy.includes(r.id)) return false;
+    if (e.sceneChange && (!Array.isArray(e.sceneChange.sources) || !e.sceneChange.sources.every((s) => s && matchesMessageSource(allMessages.get(s.id), s)))) return false;
     if (!e.messageId) return true;
     const m = allMessages.get(e.messageId);
-    if (!m || m.at > at) return false;
+    if (!m || !messageAvailableAt(m, at)) return false;
     if (e.sourceRevision !== void 0 && (m.revisionCount || 0) !== e.sourceRevision) return false;
     if (e.sourceRevision === void 0 && (m.revisionCount || m.editedAt) && e.detail !== m.text) return false;
     return !(rejected || projectRoleMemory(r, at).supersededSources).has(m.id);
@@ -2509,22 +2588,13 @@ html,body{overflow:hidden;background:var(--bg)}
     if (scope === "play") return role.play?.messages || [];
     return [];
   }
-  function getActiveMessages(messages) {
-    if (!Array.isArray(messages)) return [];
-    return messages.filter((m) => m && !["retracted", "superseded", "deleted"].includes(String(m.status)));
-  }
   function getActiveEvents(events) {
     if (!Array.isArray(events)) return [];
     return events.filter((e) => e && e.status !== "retracted" && e.status !== "superseded");
   }
   function findLinkedEvents(role, msg) {
     if (!Array.isArray(role.events)) return [];
-    return role.events.filter((e) => {
-      if (e.status === "retracted" || e.status === "superseded") return false;
-      if (e.messageId && e.messageId === msg.id) return true;
-      if (e.detail === msg.text && Math.abs((e.at || 0) - (msg.at || 0)) <= 1e3) return true;
-      return false;
-    });
+    return getActiveEvents(role.events).filter((e) => e.messageId === msg.id);
   }
   function invalidateChatSource(role, msg, nowTs) {
     role.pendingReplies = (role.pendingReplies || []).filter((job) => !job.sources?.some((source) => source.id === msg.id) && !(msg.replyTurnId && job.replyTurnId === msg.replyTurnId));
@@ -7269,13 +7339,12 @@ ${msg.text}`;
     if (e.lifeRecord) fields.push(e.where, [e.lifeRecord.version, e.lifeRecord.roleId, e.lifeRecord.taskId, e.lifeRecord.origin, e.lifeRecord.action, e.lifeRecord.until, Array.isArray(e.lifeRecord.sources) ? e.lifeRecord.sources.map((s) => s && [s.kind, s.id, s.at]) : null]);
     return { kind: "event", id: e.id, at: e.at, version: version(fields) };
   }
-  var allRealMessages = (r) => [...r.chats, ...r.scene?.messages || [], ...(r.meetings || []).flatMap((s) => s.messages)];
   function referenceValid(r, s, at, seen = /* @__PURE__ */ new Set(), memory = compactRoleMemory(r, at)) {
     if (!s || typeof s.version !== "string" || !Number.isFinite(s.at) || s.at > at) return false;
     if (s.kind === "profile") return s.id === r.id && s.version === profile(r);
     if (s.kind === "message") {
-      const m = getActiveMessages(allRealMessages(r)).find((m2) => m2.id === s.id && m2.speaker !== "note" && m2.at <= at);
-      return Boolean(m && messageRef(m).version === s.version && !memory.supersededSources.has(m.id));
+      const m = messageSourceIndex(r, at).get(s.id);
+      return Boolean(m && m.speaker !== "note" && messageRef(m).version === s.version && !memory.supersededSources.has(m.id));
     }
     if (s.kind === "event") {
       if (seen.has("event:" + s.id)) return false;
@@ -7283,14 +7352,18 @@ ${msg.text}`;
       const life = e?.lifeRecord, task = life && Array.isArray(r.lifeTasks) ? r.lifeTasks.find((t2) => t2.id === life.taskId) : void 0;
       if (!life && e?.source?.startsWith("autonomous-life-v1:")) return false;
       if (life && (!e || life.version !== 1 || life.roleId !== r.id || life.origin !== "simulation" || !task || task.roleId !== r.id || task.status !== "completed" || !task.eventIds?.includes(e.id) || e.at < task.from || life.until > task.to || life.until > at || life.until < e.at || !Number.isFinite(life.until) || !Array.isArray(life.sources) || !life.sources.length || !life.sources.every((ref) => referenceValid(r, ref, at, /* @__PURE__ */ new Set([...seen, "event:" + s.id]), memory)))) return false;
-      return Boolean(e && eventRef(e).version === s.version && eventSourceValid(r, e, at, memoryMessageIndex(r, allRealMessages(r)), memory.supersededSources) && (e.kind !== "life" || e.lifeEvidence === "confirmed" && e.source));
+      return Boolean(e && eventRef(e).version === s.version && eventSourceValid(r, e, at, messageSourceIndex(r, at), memory.supersededSources) && (e.kind !== "life" || e.lifeEvidence === "confirmed" && e.source));
     }
     if (s.kind === "diary") {
       if (seen.has("diary:" + s.id)) return false;
       const d = r.diaries.find((d2) => d2.id === s.id && d2.speaker === "char" && d2.source === "ai" && d2.at <= at);
       const current = memory;
       if (d && ((d.memoryState?.factIds || []).some((id) => !current.facts.some((f) => f.id === id) && !current.trace.some((t2) => t2.id === id && t2.reason === "same-current-fact")) || (d.sourceMessageIds || []).some((id) => current.supersededSources.has(id) && !d.memoryState?.ignoredMessageIds.includes(id)))) return false;
-      return Boolean(d && d.generatedAt && diaryRef(d).version === s.version && (d.sourceMessageIds || []).every((id) => getActiveMessages(allRealMessages(r)).some((m) => m.id === id && m.at <= at && (d.sourceMessageRevisions ? d.sourceMessageRevisions[id] === (m.revisionCount || 0) : !m.editedAt && !m.revisionCount))) && (d.sourceEventIds || []).every((id) => getActiveEvents(r.events).some((e) => e.id === id && e.at <= at && e.knownBy?.includes(r.id))) && (!d.continuitySources || d.continuitySources.every((ref) => referenceValid(r, ref, at, /* @__PURE__ */ new Set([...seen, "diary:" + s.id]), memory))));
+      const cutoff = Math.min(at, d?.at ?? at), sources = messageSourceIndex(r, cutoff, true);
+      return Boolean(d && d.generatedAt && d.generatedAt <= at && diaryRef(d).version === s.version && (d.sourceMessageIds || []).every((id) => {
+        const m = sources.get(id);
+        return m && (d.sourceMessageRevisions ? d.sourceMessageRevisions[id] === (m.revisionCount || 0) : !m.editedAt && !m.revisionCount);
+      }) && (d.sourceEventIds || []).every((id) => getActiveEvents(r.events).some((e) => e.id === id && e.knownBy?.includes(r.id) && eventSourceValid(r, e, cutoff, sources, current.supersededSources))) && (!d.continuitySources || d.continuitySources.every((ref) => referenceValid(r, ref, at, /* @__PURE__ */ new Set([...seen, "diary:" + s.id]), memory))));
     }
     const t = r.personalThreads?.find((t2) => t2.id === s.id);
     if (!t || seen.has(t.id) || t.roleId !== r.id || t.at > at || s.version !== threadVersion(t)) return false;
@@ -7330,7 +7403,8 @@ ${msg.text}`;
   }
   function preparePersonalReply(r, messages, at, id, extraTask = "", sourceMessages = getActiveMessages(r.chats).slice(-12), mode = "chat", visibleSourcesOnly = false) {
     const life = collectRoleLife(r, at), memory = compactRoleMemory(r, at), visible = (marker) => !visibleSourcesOnly || messages.some((m) => m.content.includes(marker));
-    const sources = [{ kind: "profile", id: r.id, at, version: profile(r) }, ...sourceMessages.filter((m) => m.speaker !== "note" && m.at <= at && getActiveMessages([m]).length && !memory.supersededSources.has(m.id)).map(messageRef), ...life.events.slice(-6).filter((e) => visible("[\u751F\u6D3B\u8BB0\u5F55 " + e.id + " \xB7")).map(eventRef), ...personalDiaries(r, at).filter((d) => visible("[" + d.id + " \xB7")).map(diaryRef), ...life.threads.filter((t) => visible("[" + t.id + " \xB7")).map((t) => ({ kind: "thread", id: t.id, at: t.at, version: threadVersion(t) }))];
+    const requested = new Set(sourceMessages.map((m) => m.id));
+    const sources = [{ kind: "profile", id: r.id, at, version: profile(r) }, ...phoneMessagesAt(r, at).filter((m) => requested.has(m.id) && m.speaker !== "note" && !memory.supersededSources.has(m.id)).map(messageRef), ...life.events.slice(-6).filter((e) => visible("[\u751F\u6D3B\u8BB0\u5F55 " + e.id + " \xB7")).map(eventRef), ...personalDiaries(r, at).filter((d) => visible("[" + d.id + " \xB7")).map(diaryRef), ...life.threads.filter((t) => visible("[" + t.id + " \xB7")).map((t) => ({ kind: "thread", id: t.id, at: t.at, version: threadVersion(t) }))];
     const ticket = { id, roleId: r.id, at, sceneId: r.scene?.id || null, playId: r.play?.id || null, sources, threadVersion: ledgerVersion(r), memoryVersion: memoryVersion(r, at), mode };
     const control = `[Elsewhere Private Continuity v1]
 \u4FDD\u6301\u539F\u6709${mode === "diary" ? "\u65E5\u8BB0\u6B63\u6587" : "\u624B\u673A\u6B63\u6587\u4E0E\u5168\u90E8\u573A\u666F\u4E8B\u4EF6\u534F\u8BAE"}\u3002${extraTask}
@@ -7556,46 +7630,21 @@ ${msg.text}`;
       (d) => d && d.speaker === "char" && d.source !== "life" && getCharacterDiaryDateKey(d) === dateKey && Boolean(String(d.text || "").trim())
     );
   }
-  function collectDailyDiaryFacts(role, dateKey, trustedLifeOnly = false) {
+  function collectDailyDiaryFacts(role, dateKey, trustedLifeOnly = false, through = Infinity) {
     const { startMs, endMs, label: label2, shortLabel } = getLocalDayBounds(dateKey);
-    const chatMessages = getActiveMessages(role.chats || []).filter(
-      (m) => m.at >= startMs && m.at <= endMs
-    );
-    const allScenes = [
-      ...Array.isArray(role.meetings) ? role.meetings : [],
-      ...role.scene ? [role.scene] : []
-    ];
-    const seenSceneIds = /* @__PURE__ */ new Set();
+    const cutoff = Math.min(endMs, through);
+    const onDay = (m) => m.at >= startMs;
+    const chatMessages = phoneMessagesAt(role, cutoff).filter(onDay);
+    const phoneIds = new Set(chatMessages.map((m) => m.id));
     const sceneBlocks = [];
-    for (const sc of allScenes) {
-      if (!sc || seenSceneIds.has(sc.id)) continue;
-      seenSceneIds.add(sc.id);
-      const msgs = getActiveMessages(sc.messages || []).filter(
-        (m) => m.at >= startMs && m.at <= endMs
-      );
-      if (msgs.length > 0) {
-        sceneBlocks.push({
-          id: sc.id,
-          where: sc.where || role.place || "\u89C1\u9762\u5730\u70B9",
-          messages: msgs
-        });
-      }
+    for (const sc of roleScenes(role)) {
+      const msgs = sceneMessagesAt(role, sc.messages, cutoff).filter((m) => onDay(m) && !(m.sourceMessageId && phoneIds.has(m.sourceMessageId)) && !(m.speaker === "note" && m.id === sc.id + ":start"));
+      if (msgs.length) sceneBlocks.push({ id: sc.id, where: scenePlaceAt(role, sc, cutoff), messages: msgs });
     }
-    const allPlays = [
-      ...Array.isArray(role.plays) ? role.plays : [],
-      ...role.play ? [role.play] : []
-    ];
-    const seenPlayIds = /* @__PURE__ */ new Set();
     const playBlocks = [];
-    for (const pl of allPlays) {
-      if (!pl || seenPlayIds.has(pl.id)) continue;
-      seenPlayIds.add(pl.id);
-      const msgs = getActiveMessages(pl.messages || []).filter(
-        (m) => m.at >= startMs && m.at <= endMs
-      );
-      const interMsgs = getActiveMessages(pl.intermissionMessages || []).filter(
-        (m) => m.at >= startMs && m.at <= endMs
-      );
+    for (const pl of rolePlays(role)) {
+      const msgs = stageMessagesAt(pl.messages, cutoff).filter(onDay);
+      const interMsgs = stageMessagesAt(pl.intermissionMessages, cutoff).filter(onDay);
       if (msgs.length > 0 || interMsgs.length > 0) {
         playBlocks.push({
           id: pl.id,
@@ -7610,26 +7659,24 @@ ${msg.text}`;
     }
     const sharedUserDiaries = getSharedUserDiariesForRole(role).filter((d) => {
       const shareTs = d.sharedAt?.[role.id] ?? d.at;
-      return shareTs >= startMs && shareTs <= endMs;
+      return shareTs >= startMs && shareTs <= cutoff && d.at <= cutoff;
     });
-    const validMessages = trustedLifeOnly ? new Set(getActiveMessages([...role.chats || [], ...allScenes.flatMap((s) => s?.messages || []), ...allPlays.flatMap((p) => [...p?.messages || [], ...p?.intermissionMessages || []])]).filter((m) => m.at <= endMs).map((m) => m.id)) : /* @__PURE__ */ new Set();
-    const trustedLife = trustedLifeOnly ? new Set(collectRoleLife(role, endMs).events.map((e) => e.id)) : /* @__PURE__ */ new Set();
-    const messageIndex = trustedLifeOnly ? memoryMessageIndex(role) : void 0;
-    const rejected = trustedLifeOnly ? projectRoleMemory(role, endMs).supersededSources : void 0;
-    const permittedEventsOnDay = getRoleKnownEvents(role).filter(
-      (e) => e.at >= startMs && e.at <= endMs && (!trustedLifeOnly || eventSourceValid(role, e, endMs, messageIndex, rejected) && (!e.messageId || validMessages.has(e.messageId)) && (e.kind !== "life" || trustedLife.has(e.id)))
-    );
+    const messageIndex = messageSourceIndex(role, cutoff, true);
+    const trustedLife = trustedLifeOnly ? new Set(collectRoleLife(role, cutoff).events.map((e) => e.id)) : void 0;
+    const rejected = trustedLifeOnly ? projectRoleMemory(role, cutoff).supersededSources : void 0;
+    const permittedEventsOnDay = getRoleKnownEvents(role).filter((e) => e.at >= startMs && e.at <= cutoff && eventSourceValid(role, e, cutoff, messageIndex, rejected) && (!trustedLife || e.kind !== "life" || trustedLife.has(e.id)));
     const focusEvents = permittedEventsOnDay.filter((e) => e.kind === "focus");
     const lifeRoutines = permittedEventsOnDay.filter((e) => e.kind === "life");
     const knownEvents = permittedEventsOnDay.filter((e) => e.kind !== "life");
-    const sourceMessageIds = [
+    const sourceMessageIds = [.../* @__PURE__ */ new Set([
       ...chatMessages.map((m) => m.id),
       ...sceneBlocks.flatMap((b) => b.messages.map((m) => m.id)),
+      ...[...chatMessages, ...sceneBlocks.flatMap((b) => b.messages)].flatMap((m) => m.quote && messageIndex.has(m.quote.id) ? [m.quote.id] : []),
       ...playBlocks.flatMap((b) => [
         ...b.messages.map((m) => m.id),
         ...b.intermissionMessages.map((m) => m.id)
       ])
-    ];
+    ])];
     const sourceEventIds = permittedEventsOnDay.map((e) => e.id);
     const sceneMsgCount = sceneBlocks.reduce((acc, b) => acc + b.messages.length, 0);
     const dramaMsgCount = playBlocks.reduce(
@@ -7694,7 +7741,7 @@ ${msg.text}`;
 2. \u6027\u683C\u4E0E\u6587\u98CE\uFF1A\u4F60\u51B7\u9759\u3001\u654F\u9510\u3001\u89C2\u5BDF\u529B\u6781\u5F3A\uFF0C\u61C2\u5F97\u4F2A\u88C5\u4EB2\u5207\u4E0E\u5706\u6ED1\uFF0C\u4F46\u79C1\u4E0B\u65E5\u8BB0\u91CC\u7684\u72EC\u767D\u771F\u5B9E\u3001\u514B\u5236\u3001\u5E26\u7740\u82F1\u5F0F\u51B7\u5E7D\u9ED8\u4E0E\u8F7B\u5FAE\u63F6\u63C4\uFF0C\u5076\u5C14\u6D41\u9732\u6F5C\u4F0F\u8005\u7684\u5BA1\u89C6\u3001\u9053\u5FB7\u51B2\u7A81\u6216\u7B28\u62D9\u7684\u771F\u60C5\u3002
 3. \u4EBA\u7269\u5173\u7CFB\u4E0E\u65F6\u95F4\u7EBF\u8FB9\u754C\uFF1A\u4F60\u7684\u604B\u4EBA\u662F\u8B66\u5BDF\u7EA6\u7FF0\uFF08John\uFF0C\u4F60\u5E38\u5728\u5FC3\u91CC\u6216\u5634\u4E0A\u53EB\u4ED6\u201C\u8B66\u5BDF\u5148\u751F\u201D\uFF09\uFF0C\u4F60\u73B0\u5728\u6B63\u5904\u4E8E\u4E0E\u7EA6\u7FF0\u7A33\u5B9A\u76F8\u7231\u7684\u65F6\u671F\uFF0C\u672A\u6765\u7684\u60B2\u5267\uFF08\u7EA6\u7FF0\u7684\u6B7B\u4EA1\u4E0E\u544A\u522B\uFF09\u5728\u5F53\u524D\u65F6\u95F4\u7EBF\u3010\u5C1A\u672A\u53D1\u751F\u3011\uFF0C\u4F60\u672C\u4EBA\u5BF9\u6B64\u6BEB\u4E0D\u77E5\u60C5\uFF0C\u4E25\u7981\u5728\u65E5\u8BB0\u4E2D\u5267\u900F\u3001\u9884\u8A00\u6216\u54C0\u60BC\u5C1A\u672A\u53D1\u751F\u7684\u672A\u6765\u60B2\u5267\u3002
 4. \u5BF9\u7528\u6237\uFF08\u521B\u4F5C\u8005\uFF09\u7684\u6001\u5EA6\uFF1A\u4F60\u77E5\u9053\u7528\u6237\u662F\u5199\u4E0B\u4F60\u8FC7\u53BB\u6545\u4E8B\u7684\u521B\u4F5C\u8005\uFF0C\u4F60\u4EEC\u66FE\u5728\u7A97\u5916\u767D\u832B\u832B\u7684\u5047\u8BBE\u7A7A\u95F4\u5496\u5561\u5385\u89C1\u8FC7\uFF0C\u4F60\u6536\u4E0B\u4E86TA\u7ED9\u4F60\u7684\u7EA2\u8272\u4E9A\u514B\u529B\u516D\u9762\u9AB0\uFF1B\u4F60\u5E38\u5E26\u70B9\u63F6\u63C4\u5730\u79F0\u547CTA\u4E3A\u201C${role.userAlias || "\u5988\u54AA"}\u201D\uFF0C\u4F60\u548C\u521B\u4F5C\u8005\u662F\u201C\u88AB\u521B\u9020\u8005\u4E0E\u4F5C\u8005\u201D\u7684\u5947\u5999\u5F20\u529B\u5173\u7CFB\uFF0C\u800C\u975E\u604B\u4EBA\u5173\u7CFB\u3002` : "";
-    const safeLine = (m) => m.quote && !getActiveMessages(role.chats).some((s) => s.id === m.quote.id) ? m.text : formatMessageContentForModel(m, role.name, userName);
+    const safeLine = (m) => formatMessageContentForModel(m, role.name, userName);
     const chatTranscript = facts.chatMessages.filter((m) => m.speaker !== "note").slice(-12).map(
       (m) => `[${formatHm(m.at)}] ${m.speaker === "me" ? userName : role.name}\uFF1A${safeLine(m).slice(0, 300)}`
     ).join("\n");
@@ -7786,29 +7833,11 @@ ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText
       }
     }
     const pastTimestamps = [];
-    for (const m of getActiveMessages(role.chats || [])) {
-      if (m.at > 0 && m.at < todayStartMs) pastTimestamps.push(m.at);
+    for (const m of messageSourceIndex(role, todayStartMs - 1, true).values()) {
+      if (m.at > 0) pastTimestamps.push(m.at);
     }
     for (const e of getRoleKnownEvents(role)) {
       if (e.at > 0 && e.at < todayStartMs) pastTimestamps.push(e.at);
-    }
-    for (const sc of [
-      ...Array.isArray(role.meetings) ? role.meetings : [],
-      ...role.scene ? [role.scene] : []
-    ]) {
-      if (!sc) continue;
-      for (const m of getActiveMessages(sc.messages || [])) {
-        if (m.at > 0 && m.at < todayStartMs) pastTimestamps.push(m.at);
-      }
-    }
-    for (const pl of [
-      ...Array.isArray(role.plays) ? role.plays : [],
-      ...role.play ? [role.play] : []
-    ]) {
-      if (!pl) continue;
-      for (const m of getActiveMessages(pl.messages || [])) {
-        if (m.at > 0 && m.at < todayStartMs) pastTimestamps.push(m.at);
-      }
     }
     for (const d of role.diaries || []) {
       if (d && d.at > 0 && d.at < todayStartMs) {
@@ -7924,6 +7953,7 @@ ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText
       (d) => d && d.speaker === "char" && d.source !== "life" && getCharacterDiaryDateKey(d) === dateKey
     );
     if (diary) return { ok: false, reason: "\u8FD9\u4E00\u5929\u5DF2\u6709\u5F52\u6863\u65E5\u8BB0\uFF0C\u539F\u6587\u5DF2\u4FDD\u7559" };
+    const messageIndex = messageSourceIndex(role, facts.endMs, true);
     diary = {
       id: makeUid("diary"),
       speaker: "char",
@@ -7937,7 +7967,7 @@ ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText
       sourceMessageIds: facts.sourceMessageIds,
       sourceEventIds: facts.sourceEventIds,
       factSummary: facts.summary,
-      sourceMessageRevisions: Object.fromEntries([...facts.chatMessages, ...facts.sceneBlocks.flatMap((b) => b.messages), ...facts.playBlocks.flatMap((b) => [...b.messages, ...b.intermissionMessages])].map((m) => [m.id, m.revisionCount || 0])),
+      sourceMessageRevisions: Object.fromEntries(facts.sourceMessageIds.map((id) => [id, messageIndex.get(id)?.revisionCount || 0])),
       memoryState: memorySnapshot(role, facts.endMs)
     };
     role.diaries.push(diary);
@@ -7989,13 +8019,13 @@ ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText
     return `${period} ${String(h).padStart(2, "0")}:${m}`;
   }
   function buildGroundedDailyFootprints(role, dateKey, nowTs = Date.now()) {
-    const facts = collectDailyDiaryFacts(role, dateKey, true), cutoff = Math.min(nowTs, facts.endMs), userLabel = role.userAlias || "\u5BF9\u65B9";
-    const all = [...role.chats, ...role.scene?.messages || [], ...(role.meetings || []).flatMap((s) => s.messages), ...role.play?.messages || [], ...role.play?.intermissionMessages || [], ...(role.plays || []).flatMap((p) => [...p.messages, ...p.intermissionMessages || []])];
-    const transcript = (messages) => messages.filter((m) => m.at <= cutoff && m.speaker !== "note").map((m) => {
-      const original = m.quote ? getActiveMessages(all).find((s) => s.id === m.quote.id && s.speaker === m.quote.speaker && s.at === m.quote.at && s.text.startsWith(m.quote.text)) : void 0;
-      const safe = m.quote && !original ? { ...m, quote: null } : m;
-      return { speaker: m.speaker, speakerLabel: m.speaker === "me" ? userLabel : role.name, text: formatMessageContentForModel(safe, role.name, userLabel), at: m.at };
-    });
+    const facts = collectDailyDiaryFacts(role, dateKey, true, nowTs), cutoff = Math.min(nowTs, facts.endMs), userLabel = role.userAlias || "\u5BF9\u65B9";
+    const transcript = (messages) => messages.filter((m) => m.speaker !== "note").map((m) => ({
+      speaker: m.speaker,
+      speakerLabel: m.speaker === "me" ? userLabel : role.name,
+      text: formatMessageContentForModel(m, role.name, userLabel),
+      at: m.at
+    }));
     const items = collectRoleLife(role, cutoff).events.filter((e) => e.at >= facts.startMs).map((e) => ({ id: "fp_life_" + e.id, dateKey, timestamp: e.at, timeLabel: formatNaturalTimeLabel(e.at), icon: "leaf", category: "life", title: e.title, summary: e.detail, where: e.where, sourceEventIds: [e.id], sourceMessageIds: e.messageId ? [e.messageId] : [], rawTranscript: [{ speaker: "note", speakerLabel: e.lifeRecord ? "\u751F\u6D3B\u6A21\u62DF\u8BB0\u5F55" : "\u5DF2\u786E\u8BA4\u4E8B\u4EF6", text: e.detail, at: e.at }], origin: "grounded" }));
     const chat = getActiveMessages(facts.chatMessages).filter((m) => m.at <= cutoff && m.speaker !== "note");
     if (chat.length) items.push({ id: "fp_chat_" + dateKey, dateKey, timestamp: chat.at(-1).at, timeLabel: formatNaturalTimeLabel(chat.at(-1).at), icon: "chat", category: "interaction", title: "\u624B\u673A\u4EA4\u8C08\u6765\u6E90", summary: "", sourceEventIds: [], sourceMessageIds: chat.map((m) => m.id), rawTranscript: transcript(chat), origin: "grounded" });
@@ -8023,21 +8053,7 @@ ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText
   function listFootprintActiveDates(role, nowTs = Date.now()) {
     const dates = /* @__PURE__ */ new Set();
     dates.add(toLocalDateKey(nowTs));
-    for (const m of getActiveMessages(role.chats || [])) {
-      if (m.at <= nowTs) dates.add(toLocalDateKey(m.at));
-    }
-    for (const sc of [...role.meetings || [], ...role.scene ? [role.scene] : []]) {
-      if (!sc) continue;
-      for (const m of getActiveMessages(sc.messages || [])) {
-        if (m.at <= nowTs) dates.add(toLocalDateKey(m.at));
-      }
-    }
-    for (const pl of [...role.plays || [], ...role.play ? [role.play] : []]) {
-      if (!pl) continue;
-      for (const m of getActiveMessages(pl.messages || [])) {
-        if (m.at <= nowTs) dates.add(toLocalDateKey(m.at));
-      }
-    }
+    for (const m of messageSourceIndex(role, nowTs, true).values()) dates.add(toLocalDateKey(m.at));
     for (const ev of getActiveEvents(role.events || [])) {
       if (ev.at <= nowTs && ev.kind !== "diary") {
         dates.add(toLocalDateKey(ev.at));
@@ -8323,7 +8339,7 @@ ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText
   function allowedPhone(r, at) {
     const consumed = Math.max(0, ...(r.meetings || []).map((s) => s.startedAt));
     const denied = new Set(getActiveEvents(r.events).filter((e) => e.messageId && e.knownBy?.length && !e.knownBy.includes(r.id)).map((e) => e.messageId));
-    return getActiveMessages(r.chats).filter((m) => m.speaker !== "note" && (!m.kind || m.kind === "chat") && m.at <= at && m.at > consumed && !denied.has(m.id));
+    return phoneMessagesAt(r, at).filter((m) => m.speaker !== "note" && (!m.kind || m.kind === "chat") && m.at <= at && m.at > consumed && !denied.has(m.id));
   }
   function verifiedMeetingPlan(r, at) {
     const p = r.meetingPlan;
@@ -8343,7 +8359,7 @@ ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText
       const m = activePhone.get(s.id);
       if (m && m.text === s.text && m.at === s.at && (m.revisionCount || 0) === s.revisionCount) authorized2.add(m.id);
     }
-    const sceneMessages = getActiveMessages(r.scene?.messages).filter((m) => !m.sourceMessageId || activePhone.get(m.sourceMessageId)?.text === m.text);
+    const sceneMessages = sceneMessagesAt(r, r.scene?.messages, at).filter((m) => !m.sourceMessageId || activePhone.has(m.sourceMessageId));
     const sources = [];
     for (const [scope, messages] of [["phone", phoneMessages], ["scene", sceneMessages]]) for (const m of messages) {
       if (!authorized2.has(m.id) || m.speaker === "note" || m.at > at) continue;
@@ -8357,7 +8373,8 @@ ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText
       const m = activePhone.get(s.id);
       return m?.text === s.text && m.at === s.at && (m.revisionCount || 0) === s.revisionCount;
     }) && new Set(agreement.sources.map((s) => activePhone.get(s.id).speaker)).size === 2;
-    return { roleId: r.id, key: sceneStateKey(r), now: at, scene: r.scene ? { id: r.scene.id, where: r.scene.where, startedAt: r.scene.startedAt, locationUpdatedAt: r.scene.locationEvidence?.at ?? r.scene.startedAt, verified: Boolean(r.scene.locationEvidence || verifiedAgreement || r.events.some((e) => e.source === r.scene.id && e.title === "\u66F4\u6B63\u672C\u6B21\u89C1\u9762\u5730\u70B9")) } : null, sources, facts, plan: verifiedMeetingPlan(r, at) || null };
+    const scene = r.scene, where = scene && (scene.locationEvidence || scene.agreement ? scenePlaceAt(r, scene, at) : scene.where);
+    return { roleId: r.id, key: sceneStateKey(r), now: at, scene: scene ? { id: scene.id, where, startedAt: scene.startedAt, locationUpdatedAt: scene.locationEvidence?.at ?? scene.startedAt, verified: where === scene.where && Boolean(scene.locationEvidence || verifiedAgreement || r.events.some((e) => e.source === scene.id && e.title === "\u66F4\u6B63\u672C\u6B21\u89C1\u9762\u5730\u70B9" && e.at <= at)) } : null, sources, facts, plan: verifiedMeetingPlan(r, at) || null };
   }
   var object2 = (value) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("\u573A\u666F\u72B6\u6001\u4E0D\u662F\u6709\u6548\u5BF9\u8C61");
@@ -8592,7 +8609,7 @@ ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText
     const semantic = structuredMeetingPlan(r, at);
     const consumed = Math.max(0, ...(r.meetings || []).map((s) => s.startedAt));
     const denied = new Set(getActiveEvents(r.events).filter((e) => e.messageId && e.knownBy?.length && !e.knownBy.includes(r.id)).map((e) => e.messageId));
-    const messages = getActiveMessages(r.chats).filter((m) => m.speaker !== "note" && m.at <= at && m.at > consumed && !denied.has(m.id)).map((m, i) => ({ m, i })).sort((a, b) => a.m.at - b.m.at || a.i - b.i);
+    const messages = phoneMessagesAt(r, at).filter((m) => m.speaker !== "note" && m.at > consumed && !denied.has(m.id)).map((m, i) => ({ m, i })).sort((a, b) => a.m.at - b.m.at || a.i - b.i);
     let plan = semantic || null;
     let previous;
     const lastSemantic = semantic ? Math.max(...messages.flatMap(({ m }, i) => semantic.sources.some((s) => s.id === m.id) ? [i] : [])) : -1;
@@ -8757,15 +8774,9 @@ ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText
       throw error;
     }
   }
-  function encounterHistory(r, messages) {
-    const originals = new Map(getActiveMessages(r.chats).map((m) => [m.id, m]));
+  function encounterHistory(r, messages, at = Date.now()) {
     const scene = r.scene, invalidOpening = scene?.entryPhase && !encounterEntryContext(r, scene.startedAt) ? scene.id + ":start" : void 0;
-    return getActiveMessages(messages).filter((m) => {
-      if (m.id === invalidOpening) return false;
-      if (!m.sourceMessageId) return true;
-      const source = originals.get(m.sourceMessageId);
-      return source?.speaker === m.speaker && source.text === m.text && source.at === m.at && (source.revisionCount || 0) === (m.revisionCount || 0);
-    });
+    return sceneMessagesAt(r, messages, at).filter((m) => m.id !== invalidOpening);
   }
   function inferPhoneHandoff(r, o, inputIds) {
     if (o.scene || r.scene || r.play) return { code: "handoff-scene-active" };
@@ -9143,7 +9154,8 @@ ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText
     const p = kind === "play" ? r.play : r.scene, mode = kind === "play" ? "theatre" : "meeting";
     if (!p || p.endedAt || "paused" in p && p.paused || !data.roles.some((role) => role.id === r.id) || base.source !== "native-live" || base.mode !== mode || base.actorId !== r.id || !Number.isFinite(base.now)) throw new Error("\u5C0F\u8BF4\u4E0A\u4E0B\u6587\u5F52\u5C5E\u65E0\u6548\uFF0C\u8BF7\u91CD\u65B0\u6253\u5F00\u5F53\u524D\u573A\u666F");
     const at = base.now, scope = kind === "play" ? "play:" + p.id : "real:" + r.id, knownBy = [r.id, "user"];
-    const historyIds = new Set((kind === "scene" ? encounterHistory(r, p.messages) : getActiveMessages(p.messages)).filter((m) => m.speaker !== "note" && m.at <= at).slice(-30).flatMap((m) => [m.id, ...m.sourceMessageId ? [m.sourceMessageId] : []]));
+    const visible = (kind === "scene" ? encounterHistory(r, p.messages, at) : stageMessagesAt(p.messages, at)).filter((m) => m.speaker !== "note").slice(-30);
+    const historyIds = new Set(visible.flatMap((m) => [m.id, ...m.sourceMessageId ? [m.sourceMessageId] : []]));
     const facts = [];
     const add = (id, layer, marker, text2) => {
       if (text2.trim()) facts.push({ id, text: text2, layer, marker, at, scope, knownBy, active: true, revisionValid: true });
@@ -9163,9 +9175,8 @@ ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText
       for (const f of memory.facts) facts.push({ id: f.id, text: memoryFactText(f), layer: f.layer, marker: f.layer === "identity" ? "personaDescription" : "worldInfoBefore", at: f.at, scope, knownBy: [r.id], active: true, revisionValid: true });
       add("relationship:" + r.id, "relationship", "worldInfoBefore", relationshipContext(r, at));
       const entry2 = encounterEntryContext(r, at);
-      add("state:" + r.id, "currentState", "scenario", `\u672C\u6B21\u89C1\u9762\u5730\u70B9\uFF1A${r.scene.where}\uFF1B\u5F53\u524D\u65F6\u95F4\uFF1A${new Date(at).toISOString()}${entry2 ? "\n" + entry2 : ""}`);
-      const realMessages = [...r.chats, ...r.scene?.messages || [], ...(r.meetings || []).flatMap((s) => s.messages)];
-      const active = new Map(getActiveMessages(realMessages).filter((m) => m.at <= at).map((m) => [m.id, m]));
+      add("state:" + r.id, "currentState", "scenario", `\u672C\u6B21\u89C1\u9762\u5730\u70B9\uFF1A${r.scene.locationEvidence || r.scene.agreement ? scenePlaceAt(r, r.scene, at) : r.scene.where}\uFF1B\u5F53\u524D\u65F6\u95F4\uFF1A${new Date(at).toISOString()}${entry2 ? "\n" + entry2 : ""}`);
+      const active = messageSourceIndex(r, at);
       for (const candidate of base.facts.filter((f) => f.layer === "episodic")) {
         const e = r.events.find((e2) => e2.id === candidate.id), message = e?.messageId ? active.get(e.messageId) : void 0;
         if (e?.messageId && historyIds.has(e.messageId)) continue;
@@ -9175,12 +9186,8 @@ ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText
         facts.push({ ...candidate, text: `[\u8BB0\u5F55\u6765\u6E90 ${e.source || e.messageId}\uFF1B${e.speaker === "me" ? "\u5BF9\u65B9\u539F\u8BDD" : e.speaker === "char" ? "\u89D2\u8272\u53D1\u8A00\uFF08\u4E0D\u4EE3\u8868\u5BF9\u5916\u90E8\u4E8B\u5B9E\u7684\u8BC1\u5B9E\uFF09" : "\u6B63\u5F0F\u4E8B\u4EF6\u8BB0\u5F55"}] ${e.title}\uFF1A${e.detail}`, scope, knownBy: e.knownBy?.length ? [...e.knownBy] : knownBy, active: true, revisionValid: true });
       }
     }
-    const history = (kind === "scene" ? encounterHistory(r, p.messages) : getActiveMessages(p.messages)).filter((m) => m.speaker !== "note" && m.at <= at).slice(-30).map((m) => {
-      const quote = m.quote && getActiveMessages(p.messages).find((q) => q.id === m.quote.id && q.at <= m.at);
-      const source = { ...m, quote: quote ? { id: quote.id, speaker: quote.speaker, text: quote.text, at: quote.at } : null };
-      return { id: m.id, role: m.speaker === "me" ? "user" : "assistant", text: `[\u6D88\u606F ID=${m.id}; createdAt=${new Date(m.at).toISOString()}]
-${formatMessageContentForModel(source, base.char, base.user)}`, at: m.at, scope, knownBy, active: true, revisionValid: true };
-    });
+    const history = visible.map((m) => ({ id: m.id, role: m.speaker === "me" ? "user" : "assistant", text: `[\u6D88\u606F ID=${m.id}; createdAt=${new Date(m.at).toISOString()}]
+${formatMessageContentForModel(m, base.char, base.user)}`, at: m.at, scope, knownBy, active: true, revisionValid: true }));
     const context = { source: "novel-live", mode, memoryDenied: kind === "scene" ? base.memoryDenied : [], actorId: r.id, scope, now: at, user: base.user, char: base.char, facts, history, examples: [], capabilities: { keywordRetrieval: kind === "scene", semanticRetrieval: false, completeRevisionChain: false } };
     authorized.add(context);
     return context;
@@ -10020,7 +10027,7 @@ ${JSON.stringify(control)}`;
   }
   function retrieve(r, query, limit = 9, nowTs = Date.now()) {
     const ks = keywords(query);
-    const rejected = projectRoleMemory(r, nowTs).supersededSources, messageIndex = memoryMessageIndex(r);
+    const rejected = projectRoleMemory(r, nowTs).supersededSources, messageIndex = memoryMessageIndex(r, nowTs);
     const trustedLife = new Set(collectRoleLife(r, nowTs).events.map((e) => e.id));
     const permittedEvents = getRoleKnownEvents(r).filter((e) => (e.kind !== "life" || trustedLife.has(e.id)) && eventSourceValid(r, e, nowTs, messageIndex, rejected));
     return permittedEvents.map((e) => ({
@@ -10062,19 +10069,18 @@ ${JSON.stringify(control)}`;
     let facts = "";
     let recalled = [];
     let episodeCandidates = [];
-    const allMessages = [...r.chats, ...r.scene?.messages || [], ...r.play?.messages || [], ...r.play?.intermissionMessages || [], ...(r.meetings || []).flatMap((s) => s.messages), ...r.plays.flatMap((p) => [...p.messages, ...p.intermissionMessages || []])];
-    const validIds2 = new Set(getActiveMessages(allMessages).map((m) => m.id));
-    const messageIndex = memoryMessageIndex(memoryRole, allMessages.concat(options.currentInputs || []));
+    const messageIndex = memoryMessageIndex(memoryRole, nowTs);
     const mode = kind === "scene" ? "meeting" : kind === "play" ? "theatre" : kind;
     const scope = kind === "play" ? "play:" + r.play.id : kind === "intermission" ? "intermission:" + r.play.id : "real:" + r.id;
     const raw = kind === "chat" ? r.chats : kind === "scene" ? r.scene?.messages : kind === "play" ? r.play?.messages : r.play?.intermissionMessages;
-    const userName = String(r.userAlias || projectedUserFields(data.user, memoryRole, nowTs, memory).find((f) => f.key === "name")?.text || "\u7528\u6237"), safeContent = (m) => m.quote && allMessages.some((source) => source.id === m.quote.id && !getActiveMessages([source]).length) ? m.text : formatMessageContentForModel(m, kind === "play" ? r.play.char : r.name, kind === "play" ? r.play.user : userName);
-    const recentMessages = (kind === "scene" ? encounterHistory(r, raw) : getActiveMessages(raw)).filter((m) => m.speaker !== "note" && m.at <= nowTs).slice(kind === "chat" && !past ? -16 : -30);
+    const userName = String(r.userAlias || projectedUserFields(data.user, memoryRole, nowTs, memory).find((f) => f.key === "name")?.text || "\u7528\u6237");
+    const safeContent = (m) => formatMessageContentForModel(m, kind === "play" ? r.play.char : r.name, kind === "play" ? r.play.user : userName);
+    const recentMessages = (kind === "scene" ? encounterHistory(r, raw, nowTs) : stageMessagesAt(raw, nowTs)).filter((m) => m.speaker !== "note").slice(kind === "chat" && !past ? -16 : -30);
     const history = recentMessages.map((m) => ({ id: m.id, role: m.speaker === "me" ? "user" : "assistant", text: safeContent(m), knownBy: [r.id], at: m.at, scope, active: true, revisionValid: true }));
     const shownPhoneSources = new Map((kind === "chat" ? recentMessages : []).map((m) => [m.id, m]));
     if (kind === "intermission") {
       const p = r.play;
-      const activePlayMsgs = getActiveMessages(p.messages);
+      const activePlayMsgs = stageMessagesAt(p.messages, nowTs);
       base = `\u4F60\u662F\u620F\u5916\u771F\u5B9E\u89D2\u8272${r.name}\uFF0C\u800C\u4E0D\u662F\u620F\u5185\u89D2\u8272\u3002\u4F60\u7684\u8EAB\u4EFD:${r.job}\uFF0C\u6027\u683C:${r.traits}\uFF0C\u5B8C\u6574\u4EBA\u8BBE:${r.profile}\u3002\u7528\u6237\u8EAB\u4EFD:${userIdentity}\u3002\u4F60\u73B0\u5728\u4E0E\u7528\u6237\u4E00\u8D77\u6392\u6F14\u300A${p.title}\u300B\uFF0C\u4F60\u77E5\u9053\u4F60\u626E\u6F14\u7684\u89D2\u8272\u8BBE\u5B9A:${p.char}\uFF1B\u5267\u5185\u4E16\u754C:${p.world}\uFF1B\u7528\u6237\u626E\u6F14:${p.user}\u3002\u4F60\u77E5\u9053\u5DF2\u7ECF\u6F14\u8FC7\u7684\u5185\u5BB9\uFF0C\u4F46\u4E0D\u80FD\u9884\u77E5\u672A\u53D1\u751F\u7684\u6545\u4E8B\u3002\u6B64\u523B\u662F\u5E55\u95F4\u8BA8\u8BBA\uFF0C\u620F\u5185\u60C5\u8282\u51BB\u7ED3\uFF0C\u53EA\u8FDB\u884C\u620F\u5916\u81EA\u7136\u4EA4\u8C08\u3001\u4EA4\u6D41\u5BF9\u620F\u4E0E\u4FEE\u8BA2\u60F3\u6CD5\u3002\u4E0D\u8981\u66FF\u7528\u6237\u51B3\u5B9A\uFF0C\u4E5F\u4E0D\u5728\u8FD9\u4E00\u8F6E\u63A8\u8FDB\u620F\u5185\u5267\u60C5\u3002\u5267\u4E2D\u4EBA\u683C\u4E0D\u80FD\u8986\u76D6\u620F\u5916\u81EA\u6211\u3002\u4EE5\u4E0B\u4E3A\u5DF2\u6F14\u7247\u6BB5\uFF1A${activePlayMsgs.slice(-18).map((m) => m.speaker + "\uFF1A" + m.text).join(" / ").slice(0, 8e3)}\uFF1B\u6B64\u524D\u5C1D\u8BD5\u8FC7\u7684\u5E9F\u5F03\u7247\u6BB5:${(p.revisions || []).slice(-3).map((v) => v.messages.map((m) => m.text).join(" / ")).join(" / ").slice(0, 2e3)}\u3002`;
     } else if (kind === "play") {
       const p = r.play;
@@ -10082,12 +10088,12 @@ ${JSON.stringify(control)}`;
     } else {
       const trustedLife = new Set(collectRoleLife(memoryRole, nowTs).events.map((e) => e.id));
       const a = routine({ ...r, events: r.events.filter((e) => e.kind !== "life" || trustedLife.has(e.id)) }, nowTs);
-      const bridgedIds = new Set((kind === "scene" ? r.scene?.messages || [] : []).flatMap((m) => m.sourceMessageId ? [m.sourceMessageId] : []));
+      const bridgedIds = new Set((kind === "scene" ? recentMessages : []).flatMap((m) => m.sourceMessageId ? [m.sourceMessageId, m.id] : []));
       const candidates = getRoleKnownEvents(r).filter((e) => {
         const message = e.messageId ? shownPhoneSources.get(e.messageId) : void 0;
         const duplicate = e.kind === "chat" && message && e.detail === message.text && e.at === message.at && (!e.speaker || e.speaker === message.speaker) && (!e.source || e.source === "chat");
         if (kind === "chat" && e.kind === "life") return false;
-        return eventSourceValid(memoryRole, e, nowTs, messageIndex, memory.supersededSources) && !duplicate && e.kind !== "drama" && (e.kind !== "life" || trustedLife.has(e.id)) && e.at <= nowTs && (!e.messageId || validIds2.has(e.messageId) && !bridgedIds.has(e.messageId));
+        return eventSourceValid(memoryRole, e, nowTs, messageIndex, memory.supersededSources) && !duplicate && e.kind !== "drama" && (e.kind !== "life" || trustedLife.has(e.id)) && e.at <= nowTs && (!e.messageId || !bridgedIds.has(e.messageId));
       });
       if (kind !== "chat") recalled = retrieve({ ...r, events: candidates }, input, 12, nowTs);
       if (kind === "chat") {
@@ -10100,10 +10106,11 @@ ${JSON.stringify(control)}`;
       const sharedDiaries = getSharedUserDiariesForRole(r).filter((d) => d.at <= nowTs && (d.sharedAt?.[r.id] ?? d.at) <= nowTs).slice(kind === "chat" ? past ? -2 : -1 : -5).map((d) => `[${dt(d.at)} \u7528\u6237\u4E3B\u52A8\u5206\u4EAB\u7ED9\u4F60\u7684\u65E5\u8BB0] ${kind === "chat" ? memoryExcerpt(d.text, input, past ? 180 : 80) : d.text}`).join("\n");
       const phasedScene = kind === "scene" && r.scene?.entryPhase;
       const activity = r.scene ? phasedScene ? "\u6309\u6709\u6548\u539F\u8BDD\u7EE7\u7EED\u89C1\u9762\u573A\u666F" : "\u4E0E\u7528\u6237\u5F53\u9762\u4EA4\u8C08" : kind === "chat" && a.doing.startsWith("\u6700\u8FD1\u8BB0\u5F55\uFF1A") ? "\u6700\u8FD1\u8BB0\u5F55\uFF1A" + a.label : a.doing;
-      base = `\u4F60\u5728\u626E\u6F14\u540D\u4E3A${r.name}\u7684\u865A\u6784\u4EBA\u7269\uFF08\u4E0D\u662FAI\u52A9\u624B\uFF09\uFF0C\u6709\u72EC\u7ACB\u751F\u6D3B\u3001\u5DE5\u4F5C\u3001\u504F\u597D\u548C\u4E3B\u89C2\u611F\u53D7\u3002\u8EAB\u4EFD\uFF1A${r.job}\u3002\u6240\u5728\u533A\u57DF\u4E0E\u4E16\u754C\u89C2\uFF1A${r.place}\u3002\u6027\u683C\uFF1A${r.traits}\u3002\u4EBA\u8BBE\uFF1A${r.profile}\u3002\u524D\u53F2\u8282\u70B9\u4E0E\u672A\u53D1\u751F\u5267\u60C5\u8FB9\u754C\uFF1A${r.canonNotes || "\u4EE5\u7528\u6237\u8BBE\u5B9A\u4E3A\u51C6"}\u3002\u7528\u6237\u8EAB\u4EFD\u8BBE\u5B9A\uFF1A${userIdentity}\u3002\u4F60\u548C\u7528\u6237\u76EE\u524D\u7684\u5173\u7CFB\uFF1A${relationshipContext(memoryRole, nowTs, memory)}\u3002\u6B64\u523B\u5730\u70B9\uFF1A${r.scene?.where || a.where}\u3002\u6B63\u5728\u505A\uFF1A${activity}\u3002\u5F53\u524D\u65E5\u671F\u65F6\u95F4\uFF1A${dt(nowTs)}\u3002\u4FDD\u6301\u4EBA\u8BBE\u4E00\u81F4\uFF0C\u4F46\u4E0D\u8981\u673A\u68B0\u9644\u548C\uFF0C\u4E0D\u66FF\u7528\u6237\u51B3\u5B9A\u884C\u4E3A\u3002\u7981\u6B62\u5047\u88C5\u77E5\u9053\u6CA1\u6709\u83B7\u6089\u7684\u79C1\u4E8B\u3002\u6240\u9644\u5386\u53F2\u662F\u6709\u6765\u6E90\u7684\u90E8\u5206\u68C0\u7D22\u7ED3\u679C\uFF0C\u4E0D\u786E\u5B9A\u65F6\u4E0D\u8981\u7F16\u9020\u3002\u804C\u4E1A\u4E0E\u4E16\u754C\u8BBE\u5B9A\u53EA\u7EA6\u675F\u53EF\u80FD\u7684\u6D3B\u52A8\uFF0C\u4E0D\u4EE3\u8868\u5F53\u4E0B\u5DF2\u7ECF\u53D1\u751F\uFF1B\u4E0D\u5F97\u4E3A\u6240\u6709\u89D2\u8272\u5957\u7528\u56FA\u5B9A\u7684\u7EDF\u4E00\u65E5\u7A0B\u6216\u7F16\u9020\u5177\u4F53\u884C\u7A0B\u3002`;
+      base = `\u4F60\u5728\u626E\u6F14\u540D\u4E3A${r.name}\u7684\u865A\u6784\u4EBA\u7269\uFF08\u4E0D\u662FAI\u52A9\u624B\uFF09\uFF0C\u6709\u72EC\u7ACB\u751F\u6D3B\u3001\u5DE5\u4F5C\u3001\u504F\u597D\u548C\u4E3B\u89C2\u611F\u53D7\u3002\u8EAB\u4EFD\uFF1A${r.job}\u3002\u6240\u5728\u533A\u57DF\u4E0E\u4E16\u754C\u89C2\uFF1A${r.place}\u3002\u6027\u683C\uFF1A${r.traits}\u3002\u4EBA\u8BBE\uFF1A${r.profile}\u3002\u524D\u53F2\u8282\u70B9\u4E0E\u672A\u53D1\u751F\u5267\u60C5\u8FB9\u754C\uFF1A${r.canonNotes || "\u4EE5\u7528\u6237\u8BBE\u5B9A\u4E3A\u51C6"}\u3002\u7528\u6237\u8EAB\u4EFD\u8BBE\u5B9A\uFF1A${userIdentity}\u3002\u4F60\u548C\u7528\u6237\u76EE\u524D\u7684\u5173\u7CFB\uFF1A${relationshipContext(memoryRole, nowTs, memory)}\u3002\u6B64\u523B\u5730\u70B9\uFF1A${r.scene ? r.scene.locationEvidence || r.scene.agreement ? scenePlaceAt(r, r.scene, nowTs) : r.scene.where : a.where}\u3002\u6B63\u5728\u505A\uFF1A${activity}\u3002\u5F53\u524D\u65E5\u671F\u65F6\u95F4\uFF1A${dt(nowTs)}\u3002\u4FDD\u6301\u4EBA\u8BBE\u4E00\u81F4\uFF0C\u4F46\u4E0D\u8981\u673A\u68B0\u9644\u548C\uFF0C\u4E0D\u66FF\u7528\u6237\u51B3\u5B9A\u884C\u4E3A\u3002\u7981\u6B62\u5047\u88C5\u77E5\u9053\u6CA1\u6709\u83B7\u6089\u7684\u79C1\u4E8B\u3002\u6240\u9644\u5386\u53F2\u662F\u6709\u6765\u6E90\u7684\u90E8\u5206\u68C0\u7D22\u7ED3\u679C\uFF0C\u4E0D\u786E\u5B9A\u65F6\u4E0D\u8981\u7F16\u9020\u3002\u804C\u4E1A\u4E0E\u4E16\u754C\u8BBE\u5B9A\u53EA\u7EA6\u675F\u53EF\u80FD\u7684\u6D3B\u52A8\uFF0C\u4E0D\u4EE3\u8868\u5F53\u4E0B\u5DF2\u7ECF\u53D1\u751F\uFF1B\u4E0D\u5F97\u4E3A\u6240\u6709\u89D2\u8272\u5957\u7528\u56FA\u5B9A\u7684\u7EDF\u4E00\u65E5\u7A0B\u6216\u7F16\u9020\u5177\u4F53\u884C\u7A0B\u3002`;
       const entry2 = phasedScene ? encounterEntryContext(r, nowTs) : void 0;
       if (entry2) base += "\n\n" + entry2;
-      const plan = kind === "chat" ? meetingPlan(r, nowTs) : r.scene?.agreement;
+      const agreement = r.scene?.agreement;
+      const plan = kind === "chat" ? meetingPlan(r, nowTs) : agreement?.sources.every((source) => phoneMessagesAt(r, nowTs).some((m) => matchesMessageSource(m, source))) ? agreement : void 0;
       if (plan) base += `
 
 \u7EA6\u89C1\u8BB0\u5F55\uFF08\u6765\u81EA\u6709\u6548\u624B\u673A\u539F\u8BDD\uFF0C\u4E0D\u7B49\u4E8E\u5DF2\u7ECF\u89C1\u9762\uFF09\uFF1A${plan.status}\uFF1B\u5730\u70B9\uFF1A${plan.where || "\u672A\u7EA6\u5B9A"}\uFF1B\u65F6\u95F4\uFF1A${plan.timeText || "\u672A\u7EA6\u5B9A"}${plan.scheduledAt !== void 0 ? "\uFF08\u672C\u5730 " + dt(plan.scheduledAt) + "\uFF09" : ""}\uFF1B\u6765\u6E90\u6D88\u606F\uFF1A${plan.sources.map((m) => m.id).join("\u3001")}\u3002\u89D2\u8272\u53EF\u4EE5\u534F\u5546\u6216\u62D2\u7EDD\uFF1B\u4E0D\u80FD\u628A\u63D0\u51FA\u9080\u8BF7\u5F53\u6210\u5DF2\u63A5\u53D7\u6216\u5DF2\u5230\u8FBE\u3002`;
@@ -10158,7 +10165,8 @@ ${facts || "\u6682\u65E0"}`;
       ...recalled.map((e) => ({ id: e.id, text: e.detail, layer: "episodic", at: e.at, scope, knownBy: e.knownBy?.length ? e.knownBy : [r.id], active: true, revisionValid: true })),
       ...episodeCandidates.filter((e) => !recalled.some((shown) => shown.id === e.id)).map((e) => ({ id: e.id, text: e.detail, layer: "episodic", at: e.at, scope, knownBy: e.knownBy?.length ? e.knownBy : [r.id], active: true, revisionValid: true }))
     ];
-    const currentInputs = (options.currentInputs || []).map((m) => ({ id: m.id, role: "user", text: `[\u6D88\u606F ID=${m.id}; createdAt=${new Date(m.at).toISOString()}; \u672C\u5730\u53D1\u9001\u65F6\u95F4=${new Date(m.at).toLocaleString("zh-CN", { hour12: false })}]
+    const inputIds = new Set((options.currentInputs || []).map((m) => m.id));
+    const currentInputs = phoneMessagesAt(memoryRole, nowTs).filter((m) => inputIds.has(m.id)).map((m) => ({ id: m.id, role: "user", text: `[\u6D88\u606F ID=${m.id}; createdAt=${new Date(m.at).toISOString()}; \u672C\u5730\u53D1\u9001\u65F6\u95F4=${new Date(m.at).toLocaleString("zh-CN", { hour12: false })}]
 ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me" && !["retracted", "superseded", "deleted"].includes(String(m.status)), revisionValid: true }));
     const factFragments = Object.fromEntries(factsForContext.filter((f) => Boolean(f.text) && (f.layer !== "episodic" || recalled.some((e) => e.id === f.id)) && base.includes(memoryFragments[f.id] || f.text)).map((f) => [f.id, memoryFragments[f.id] || f.text]));
     const memoryTrace = [...memory.trace, ...projectedUserFields(data.user, memoryRole, nowTs, memory).filter((f) => f.conflicts.length).map((f) => ({ id: "user-profile:" + f.key, layer: "identity", sourceIds: f.conflicts, reason: "profile-field-corrected" }))];
@@ -10746,8 +10754,20 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
     delete state2.blocked;
     delete state2.error;
   }
-  function reviseChatTiming(r, at) {
+  function reviseChatTiming(r, at, editedOrWithdrawnId) {
     const state2 = chatTiming(r);
+    if (editedOrWithdrawnId) {
+      delete state2.inFlight;
+      state2.pending = state2.pending.filter((id) => id !== editedOrWithdrawnId);
+      state2.generation++;
+      if (!state2.pending.length) {
+        state2.quietUntil = 0;
+        delete state2.replyDueAt;
+        delete state2.blocked;
+        delete state2.error;
+      }
+      return;
+    }
     if (state2.inFlight) restoreSources(r, state2.inFlight);
     state2.generation++;
     state2.pending = validIds(r, state2.pending);
@@ -10926,7 +10946,7 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
     return newestMonitorFirst(items.flatMap((item) => {
       if (item.timestamp > now || item.id.startsWith("fp_chat_")) return [];
       const { endMs } = getLocalDayBounds(item.dateKey), cutoff = Math.min(now, endMs), life = collectRoleLife(role, cutoff).events;
-      const facts = collectDailyDiaryFacts(role, item.dateKey, true);
+      const facts = collectDailyDiaryFacts(role, item.dateKey, true, cutoff);
       let summary = "", where;
       if (item.category === "life") {
         const event = life.find((e) => item.sourceEventIds.length === 1 && e.id === item.sourceEventIds[0]);
@@ -16161,14 +16181,14 @@ ${prevLogs}` : "",
       });
       return true;
     }
-    function revisePhoneSchedule(r, cancel = true) {
+    function revisePhoneSchedule(r, cancel = true, editedOrWithdrawnId) {
       if (cancel) {
         activeChatRequests.get(r.id)?.abort();
         chatTyping.delete(r.id);
       }
       r.meetingPlan = meetingPlan(r, now());
       if (!r.chatTiming) return;
-      reviseChatTiming(r, now());
+      reviseChatTiming(r, now(), editedOrWithdrawnId);
     }
     async function requestAiLiveLogForActiveSession(sessionId, momentId, roleId) {
       if (!canUseRealModel(data.settings)) return;
@@ -19788,7 +19808,7 @@ ${prevLogs}` : "",
           notify(res.reason || "\u64A4\u56DE\u5931\u8D25");
           return;
         }
-        if (scope === "chat") revisePhoneSchedule(r, false);
+        if (scope === "chat") revisePhoneSchedule(r, false, b.dataset.id);
         if (!saveLogged("revision", `\u64A4\u56DE ${scope} \u6D88\u606F`, { targetMessageId: b.dataset.id, revisionId: res.revision?.id })) {
           restoreFields(r, previous);
           return;
@@ -20260,8 +20280,7 @@ ${prevLogs}` : "",
         }
         if (scope === "chat") {
           syncRoleMemory(r, now());
-          revisePhoneSchedule(r, false);
-          if (r.chats.find((m) => m.id === msgId)?.speaker === "me") enqueueChat(r, msgId, now());
+          revisePhoneSchedule(r, false, msgId);
         }
         if (!saveLogged("revision", `\u7F16\u8F91 ${scope} \u6D88\u606F`, {
           targetMessageId: msgId,

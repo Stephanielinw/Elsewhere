@@ -1,6 +1,6 @@
 import type {ChatMessage,EventRecord,RoleData,UserProfileData} from './types';
 import type {ConversationContext,ConversationCompilation} from './conversationPrompt';
-import {getActiveMessages} from './revisions';
+import {matchesMessageSource,messageAvailableAt,messageSourceIndex,phoneMessagesAt} from './messageProvenance';
 export interface MemoryRecord {
  id:string;roleId:string;scope:string;layer:'identity'|'relationship';attribute:string;value:string;
  polarity:'affirm'|'deny';correction:boolean;mutual?:true;at:number;knownBy:string[];origin:'explicit-user';
@@ -15,7 +15,7 @@ function assertedText(text:string):string {
  return text.replace(/```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)/g,'').replace(/“[^”]*”|「[^」]*」|『[^』]*』|"[^"\n]*"|^\s*>[^\n]*(?:\n|$)/gm,'');
 }
 function derive(r:RoleData,at:number):MemoryRecord[] {
- const messages=getActiveMessages(r.chats).filter(m=>m.at<=at&&(!m.kind||m.kind==='chat')).sort((a,b)=>a.at-b.at);
+ const messages=phoneMessagesAt(r,at).filter(m=>(!m.kind||m.kind==='chat')).sort((a,b)=>a.at-b.at);
  const records:MemoryRecord[]=[];
  for(const [index,m]of messages.entries()){
   if(m.speaker!=='me'||uncertain.test(m.text))continue;
@@ -54,8 +54,8 @@ function derive(r:RoleData,at:number):MemoryRecord[] {
  return records;
 }
 function sourceValid(r:RoleData,s:MemoryRecord['source'],at:number,user=false):boolean {
- const m=getActiveMessages(r.chats).find(m=>m.id===s.id&&m.at<=at&&(!m.kind||m.kind==='chat'));
- return Boolean(m&&(!user||m.speaker==='me')&&m.text===s.text&&m.at===s.at&&(m.revisionCount||0)===s.revisionCount);
+ const m=phoneMessagesAt(r,at).find(m=>m.id===s.id&&(!m.kind||m.kind==='chat'));
+ return Boolean(m&&(!user||m.speaker==='me')&&matchesMessageSource(m,s));
 }
 function sourceChanged(r:RoleData,s:MemoryRecord['source'],at:number):boolean {
  // A source omitted from a bounded request is not a withdrawal.
@@ -110,12 +110,15 @@ export function memoryFactText(f:MemoryRecord,compact=false):string {
 export function memoryContext(r:RoleData,at:number):string {
  return projectRoleMemory(r,at).facts.map(f=>`[记忆 ${f.id}] ${memoryFactText(f)}`).join('\n');
 }
-export function memoryMessageIndex(r:RoleData,messages:ChatMessage[]=[...r.chats,...(r.scene?.messages||[]),...(r.meetings||[]).flatMap(s=>s.messages),...(r.play?.messages||[]),...(r.play?.intermissionMessages||[]),...(r.plays||[]).flatMap(p=>[...p.messages,...(p.intermissionMessages||[])])]):Map<string,ChatMessage> {return new Map(getActiveMessages(messages).map(m=>[m.id,m]));}
-export function eventSourceValid(r:RoleData,e:EventRecord,at:number,allMessages:Map<string,ChatMessage>=memoryMessageIndex(r),rejected?:Set<string>):boolean {
+export function memoryMessageIndex(r:RoleData,at=Infinity):Map<string,ChatMessage> {
+ return messageSourceIndex(r,at);
+}
+export function eventSourceValid(r:RoleData,e:EventRecord,at:number,allMessages:Map<string,ChatMessage>=memoryMessageIndex(r,at),rejected?:Set<string>):boolean {
  if(e.kind==='diary'&&!e.knownBy?.includes(r.id))return false;
  if(e.at>at||e.status==='retracted'||e.status==='superseded'||e.knownBy?.length&&!e.knownBy.includes(r.id))return false;
+ if(e.sceneChange&&(!Array.isArray(e.sceneChange.sources)||!e.sceneChange.sources.every(s=>s&&matchesMessageSource(allMessages.get(s.id),s))))return false;
  if(!e.messageId)return true;
- const m=allMessages.get(e.messageId);if(!m||m.at>at)return false;
+ const m=allMessages.get(e.messageId);if(!m||!messageAvailableAt(m,at))return false;
  if(e.sourceRevision!==undefined&&(m.revisionCount||0)!==e.sourceRevision)return false;
  if(e.sourceRevision===undefined&&(m.revisionCount||m.editedAt)&&e.detail!==m.text)return false;
  return !(rejected||projectRoleMemory(r,at).supersededSources).has(m.id);

@@ -1,3 +1,4 @@
+import {matchesMessageSource,phoneMessagesAt,scenePlaceAt,stageMessagesAt} from './messageProvenance';
 import {meetingPlan,encounterHistory,encounterEntryContext} from './encounter';
 import {compileConversationPrompt,requestMessages,type ConversationCompilation,type ConversationContext} from './conversationPrompt';
 import {nativePreset,isNativePreset} from './fruit/nativePreset';
@@ -9,7 +10,7 @@ import {createLiveNovelContext} from './novelContext';
 import {createFruitState} from './fruit/preset';
 import type {FruitContext,FruitProfile,FruitPreset} from './fruit/types';
 import type { AppData, EventRecord, RoleData, ChatMessage } from './types';
-import { formatMessageContentForModel, getActiveMessages } from './revisions';
+import { formatMessageContentForModel } from './revisions';
 import { getRoleKnownEvents, getSharedUserDiariesForRole } from './diary';
 
 export const dt = (t: number): string =>
@@ -73,7 +74,7 @@ export function retrieve(
   nowTs = Date.now()
 ): EventRecord[] {
   const ks = keywords(query);
-  const rejected=projectRoleMemory(r,nowTs).supersededSources,messageIndex=memoryMessageIndex(r);
+  const rejected=projectRoleMemory(r,nowTs).supersededSources,messageIndex=memoryMessageIndex(r,nowTs);
   const trustedLife=new Set(collectRoleLife(r,nowTs).events.map(e=>e.id));
   const permittedEvents = getRoleKnownEvents(r).filter(e=>(e.kind!=='life'||trustedLife.has(e.id))&&eventSourceValid(r,e,nowTs,messageIndex,rejected));
   return permittedEvents
@@ -142,20 +143,19 @@ export function buildNativeContext(
   let facts = '';
   let recalled:EventRecord[]=[];
   let episodeCandidates:EventRecord[]=[];
-  const allMessages=[...r.chats,...(r.scene?.messages||[]),...(r.play?.messages||[]),...(r.play?.intermissionMessages||[]),...(r.meetings||[]).flatMap(s=>s.messages),...r.plays.flatMap(p=>[...p.messages,...(p.intermissionMessages||[])])];
-  const validIds=new Set(getActiveMessages(allMessages).map(m=>m.id));
-  const messageIndex=memoryMessageIndex(memoryRole,allMessages.concat(options.currentInputs||[]));
+  const messageIndex=memoryMessageIndex(memoryRole,nowTs);
   const mode=kind==='scene'?'meeting':kind==='play'?'theatre':kind;
   const scope=kind==='play'?'play:'+r.play!.id:kind==='intermission'?'intermission:'+r.play!.id:'real:'+r.id;
   const raw=kind==='chat'?r.chats:kind==='scene'?r.scene?.messages:kind==='play'?r.play?.messages:r.play?.intermissionMessages;
-  const userName=String(r.userAlias||projectedUserFields(data.user,memoryRole,nowTs,memory).find(f=>f.key==='name')?.text||'用户'),safeContent=(m:ChatMessage)=>m.quote&&allMessages.some(source=>source.id===m.quote!.id&&!getActiveMessages([source]).length)?m.text:formatMessageContentForModel(m,kind==='play'?r.play!.char:r.name,kind==='play'?r.play!.user:userName);
-  const recentMessages=(kind==='scene'?encounterHistory(r,raw):getActiveMessages(raw)).filter(m=>m.speaker!=='note'&&m.at<=nowTs).slice(kind==='chat'&&!past?-16:-30);
+  const userName=String(r.userAlias||projectedUserFields(data.user,memoryRole,nowTs,memory).find(f=>f.key==='name')?.text||'用户');
+  const safeContent=(m:ChatMessage)=>formatMessageContentForModel(m,kind==='play'?r.play!.char:r.name,kind==='play'?r.play!.user:userName);
+  const recentMessages=(kind==='scene'?encounterHistory(r,raw,nowTs):stageMessagesAt(raw,nowTs)).filter(m=>m.speaker!=='note').slice(kind==='chat'&&!past?-16:-30);
   const history=recentMessages.map(m=>({id:m.id,role:m.speaker==='me'?'user' as const:'assistant' as const,text:safeContent(m),knownBy:[r.id],at:m.at,scope,active:true,revisionValid:true}));
   const shownPhoneSources=new Map((kind==='chat'?recentMessages:[]).map(m=>[m.id,m]));
 
   if (kind === 'intermission') {
     const p = r.play!;
-    const activePlayMsgs = getActiveMessages(p.messages);
+    const activePlayMsgs = stageMessagesAt(p.messages,nowTs);
     base = `你是戏外真实角色${r.name}，而不是戏内角色。你的身份:${r.job}，性格:${r.traits}，完整人设:${r.profile}。用户身份:${userIdentity}。你现在与用户一起排演《${p.title}》，你知道你扮演的角色设定:${p.char}；剧内世界:${p.world}；用户扮演:${p.user}。你知道已经演过的内容，但不能预知未发生的故事。此刻是幕间讨论，戏内情节冻结，只进行戏外自然交谈、交流对戏与修订想法。不要替用户决定，也不在这一轮推进戏内剧情。剧中人格不能覆盖戏外自我。以下为已演片段：${activePlayMsgs
       .slice(-18)
       .map((m) => m.speaker + '：' + m.text)
@@ -171,13 +171,13 @@ export function buildNativeContext(
   } else {
     const trustedLife=new Set(collectRoleLife(memoryRole,nowTs).events.map(e=>e.id));
     const a = routine({...r,events:r.events.filter(e=>e.kind!=='life'||trustedLife.has(e.id))}, nowTs);
-    const bridgedIds=new Set((kind==='scene'?r.scene?.messages||[]:[]).flatMap(m=>m.sourceMessageId?[m.sourceMessageId]:[]));
+    const bridgedIds=new Set((kind==='scene'?recentMessages:[]).flatMap(m=>m.sourceMessageId?[m.sourceMessageId,m.id]:[]));
     const candidates=getRoleKnownEvents(r).filter(e=>{
       const message=e.messageId?shownPhoneSources.get(e.messageId):undefined;
       // Only omit a verbatim record of the same visible source; summaries and facts remain candidates.
       const duplicate=e.kind==='chat'&&message&&e.detail===message.text&&e.at===message.at&&(!e.speaker||e.speaker===message.speaker)&&(!e.source||e.source==='chat');
       if(kind==='chat'&&e.kind==='life')return false; // Read trusted life once through the shared private projection.
-      return eventSourceValid(memoryRole,e,nowTs,messageIndex,memory.supersededSources)&&!duplicate&&e.kind!=='drama'&&(e.kind!=='life'||trustedLife.has(e.id))&&e.at<=nowTs&&(!e.messageId||validIds.has(e.messageId)&&!bridgedIds.has(e.messageId));
+      return eventSourceValid(memoryRole,e,nowTs,messageIndex,memory.supersededSources)&&!duplicate&&e.kind!=='drama'&&(e.kind!=='life'||trustedLife.has(e.id))&&e.at<=nowTs&&(!e.messageId||!bridgedIds.has(e.messageId));
     });
     if(kind!=='chat')recalled=retrieve({...r,events:candidates},input,12,nowTs);
     if(kind==='chat'){
@@ -197,10 +197,11 @@ export function buildNativeContext(
 
     const phasedScene=kind==='scene'&&r.scene?.entryPhase;
     const activity=r.scene?(phasedScene?'按有效原话继续见面场景':'与用户当面交谈'):kind==='chat'&&a.doing.startsWith('最近记录：')?'最近记录：'+a.label:a.doing;
-    base = `你在扮演名为${r.name}的虚构人物（不是AI助手），有独立生活、工作、偏好和主观感受。身份：${r.job}。所在区域与世界观：${r.place}。性格：${r.traits}。人设：${r.profile}。前史节点与未发生剧情边界：${r.canonNotes || '以用户设定为准'}。用户身份设定：${userIdentity}。你和用户目前的关系：${relationshipContext(memoryRole,nowTs,memory)}。此刻地点：${r.scene?.where || a.where}。正在做：${activity}。当前日期时间：${dt(nowTs)}。保持人设一致，但不要机械附和，不替用户决定行为。禁止假装知道没有获悉的私事。所附历史是有来源的部分检索结果，不确定时不要编造。职业与世界设定只约束可能的活动，不代表当下已经发生；不得为所有角色套用固定的统一日程或编造具体行程。`;
+    base = `你在扮演名为${r.name}的虚构人物（不是AI助手），有独立生活、工作、偏好和主观感受。身份：${r.job}。所在区域与世界观：${r.place}。性格：${r.traits}。人设：${r.profile}。前史节点与未发生剧情边界：${r.canonNotes || '以用户设定为准'}。用户身份设定：${userIdentity}。你和用户目前的关系：${relationshipContext(memoryRole,nowTs,memory)}。此刻地点：${r.scene?(r.scene.locationEvidence||r.scene.agreement?scenePlaceAt(r,r.scene,nowTs):r.scene.where):a.where}。正在做：${activity}。当前日期时间：${dt(nowTs)}。保持人设一致，但不要机械附和，不替用户决定行为。禁止假装知道没有获悉的私事。所附历史是有来源的部分检索结果，不确定时不要编造。职业与世界设定只约束可能的活动，不代表当下已经发生；不得为所有角色套用固定的统一日程或编造具体行程。`;
     const entry=phasedScene?encounterEntryContext(r,nowTs):undefined;
     if(entry)base+='\n\n'+entry;
-    const plan=kind==='chat'?meetingPlan(r,nowTs):r.scene?.agreement;
+    const agreement=r.scene?.agreement;
+    const plan=kind==='chat'?meetingPlan(r,nowTs):agreement?.sources.every(source=>phoneMessagesAt(r,nowTs).some(m=>matchesMessageSource(m,source)))?agreement:undefined;
     if(plan)base+=`\n\n约见记录（来自有效手机原话，不等于已经见面）：${plan.status}；地点：${plan.where||'未约定'}；时间：${plan.timeText||'未约定'}${plan.scheduledAt!==undefined?'（本地 '+dt(plan.scheduledAt)+'）':''}；来源消息：${plan.sources.map(m=>m.id).join('、')}。角色可以协商或拒绝；不能把提出邀请当成已接受或已到达。`;
     base += `\n\n玩家共享 DDL / 待办（所有角色可见，只能关心提醒，不得擅自改动）：${userTasksSummary(data) || '无'}。`;
     if (sharedDiaries) {
@@ -235,7 +236,8 @@ export function buildNativeContext(
     ...recalled.map(e=>({id:e.id,text:e.detail,layer:'episodic' as const,at:e.at,scope,knownBy:e.knownBy?.length?e.knownBy:[r.id],active:true,revisionValid:true})),
     ...episodeCandidates.filter(e=>!recalled.some(shown=>shown.id===e.id)).map(e=>({id:e.id,text:e.detail,layer:'episodic' as const,at:e.at,scope,knownBy:e.knownBy?.length?e.knownBy:[r.id],active:true,revisionValid:true})),
   ];
-  const currentInputs=(options.currentInputs||[]).map(m=>({id:m.id,role:'user' as const,text:`[消息 ID=${m.id}; createdAt=${new Date(m.at).toISOString()}; 本地发送时间=${new Date(m.at).toLocaleString('zh-CN',{hour12:false})}]\n${safeContent(m)}`,knownBy:[r.id],at:m.at,scope,active:m.speaker==='me'&&!['retracted','superseded','deleted'].includes(String(m.status)),revisionValid:true}));
+  const inputIds=new Set((options.currentInputs||[]).map(m=>m.id));
+  const currentInputs=phoneMessagesAt(memoryRole,nowTs).filter(m=>inputIds.has(m.id)).map(m=>({id:m.id,role:'user' as const,text:`[消息 ID=${m.id}; createdAt=${new Date(m.at).toISOString()}; 本地发送时间=${new Date(m.at).toLocaleString('zh-CN',{hour12:false})}]\n${safeContent(m)}`,knownBy:[r.id],at:m.at,scope,active:m.speaker==='me'&&!['retracted','superseded','deleted'].includes(String(m.status)),revisionValid:true}));
   const factFragments=Object.fromEntries(factsForContext.filter(f=>Boolean(f.text)&&(f.layer!=='episodic'||recalled.some(e=>e.id===f.id))&&base.includes(memoryFragments[f.id]||f.text)).map(f=>[f.id,memoryFragments[f.id]||f.text]));
   const memoryTrace=[...memory.trace,...projectedUserFields(data.user,memoryRole,nowTs,memory).filter(f=>f.conflicts.length).map(f=>({id:'user-profile:'+f.key,layer:'identity',sourceIds:f.conflicts,reason:'profile-field-corrected'}))];
   for(const e of r.events){

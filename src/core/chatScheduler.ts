@@ -61,8 +61,17 @@ export function recoverChatTiming(r:RoleData):void {
   failChatBatch(r,r.chatTiming.inFlight,'上次请求被刷新中断，请检查连接后重试。');r.chatTiming.generation++;
 }
 export function retryChatTiming(r:RoleData):void { const state=chatTiming(r);delete state.blocked;delete state.error; }
-export function reviseChatTiming(r:RoleData,at:number):void {
-  const state=chatTiming(r);if(state.inFlight)restoreSources(r,state.inFlight);
+export function reviseChatTiming(r:RoleData,at:number,editedOrWithdrawnId?:string):void {
+  const state=chatTiming(r);
+  if(editedOrWithdrawnId){
+    // The interrupted batch may already have been billed. Keep only separately queued sends.
+    delete state.inFlight;
+    state.pending=state.pending.filter(id=>id!==editedOrWithdrawnId);
+    state.generation++;
+    if(!state.pending.length){state.quietUntil=0;delete state.replyDueAt;delete state.blocked;delete state.error;}
+    return;
+  }
+  if(state.inFlight)restoreSources(r,state.inFlight);
   state.generation++;state.pending=validIds(r,state.pending);if(state.pending.length)state.quietUntil=Math.max(state.quietUntil,at+CHAT_QUIET_MS);
   delete state.blocked;delete state.error;
 }

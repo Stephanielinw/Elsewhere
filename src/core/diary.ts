@@ -11,13 +11,13 @@ import type {
 import {
   formatMessageContentForModel,
   getActiveEvents,
-  getActiveMessages,
   makeUid,
 } from './revisions';
+import {messageSourceIndex,phoneMessagesAt,rolePlays,roleScenes,sceneMessagesAt,scenePlaceAt,stageMessagesAt} from './messageProvenance';
 import { awaitingNainOpening, canUseRealModel } from './firstMessage';
 import {memoryExcerpt} from './contextBudget';
 import {collectRoleLife,personalContext,preparePersonalReply} from './roleLife';
-import {projectedUserFields,eventSourceValid,memorySnapshot,projectRoleMemory,relationshipContext,memoryMessageIndex,memoryRuleConflicts,compactRoleMemory,memoryFactText} from './memory';
+import {projectedUserFields,eventSourceValid,memorySnapshot,projectRoleMemory,relationshipContext,memoryRuleConflicts,compactRoleMemory,memoryFactText} from './memory';
 
 export function toLocalDateKey(ts: number): string {
   const d = new Date(ts);
@@ -249,53 +249,28 @@ export interface DailyDiaryFacts {
 export function collectDailyDiaryFacts(
   role: RoleData,
   dateKey: string,
-  trustedLifeOnly = false
+  trustedLifeOnly = false,
+  through = Infinity
 ): DailyDiaryFacts {
   const { startMs, endMs, label, shortLabel } = getLocalDayBounds(dateKey);
 
-  // 1. Active chat messages in [startMs, endMs]
-  const chatMessages = getActiveMessages(role.chats || []).filter(
-    (m) => m.at >= startMs && m.at <= endMs
-  );
+  const cutoff=Math.min(endMs,through);
+  const onDay=(m:ChatMessage)=>m.at>=startMs;
+  const chatMessages=phoneMessagesAt(role,cutoff).filter(onDay);
+  const phoneIds=new Set(chatMessages.map(m=>m.id));
 
-  // 2. Active face-to-face scene messages in [startMs, endMs]
-  const allScenes = [
-    ...(Array.isArray(role.meetings) ? role.meetings : []),
-    ...(role.scene ? [role.scene] : []),
-  ];
-  const seenSceneIds = new Set<string>();
-  const sceneBlocks: { id: string; where: string; messages: ChatMessage[] }[] = [];
-  for (const sc of allScenes) {
-    if (!sc || seenSceneIds.has(sc.id)) continue;
-    seenSceneIds.add(sc.id);
-    const msgs = getActiveMessages(sc.messages || []).filter(
-      (m) => m.at >= startMs && m.at <= endMs
-    );
-    if (msgs.length > 0) {
-      sceneBlocks.push({
-        id: sc.id,
-        where: sc.where || role.place || '见面地点',
-        messages: msgs,
-      });
-    }
+  const sceneBlocks: DailyDiaryFacts['sceneBlocks'] = [];
+  for (const sc of roleScenes(role)) {
+    const msgs=sceneMessagesAt(role,sc.messages,cutoff).filter(m=>onDay(m)&&
+      !(m.sourceMessageId&&phoneIds.has(m.sourceMessageId))&&
+      !(m.speaker==='note'&&m.id===sc.id+':start'));
+    if (msgs.length)sceneBlocks.push({id:sc.id,where:scenePlaceAt(role,sc,cutoff),messages:msgs});
   }
 
-  // 3. Active drama plays & intermission messages in [startMs, endMs]
-  const allPlays = [
-    ...(Array.isArray(role.plays) ? role.plays : []),
-    ...(role.play ? [role.play] : []),
-  ];
-  const seenPlayIds = new Set<string>();
   const playBlocks: DailyDiaryFacts['playBlocks'] = [];
-  for (const pl of allPlays) {
-    if (!pl || seenPlayIds.has(pl.id)) continue;
-    seenPlayIds.add(pl.id);
-    const msgs = getActiveMessages(pl.messages || []).filter(
-      (m) => m.at >= startMs && m.at <= endMs
-    );
-    const interMsgs = getActiveMessages(pl.intermissionMessages || []).filter(
-      (m) => m.at >= startMs && m.at <= endMs
-    );
+  for (const pl of rolePlays(role)) {
+    const msgs=stageMessagesAt(pl.messages,cutoff).filter(onDay);
+    const interMsgs=stageMessagesAt(pl.intermissionMessages,cutoff).filter(onDay);
     if (msgs.length > 0 || interMsgs.length > 0) {
       playBlocks.push({
         id: pl.id,
@@ -312,29 +287,28 @@ export function collectDailyDiaryFacts(
   // 4. User diaries explicitly shared with this role on `dateKey`
   const sharedUserDiaries = getSharedUserDiariesForRole(role).filter((d) => {
     const shareTs = d.sharedAt?.[role.id] ?? d.at;
-    return shareTs >= startMs && shareTs <= endMs;
+    return shareTs >= startMs && shareTs <= cutoff && d.at<=cutoff;
   });
 
-  // 5. Legitimately known events on `dateKey`
-  const validMessages=trustedLifeOnly?new Set(getActiveMessages([...(role.chats||[]),...allScenes.flatMap(s=>s?.messages||[]),...allPlays.flatMap(p=>[...(p?.messages||[]),...(p?.intermissionMessages||[])])]).filter(m=>m.at<=endMs).map(m=>m.id)):new Set<string>();
-  const trustedLife=trustedLifeOnly?new Set(collectRoleLife(role,endMs).events.map(e=>e.id)):new Set<string>();
-  const messageIndex=trustedLifeOnly?memoryMessageIndex(role):undefined;
-  const rejected=trustedLifeOnly?projectRoleMemory(role,endMs).supersededSources:undefined;
-  const permittedEventsOnDay = getRoleKnownEvents(role).filter(
-    e=>e.at>=startMs&&e.at<=endMs&&(!trustedLifeOnly||eventSourceValid(role,e,endMs,messageIndex,rejected)&&(!e.messageId||validMessages.has(e.messageId))&&(e.kind!=='life'||trustedLife.has(e.id)))
-  );
+  // Theatre can be cited as a rehearsal, with its own sources; it never enters the real memory index.
+  const messageIndex=messageSourceIndex(role,cutoff,true);
+  const trustedLife=trustedLifeOnly?new Set(collectRoleLife(role,cutoff).events.map(e=>e.id)):undefined;
+  const rejected=trustedLifeOnly?projectRoleMemory(role,cutoff).supersededSources:undefined;
+  const permittedEventsOnDay=getRoleKnownEvents(role).filter(e=>e.at>=startMs&&e.at<=cutoff&&
+    eventSourceValid(role,e,cutoff,messageIndex,rejected)&&(!trustedLife||e.kind!=='life'||trustedLife.has(e.id)));
   const focusEvents = permittedEventsOnDay.filter((e) => e.kind === 'focus');
   const lifeRoutines = permittedEventsOnDay.filter((e) => e.kind === 'life');
   const knownEvents = permittedEventsOnDay.filter((e) => e.kind !== 'life');
 
-  const sourceMessageIds = [
+  const sourceMessageIds = [...new Set([
     ...chatMessages.map((m) => m.id),
     ...sceneBlocks.flatMap((b) => b.messages.map((m) => m.id)),
+    ...[...chatMessages,...sceneBlocks.flatMap(b=>b.messages)].flatMap(m=>m.quote&&messageIndex.has(m.quote.id)?[m.quote.id]:[]),
     ...playBlocks.flatMap((b) => [
       ...b.messages.map((m) => m.id),
       ...b.intermissionMessages.map((m) => m.id),
     ]),
-  ];
+  ])];
   const sourceEventIds = permittedEventsOnDay.map((e) => e.id);
 
   const sceneMsgCount = sceneBlocks.reduce((acc, b) => acc + b.messages.length, 0);
@@ -435,7 +409,7 @@ export function buildCharacterDiaryPrompt(
     : '';
 
   // Assemble concrete factual blocks
-  const safeLine=(m:ChatMessage)=>m.quote&&!getActiveMessages(role.chats).some(s=>s.id===m.quote!.id)?m.text:formatMessageContentForModel(m,role.name,userName);
+  const safeLine=(m:ChatMessage)=>formatMessageContentForModel(m,role.name,userName);
   const chatTranscript = facts.chatMessages.filter(m=>m.speaker!=='note').slice(-12)
     .map(
       (m) =>
@@ -588,29 +562,11 @@ export function listMissingDiaryDateKeys(
 
   // 2. Collect timestamps from all active historical records prior to todayStartMs
   const pastTimestamps: number[] = [];
-  for (const m of getActiveMessages(role.chats || [])) {
-    if (m.at > 0 && m.at < todayStartMs) pastTimestamps.push(m.at);
+  for (const m of messageSourceIndex(role,todayStartMs-1,true).values()) {
+    if (m.at > 0) pastTimestamps.push(m.at);
   }
   for (const e of getRoleKnownEvents(role)) {
     if (e.at > 0 && e.at < todayStartMs) pastTimestamps.push(e.at);
-  }
-  for (const sc of [
-    ...(Array.isArray(role.meetings) ? role.meetings : []),
-    ...(role.scene ? [role.scene] : []),
-  ]) {
-    if (!sc) continue;
-    for (const m of getActiveMessages(sc.messages || [])) {
-      if (m.at > 0 && m.at < todayStartMs) pastTimestamps.push(m.at);
-    }
-  }
-  for (const pl of [
-    ...(Array.isArray(role.plays) ? role.plays : []),
-    ...(role.play ? [role.play] : []),
-  ]) {
-    if (!pl) continue;
-    for (const m of getActiveMessages(pl.messages || [])) {
-      if (m.at > 0 && m.at < todayStartMs) pastTimestamps.push(m.at);
-    }
   }
   for (const d of role.diaries || []) {
     if (d && d.at > 0 && d.at < todayStartMs) {
@@ -787,10 +743,11 @@ export function applyGeneratedCharacterDiary(
   );
 
   if(diary)return {ok:false,reason:'这一天已有归档日记，原文已保留'};
+  const messageIndex=messageSourceIndex(role,facts.endMs,true);
   diary = {
     id: makeUid('diary'),speaker:'char',dateKey,at:facts.endMs,generatedAt:nowTs,text,wordCount,source:'ai',
     sourceIds:[...facts.sourceEventIds,...facts.sourceMessageIds],sourceMessageIds:facts.sourceMessageIds,sourceEventIds:facts.sourceEventIds,factSummary:facts.summary,
-    sourceMessageRevisions:Object.fromEntries([...facts.chatMessages,...facts.sceneBlocks.flatMap(b=>b.messages),...facts.playBlocks.flatMap(b=>[...b.messages,...b.intermissionMessages])].map(m=>[m.id,m.revisionCount||0])),
+    sourceMessageRevisions:Object.fromEntries(facts.sourceMessageIds.map(id=>[id,messageIndex.get(id)?.revisionCount||0])),
     memoryState:memorySnapshot(role,facts.endMs),
   };
   role.diaries.push(diary);

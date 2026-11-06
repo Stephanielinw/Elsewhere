@@ -53,7 +53,7 @@ test('edits, retractions and scene changes invalidate late results without accep
 import {buildChatBatchMessages,readChatResponse} from './chatBatchPrompt';
 import {defaults} from './defaults';
 test('batch Prompt preserves ID, true timestamp, order and quote per message, excluding next-batch text',()=>{
- const data=defaults(),r=fixture();data.roles=[r];send(r,'first',1000);send(r,'second',2000);r.chats[1].quote={id:'ref',speaker:'char',text:'引用原文',at:500};prepareChatDue(r,62000,()=>0);const batch=claimChatBatch(r,62000,true)!;
+ const data=defaults(),r=fixture();data.roles=[r];r.chats.push({id:'ref',speaker:'char',text:'引用原文',at:500});send(r,'first',1000);send(r,'second',2000);r.chats.at(-1)!.quote={id:'ref',speaker:'char',text:'引用原文',at:500};prepareChatDue(r,62000,()=>0);const batch=claimChatBatch(r,62000,true)!;
  send(r,'next-batch',63000);const messages=buildChatBatchMessages(data,r,batch,64000),text=JSON.stringify(messages);
  assert.ok(!text.includes('next-batch'));const users=messages.filter(m=>m.role==='user');assert.equal(users.length,2);
  assert.ok(users[0].content.includes('first')&&users[0].content.includes('1970-01-01T00:00:01.000Z'));assert.ok(users[1].content.includes('second')&&users[1].content.includes('1970-01-01T00:00:02.000Z')&&users[1].content.includes('引用原文'));

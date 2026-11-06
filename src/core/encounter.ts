@@ -1,3 +1,4 @@
+import {phoneMessagesAt,sceneMessagesAt} from './messageProvenance';
 import type {ChatMessage,EncounterPhase,MeetingPlan,RoleData,SceneData} from './types';
 import {getActiveEvents,getActiveMessages,makeUid} from './revisions';
 import {structuredMeetingPlan,sceneDecisionStillValid,arrivalEvidence,scenePhoneWords as ownWords,phoneEncounterPresence,PHONE_ENCOUNTER_CONTEXT_MS,explicitArrivalPlace,arrivalPlaceMatches,type SceneDecision,type SceneObservation} from './sceneState';
@@ -52,7 +53,7 @@ export function meetingPlan(r:RoleData,at:number):MeetingPlan|null {
   const semantic=structuredMeetingPlan(r,at);
   const consumed=Math.max(0,...(r.meetings||[]).map(s=>s.startedAt));
   const denied=new Set(getActiveEvents(r.events).filter(e=>e.messageId&&e.knownBy?.length&&!e.knownBy.includes(r.id)).map(e=>e.messageId));
-  const messages=getActiveMessages(r.chats).filter(m=>m.speaker!=='note'&&m.at<=at&&m.at>consumed&&!denied.has(m.id)).map((m,i)=>({m,i})).sort((a,b)=>a.m.at-b.m.at||a.i-b.i);
+  const messages=phoneMessagesAt(r,at).filter(m=>m.speaker!=='note'&&m.at>consumed&&!denied.has(m.id)).map((m,i)=>({m,i})).sort((a,b)=>a.m.at-b.m.at||a.i-b.i);
   let plan:MeetingPlan|null=semantic||null;
   let previous:ChatMessage|undefined;
   const lastSemantic=semantic?Math.max(...messages.flatMap(({m},i)=>semantic.sources.some(s=>s.id===m.id)?[i]:[])):-1;
@@ -188,15 +189,9 @@ export function updateEncounterLocation(r:RoleData,scene:SceneData,expectedWhere
   }catch(error){scene.where=expectedWhere;if(proofBefore)scene.locationEvidence=proofBefore;else delete scene.locationEvidence;r.events.length=eventsBefore;throw error;}
 }
 
-export function encounterHistory(r:RoleData,messages:ChatMessage[]|undefined):ChatMessage[] {
-  const originals=new Map(getActiveMessages(r.chats).map(m=>[m.id,m]));
+export function encounterHistory(r:RoleData,messages:ChatMessage[]|undefined,at=Date.now()):ChatMessage[] {
   const scene=r.scene,invalidOpening=scene?.entryPhase&&!encounterEntryContext(r,scene.startedAt)?scene.id+':start':undefined;
-  return getActiveMessages(messages).filter(m=>{
-    if(m.id===invalidOpening)return false;
-    if(!m.sourceMessageId)return true;
-    const source=originals.get(m.sourceMessageId);
-    return source?.speaker===m.speaker&&source.text===m.text&&source.at===m.at&&(source.revisionCount||0)===(m.revisionCount||0);
-  });
+  return sceneMessagesAt(r,messages,at).filter(m=>m.id!==invalidOpening);
 }
 
 /** Conservative recovery from the same authorized phone turn, never from the actor's prose alone. */

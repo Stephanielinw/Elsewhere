@@ -1,8 +1,9 @@
 import {encounterHistory,encounterEntryContext} from './encounter';
 import type {ConversationContext} from './conversationPrompt';
-import type {AppData,RoleData,ChatMessage} from './types';
+import type {AppData,RoleData} from './types';
 import type {FruitSource} from './fruit/types';
-import {formatMessageContentForModel,getActiveMessages} from './revisions';
+import {formatMessageContentForModel} from './revisions';
+import {messageSourceIndex,scenePlaceAt,stageMessagesAt} from './messageProvenance';
 import {projectedUserFields,projectRoleMemory,memoryFactText,relationshipContext,memoryRuleConflicts} from './memory';
 
 const authorized=new WeakSet<ConversationContext>();
@@ -13,7 +14,8 @@ export function createLiveNovelContext(data:AppData,r:RoleData,kind:'scene'|'pla
  const p=kind==='play'?r.play:r.scene,mode=kind==='play'?'theatre':'meeting';
  if(!p||p.endedAt||('paused'in p&&p.paused)||!data.roles.some(role=>role.id===r.id)||base.source!=='native-live'||base.mode!==mode||base.actorId!==r.id||!Number.isFinite(base.now))throw new Error('小说上下文归属无效，请重新打开当前场景');
  const at=base.now,scope=kind==='play'?'play:'+p.id:'real:'+r.id,knownBy=[r.id,'user'];
- const historyIds=new Set((kind==='scene'?encounterHistory(r,p.messages):getActiveMessages(p.messages)).filter(m=>m.speaker!=='note'&&m.at<=at).slice(-30).flatMap(m=>[m.id,...(m.sourceMessageId?[m.sourceMessageId]:[])]));
+ const visible=(kind==='scene'?encounterHistory(r,p.messages,at):stageMessagesAt(p.messages,at)).filter(m=>m.speaker!=='note').slice(-30);
+ const historyIds=new Set(visible.flatMap(m=>[m.id,...(m.sourceMessageId?[m.sourceMessageId]:[])]));
  const facts:FruitSource[]=[];
  const add=(id:string,layer:FruitSource['layer'],marker:string,text:string)=>{if(text.trim())facts.push({id,text,layer,marker,at,scope,knownBy,active:true,revisionValid:true});};
  if(kind==='play'){
@@ -31,9 +33,8 @@ export function createLiveNovelContext(data:AppData,r:RoleData,kind:'scene'|'pla
   for(const f of memory.facts)facts.push({id:f.id,text:memoryFactText(f),layer:f.layer,marker:f.layer==='identity'?'personaDescription':'worldInfoBefore',at:f.at,scope,knownBy:[r.id],active:true,revisionValid:true});
   add('relationship:'+r.id,'relationship','worldInfoBefore',relationshipContext(r,at));
   const entry=encounterEntryContext(r,at);
-  add('state:'+r.id,'currentState','scenario',`本次见面地点：${r.scene!.where}；当前时间：${new Date(at).toISOString()}${entry?'\n'+entry:''}`);
-  const realMessages=[...r.chats,...(r.scene?.messages||[]),...(r.meetings||[]).flatMap(s=>s.messages)];
-  const active=new Map(getActiveMessages(realMessages).filter(m=>m.at<=at).map(m=>[m.id,m]));
+  add('state:'+r.id,'currentState','scenario',`本次见面地点：${r.scene!.locationEvidence||r.scene!.agreement?scenePlaceAt(r,r.scene!,at):r.scene!.where}；当前时间：${new Date(at).toISOString()}${entry?'\n'+entry:''}`);
+  const active=messageSourceIndex(r,at);
   for(const candidate of base.facts.filter(f=>f.layer==='episodic')){
    const e=r.events.find(e=>e.id===candidate.id),message=e?.messageId?active.get(e.messageId):undefined;
    if(e?.messageId&&historyIds.has(e.messageId))continue;
@@ -43,11 +44,7 @@ export function createLiveNovelContext(data:AppData,r:RoleData,kind:'scene'|'pla
    facts.push({...candidate,text:`[记录来源 ${e.source||e.messageId}；${e.speaker==='me'?'对方原话':e.speaker==='char'?'角色发言（不代表对外部事实的证实）':'正式事件记录'}] ${e.title}：${e.detail}`,scope,knownBy:e.knownBy?.length?[...e.knownBy]:knownBy,active:true,revisionValid:true});
   }
  }
- const history=(kind==='scene'?encounterHistory(r,p.messages):getActiveMessages(p.messages)).filter(m=>m.speaker!=='note'&&m.at<=at).slice(-30).map(m=>{
-  const quote=m.quote&&getActiveMessages(p.messages).find(q=>q.id===m.quote!.id&&q.at<=m.at);
-  const source:ChatMessage={...m,quote:quote?{id:quote.id,speaker:quote.speaker,text:quote.text,at:quote.at}:null};
-  return {id:m.id,role:m.speaker==='me'?'user' as const:'assistant' as const,text:`[消息 ID=${m.id}; createdAt=${new Date(m.at).toISOString()}]\n${formatMessageContentForModel(source,base.char,base.user)}`,at:m.at,scope,knownBy,active:true,revisionValid:true};
- });
+ const history=visible.map(m=>({id:m.id,role:m.speaker==='me'?'user' as const:'assistant' as const,text:`[消息 ID=${m.id}; createdAt=${new Date(m.at).toISOString()}]\n${formatMessageContentForModel(m,base.char,base.user)}`,at:m.at,scope,knownBy,active:true,revisionValid:true}));
  const context:ConversationContext={source:'novel-live',mode,memoryDenied:kind==='scene'?base.memoryDenied:[],actorId:r.id,scope,now:at,user:base.user,char:base.char,facts,history,examples:[],capabilities:{keywordRetrieval:kind==='scene',semanticRetrieval:false,completeRevisionChain:false}};
  authorized.add(context);return context;
 }

@@ -1,3 +1,4 @@
+import {messageSourceIndex} from './messageProvenance';
 import {uiIcon} from '../uiIcons';
 import type {
   ChatMessage,
@@ -323,13 +324,10 @@ export function normalizeInnerMonologue(role:RoleData,value:unknown,fallback:str
 
 /** Derived views never write events, thoughts or legacy AI caches. */
 export function buildGroundedDailyFootprints(role:RoleData,dateKey:string,nowTs=Date.now()):DailyFootprintsArchive {
- const facts=collectDailyDiaryFacts(role,dateKey,true),cutoff=Math.min(nowTs,facts.endMs),userLabel=role.userAlias||'对方';
- const all=[...role.chats,...(role.scene?.messages||[]),...(role.meetings||[]).flatMap(s=>s.messages),...(role.play?.messages||[]),...(role.play?.intermissionMessages||[]),...(role.plays||[]).flatMap(p=>[...p.messages,...(p.intermissionMessages||[])])];
- const transcript=(messages:ChatMessage[])=>messages.filter(m=>m.at<=cutoff&&m.speaker!=='note').map(m=>{
-  const original=m.quote?getActiveMessages(all).find(s=>s.id===m.quote!.id&&s.speaker===m.quote!.speaker&&s.at===m.quote!.at&&s.text.startsWith(m.quote!.text)):undefined;
-  const safe=m.quote&&!original?{...m,quote:null}:m;
-  return {speaker:m.speaker,speakerLabel:m.speaker==='me'?userLabel:role.name,text:formatMessageContentForModel(safe,role.name,userLabel),at:m.at};
- });
+ const facts=collectDailyDiaryFacts(role,dateKey,true,nowTs),cutoff=Math.min(nowTs,facts.endMs),userLabel=role.userAlias||'对方';
+ const transcript=(messages:ChatMessage[])=>messages.filter(m=>m.speaker!=='note').map(m=>({
+  speaker:m.speaker,speakerLabel:m.speaker==='me'?userLabel:role.name,text:formatMessageContentForModel(m,role.name,userLabel),at:m.at,
+ }));
  const items:DailyFootprintItem[]=collectRoleLife(role,cutoff).events.filter(e=>e.at>=facts.startMs).map(e=>({id:'fp_life_'+e.id,dateKey,timestamp:e.at,timeLabel:formatNaturalTimeLabel(e.at),icon:'leaf',category:'life',title:e.title,summary:e.detail,where:e.where,sourceEventIds:[e.id],sourceMessageIds:e.messageId?[e.messageId]:[],rawTranscript:[{speaker:'note',speakerLabel:e.lifeRecord?'生活模拟记录':'已确认事件',text:e.detail,at:e.at}],origin:'grounded'}));
  // One hidden source index retains full quotation provenance; ordinary chat is not a life footprint.
  const chat=getActiveMessages(facts.chatMessages).filter(m=>m.at<=cutoff&&m.speaker!=='note');
@@ -352,21 +350,7 @@ export function listFootprintActiveDates(role: RoleData, nowTs = Date.now()): Se
   const dates = new Set<string>();
   dates.add(toLocalDateKey(nowTs));
 
-  for (const m of getActiveMessages(role.chats || [])) {
-    if (m.at <= nowTs) dates.add(toLocalDateKey(m.at));
-  }
-  for (const sc of [...(role.meetings || []), ...(role.scene ? [role.scene] : [])]) {
-    if (!sc) continue;
-    for (const m of getActiveMessages(sc.messages || [])) {
-      if (m.at <= nowTs) dates.add(toLocalDateKey(m.at));
-    }
-  }
-  for (const pl of [...(role.plays || []), ...(role.play ? [role.play] : [])]) {
-    if (!pl) continue;
-    for (const m of getActiveMessages(pl.messages || [])) {
-      if (m.at <= nowTs) dates.add(toLocalDateKey(m.at));
-    }
-  }
+  for (const m of messageSourceIndex(role,nowTs,true).values()) dates.add(toLocalDateKey(m.at));
   for (const ev of getActiveEvents(role.events || [])) {
     if (ev.at <= nowTs && ev.kind !== 'diary') {
       dates.add(toLocalDateKey(ev.at));

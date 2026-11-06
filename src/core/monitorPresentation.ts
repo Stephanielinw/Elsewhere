@@ -11,7 +11,7 @@ export function monitorItemsForDisplay(role:RoleData,user:UserProfileData,items:
  return newestMonitorFirst(items.flatMap(item=>{
   if(item.timestamp>now||item.id.startsWith('fp_chat_'))return [];
   const {endMs}=getLocalDayBounds(item.dateKey),cutoff=Math.min(now,endMs),life=collectRoleLife(role,cutoff).events;
-  const facts=collectDailyDiaryFacts(role,item.dateKey,true);let summary='',where:string|undefined;
+  const facts=collectDailyDiaryFacts(role,item.dateKey,true,cutoff);let summary='',where:string|undefined;
   if(item.category==='life'){
    const event=life.find(e=>item.sourceEventIds.length===1&&e.id===item.sourceEventIds[0]);if(!event)return [];
    return [{...item,title:event.title,summary:event.detail,where:event.where,confirmed:true,sourceMessageCount:item.sourceMessageIds.length,sourceEventCount:1,innerThought:undefined,artifact:undefined}];

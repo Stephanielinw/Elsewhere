@@ -2,7 +2,7 @@ import test from 'node:test';import assert from 'node:assert/strict';
 import {defaults,STORAGE_KEY} from './defaults';
 import {readStoredSave,SaveSession} from './storageSession';
 function fixture(){const values=new Map<string,string>(),store={getItem:(k:string)=>values.get(k)??null,setItem:(k:string,v:string)=>{values.set(k,v);}};const raw=JSON.stringify(defaults());values.set(STORAGE_KEY,raw);return {values,store,raw};}
-function loaded(store:Pick<Storage,'getItem'|'setItem'>){const r=readStoredSave(store);assert.equal(r.state,'loaded');if(r.state!=='loaded')throw Error('fixture');return new SaveSession(store,r);}
+function loaded(store:Pick<Storage,'getItem'|'setItem'>){const r=readStoredSave(store);assert.equal(r.state,'loaded');if(r.state!=='loaded')throw Error('fixture');return new SaveSession(store,r,()=>true);}
 test('a valid stored snapshot is read without writing or changing original bytes',()=>{const f=fixture(),r=readStoredSave(f.store);assert.equal(r.state,'loaded');assert.equal(f.values.get(STORAGE_KEY),f.raw);});
 test('missing storage is unverified empty; read exceptions are unavailable, never defaults',()=>{const f=fixture();f.values.delete(STORAGE_KEY);assert.equal(readStoredSave(f.store).state,'empty');assert.equal(readStoredSave({getItem:()=>{throw Error('denied');}}).state,'unavailable');assert.equal(f.values.has(STORAGE_KEY),false);});
 test('malformed JSON and present but unusable records retain their exact bytes',()=>{for(const raw of ['', '{broken','null','[]','{}','{"roles":{}}','{"roles":[],"settings":null}']){const f=fixture();f.values.set(STORAGE_KEY,raw);assert.equal(readStoredSave(f.store).state,'invalid',raw);assert.equal(f.values.get(STORAGE_KEY),raw);}});
@@ -54,4 +54,21 @@ test('invalid known API fields and Focus display numbers are blocked while origi
   assert.equal(readStoredSave(f.store).state,'invalid');
   assert.equal(f.values.get(STORAGE_KEY),raw);
  }
+});
+
+test('a page without the writer lock cannot interleave a write after the owner checks the old revision',()=>{
+ const f=fixture();
+ const ownerValue=JSON.stringify({...defaults(),selected:'OWNER'});
+ const otherValue=JSON.stringify({...defaults(),selected:'CONTENDER'});
+ let interleave=true,contenderResult:boolean|undefined;
+ const contender=new SaveSession(f.store,{raw:f.raw,value:null},()=>false);
+ const owner=new SaveSession({...f.store,getItem(key){
+  const observed=f.store.getItem(key);
+  if(interleave&&key===STORAGE_KEY){interleave=false;contenderResult=contender.write(otherValue);}
+  return observed;
+ }},{raw:f.raw,value:null},()=>true);
+ assert.equal(owner.write(ownerValue),true);
+ assert.equal(contenderResult,false);
+ assert.equal(f.values.get(STORAGE_KEY),ownerValue);
+ assert.equal(contender.error,'read-only');
 });

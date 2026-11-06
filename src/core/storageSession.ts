@@ -67,17 +67,19 @@ export function readStoredSave(store:Pick<Storage,'getItem'>):SaveSnapshot {
 }
 export class SaveSession {
  private confirmed:string|null;private uncertain=false;
- error:'changed'|'unavailable'|'write-failed'|'uncertain'|null=null;
+ error:'changed'|'unavailable'|'write-failed'|'uncertain'|'read-only'|null=null;
  readonly storage:Store;
- constructor(private store:Store,readonly initial:{raw:string|null;value:unknown}){
+ constructor(private store:Store,readonly initial:{raw:string|null;value:unknown},readonly hasWriter:()=>boolean){
   this.confirmed=initial.raw;
-  this.storage={getItem:key=>store.getItem(key),setItem:(key,value)=>{if(key!==STORAGE_KEY){store.setItem(key,value);return;}if(!this.write(value))throw Error('存档写入未确认，原记录保留');}};
+  this.storage={getItem:key=>store.getItem(key),setItem:(key,value)=>{if(key!==STORAGE_KEY){if(!this.current())throw Error('当前页面没有写入权限');store.setItem(key,value);return;}if(!this.write(value))throw Error('存档写入未确认');}};
  }
  get raw():string|null{return this.confirmed;}
  current():boolean {
   if(this.uncertain){this.error='uncertain';return false;}
-  try{if(this.store.getItem(STORAGE_KEY)!==this.confirmed){this.error='changed';traceStorage('write-blocked',{reason:'changed'});return false;}return true;}
+  try{if(this.store.getItem(STORAGE_KEY)!==this.confirmed){this.error='changed';traceStorage('write-blocked',{reason:'changed'});return false;}}
   catch{this.error='unavailable';traceStorage('write-blocked',{reason:'unavailable'});return false;}
+  if(!this.hasWriter()){this.error='read-only';traceStorage('write-blocked',{reason:'read-only'});return false;}
+  return true;
  }
  write(raw:string):boolean {
   if(!this.current())return false;

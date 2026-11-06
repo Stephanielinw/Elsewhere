@@ -152,6 +152,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   });
   const fruitManager = createFruitManager({currentRole:()=>{const r=role();return r?{id:r.id,name:r.name}:null;},roles:()=>data.roles.map(r=>({id:r.id,name:r.name})),leave:()=>go('home'),legacyInfo:()=>{const p=role()?.preset||data.preset;return p?`旧版原生附加预设仍按既有存档生效：${p.name}（${p.prompts.length} 条）。小说选择不改写它，不将果实注入手机聊天。`:'';}});
   const terminalApi = createTerminalApi({settings:()=>data.settings,key:()=>token,notify:message=>notify(message),save:(settings,key)=>{
+    if(!saveSession.current())throw new Error(saveError());
     const previous=data.settings,previousKey=localStorage.getItem(DEVICE_API_KEY);
     try {
       saveDeviceApiKey(localStorage,settings.endpoint,key);
@@ -192,7 +193,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   const appearanceCounts=[stored?.customFonts?.length||0,stored?.bubblePresets?.length||0];
   const normalizedData=normalizeAndMigrateData(rawLoaded);
   if((normalizedData.customFonts?.length||0)<appearanceCounts[0]||(normalizedData.bubblePresets?.length||0)<appearanceCounts[1]){traceStorage('normalization-rejected',{reason:'appearance-list-loss'});throw Error('unsafe-normalization');}
-  const nainMigration=originalSave?migrateUntouchedNainDemo(normalizedData,saveSession.storage,Date.now(),originalSave):{data:normalizedData,cleaned:false,error:undefined};
+  const nainMigration=originalSave&&saveSession.hasWriter()?migrateUntouchedNainDemo(normalizedData,saveSession.storage,Date.now(),originalSave):{data:normalizedData,cleaned:false,error:undefined};
   let data: AppData = nainMigration.data;
 
   let view = 'landing';
@@ -1373,14 +1374,31 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   const saveError = ():string => {
     switch(saveSession.error){
       case 'uncertain':return '存档写入结果不确定，请刷新核对。新旧附件均保留。';
-      case 'changed':return '本机存档已变化，未覆盖。请刷新后继续。';
+      case 'changed':return '此页面的存档版本已过期，未覆盖。请先复制未保存内容，再重新读取。';
+      case 'read-only':return '当前页面只有读取权限。请保留草稿。若有其他 Elsewhere 标签页，请关闭后重新读取；若浏览器无法安全协调写入，则继续只读。';
       case 'unavailable':return '无法读取当前存档，未写入。请刷新后继续。';
       default:return '存档未保存，原记录保留。';
     }
   };
+  function refreshSaveAccess():void{
+    const notice=$<HTMLElement>('[data-world-save-notice]');
+    if(!notice)return;
+    const current=saveSession.current();
+    notice.hidden=current;
+    if(!current)notice.querySelector('span')!.textContent=saveError();
+  }
+  function postModel(url:string,options:RequestInit):Promise<Response>{
+    if(!saveSession.current())return Promise.reject(new Error('请求尚未发送。'+saveError()));
+    return fetch(url,options);
+  }
+  function checkWriteAccess():boolean{
+    if(saveSession.current())return true;
+    notify(saveError());refreshSaveAccess();
+    return false;
+  }
   const save = (world=data): boolean => {
     try {
-      if(!saveSession.write(JSON.stringify(world))){notify(saveError());return false;}
+      if(!saveSession.write(JSON.stringify(world))){notify(saveError());refreshSaveAccess();return false;}
       return true;
     } catch {
       notify('存档无法序列化，未写入。');
@@ -1412,6 +1430,15 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if (toastTimer) clearTimeout(toastTimer);
     toastTimer = setTimeout(() => el.remove(), 3200);
   };
+  function offerUnstoredReply(text:string):void{
+    const dialog=document.createElement('dialog');
+    dialog.className='fruit-dialog';
+    dialog.innerHTML='<form method="dialog" class="fruit-dialog-body"><h2>回复已返回，保存未确认</h2><p>可以先复制这次的回复，再重新读取存档核对。应用不会因保存失败自动重发这条请求。</p><textarea class="field" aria-label="可复制的未确认回复" readonly rows="5"></textarea><button class="btn">关闭</button></form>';
+    dialog.querySelector('textarea')!.value=text;
+    dialog.addEventListener('close',()=>dialog.remove(),{once:true});
+    document.body.append(dialog);
+    dialog.showModal();
+  }
 
   const entry = (
     r: RoleData,
@@ -1505,6 +1532,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     }finally{applyingSceneReplies.delete(ticket.requestId);}
   }
   function resumeLocalSceneReplies(r:RoleData):void {
+    if(!saveSession.current())return;
     for(const item of [...r.chats,...(r.scene?.messages||[])])if(item.sceneReply)void applySavedSceneReply(r,item);
   }
   type RequestPromptOptions=NativePromptOptions&{preset:FruitPreset;presetId:string};
@@ -1548,7 +1576,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
 
   async function requestPhoneReply(r:RoleData,messages:{role:string;content:string}[],signal:AbortSignal,task:'chat'|'first-message'='chat'):Promise<string> {
       const settings={...data.settings};
-      const pendingResponse=fetch(settings.endpoint.trim().replace(/\/+$/,'')+'/chat/completions',{
+      const pendingResponse=postModel(settings.endpoint.trim().replace(/\/+$/,'')+'/chat/completions',{
         method:'POST',signal,
         headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},
         body:JSON.stringify({model:settings.model,messages,stream:false,temperature:+settings.temperature,...completionLimit(settings,task)}),
@@ -1582,7 +1610,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if(!completeChatBatch(r,batch))return;
       const turnId=makeUid('turn'),base=now();
       r.pendingReplies=[...(r.pendingReplies||[]),...bubbles.map((bubble,i)=>({id:uid(),replyTo:batch.sources.at(-1)!.id,replyTurnId:turnId,bubbles:[bubble],dueAt:base+i*240,sources:batch.sources,chatBatchId:batch.id,...(i===bubbles.length-1&&privateReply.payload?{personalReply:{ticket:personal.ticket,payload:privateReply.payload}}:{}),...(prepared&&i===bubbles.length-1?{sceneReply:{...prepared.ticket,...(extracted.payload?{payload:extracted.payload}:{eventStatus:/<\/?elsewhere_scene_event/i.test(privateReply.text)?'malformed' as const:'missing' as const})}}:{})}))];
-      if(!save()){r.chatTiming=timingBefore;r.pendingReplies=outboxBefore;throw new Error('回复未能保存，请重试');}
+      if(!save()){r.chatTiming=timingBefore;r.pendingReplies=outboxBefore;offerUnstoredReply(bubbles.join('\n'));throw new Error('回复已返回，保存未确认；重新发送可能再次计费');}
       deliverPending(r);
     }catch(error){
       if(data.roles.includes(r)&&r.chatTiming?.inFlight?.id===batch.id){
@@ -1596,6 +1624,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   }
 
   function pumpChatSchedules():void {
+    if(!saveSession.current())return;
     for(const r of data.roles){
       if(!r.chatTiming)continue;
       const before=JSON.stringify(r.chatTiming);
@@ -1693,7 +1722,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
           const prepared=prepareLifeTask(r,data.user,task),settings={...data.settings};version=lifeVersion(r);
           if(storedLifeVersion(r.id)!==version)throw Error('生活来源已变化');
           syslog('life','独立生活推进已开始',{roleId:r.id,taskId:task.id});
-          const res=await fetch(settings.endpoint.trim().replace(/\/+$/,'')+'/chat/completions',{method:'POST',signal:controller.signal,headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({model:settings.model,messages:prepared.messages,temperature:settings.temperature,max_tokens:LIFE_MAX_OUTPUT,stream:false})});
+          const res=await postModel(settings.endpoint.trim().replace(/\/+$/,'')+'/chat/completions',{method:'POST',signal:controller.signal,headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({model:settings.model,messages:prepared.messages,temperature:settings.temperature,max_tokens:LIFE_MAX_OUTPUT,stream:false})});
           const raw=await readChatResponse(res);
           maySave=localStorage.getItem(STORAGE_KEY)===saveSession.raw&&storedLifeVersion(r.id)===version;
           if(controller.signal.aborted||!maySave||!data.roles.includes(r)||lifeVersion(r)!==version||data.settings.autonomousLife===false||isRoleInActiveFocus(r))throw Error('生活来源或任务已变化');
@@ -1758,7 +1787,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       const url = s.endpoint.trim().replace(/\/+$/, '');
       const elapsedMin = Math.max(1, Math.round(focusElapsed(f) / 60000));
       const promptText = buildFocusLiveLogAiPrompt(roleItem, f, elapsedMin);
-      const res = await fetch(url + '/chat/completions', {
+      const res = await postModel(url + '/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1781,6 +1810,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       // Strictly bind to session.id so late API responses never pollute an ended session
       const currentSession = activeFocus();
       if (!currentSession || currentSession.id !== sessionId) return;
+      if(!checkWriteAccess())return;
       const targetMoment = (currentSession.moments || []).find((m) => m.id === momentId);
       if (targetMoment && parsed.detail) {
         if (parsed.title) targetMoment.title = String(parsed.title).slice(0, 48);
@@ -1894,7 +1924,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
           failure = '连接或存档已变化，已停止发送剩余小结。';
           break;
         }
-        const res = await fetch(settings.endpoint + '/chat/completions', {
+        const res = await postModel(settings.endpoint + '/chat/completions', {
           method: 'POST',
           redirect: 'error',
           headers: {
@@ -2002,6 +2032,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   }
 
   function startCompanionFocus(): void {
+    if(!checkWriteAccess())return;
     ensureFocusData();
     completeFocusIfDue();
     if (activeFocus()) {
@@ -2058,7 +2089,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
 
   function pauseFocus(): void {
     const f = activeFocus();
-    if (!f || f.status !== 'running') return;
+    if (!f || f.status !== 'running' || !checkWriteAccess()) return;
     syncFocusMoments();
     completeFocusIfDue();
     if (!activeFocus()) return;
@@ -2071,7 +2102,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
 
   function resumeFocus(): void {
     const f = activeFocus();
-    if (!f || f.status !== 'paused') return;
+    if (!f || f.status !== 'paused' || !checkWriteAccess()) return;
     const nowTs = Date.now();
     f.runSince = nowTs;
     f.status = 'running';
@@ -2085,7 +2116,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
 
   function stopFocus(): void {
     const f = activeFocus();
-    if (!f) return;
+    if (!f || !checkWriteAccess()) return;
     if (f.status === 'running') syncFocusMoments();
     const settled = settleActiveFocusSession(data, 'ended_early', now());
     if (settled) {
@@ -2244,7 +2275,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         : 'app-view'
     } theme-${esc(
       role()?.theme || 'blue'
-    )}"><div class="wallpaper${role()?.wallpaperMediaId?' has-custom-wallpaper':''}" aria-hidden="true">${role()?.wallpaperMediaId?`<img class="wallpaper-image" data-media-id="${esc(role()?.wallpaperMediaId)}" alt="">`:''}</div>${content}${
+    )}"><div class="wallpaper${role()?.wallpaperMediaId?' has-custom-wallpaper':''}" aria-hidden="true">${role()?.wallpaperMediaId?`<img class="wallpaper-image" data-media-id="${esc(role()?.wallpaperMediaId)}" alt="">`:''}</div><aside class="world-save-notice" data-world-save-notice hidden><span role="status"></span> <button class="btn small secondary" data-action="reloadworld">重新读取</button></aside>${content}${
       hasDock && view === 'home' ? dock() : ''
     }<button class="home-indicator" data-action="home" aria-label="返回手机桌面"><span></span></button></div></div>`;
 
@@ -4056,12 +4087,17 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     const latest=getActiveMessages(p.intermissionMessages||[]).filter(m=>m.speaker==='me').at(-1);
     if(!latest){notify('先发送一条幕间消息，再点爪印请 AI 回复。');return;}
     if(!canUseRealModel(data.settings)){notify('请先在终端连接 API；当前发言已保存在本地。');return;}
+    if(!checkWriteAccess())return;
     busy=true;render(false);
     try {
       const reply=await apiReply(r,'intermission',latest.text);
       if(r.play!==p||!p.paused||!getActiveMessages(p.intermissionMessages||[]).some(m=>m.id===latest.id))return;
+      const previous=p.intermissionMessages!.length;
       for(const text of splitChatBubbles(reply,r))p.intermissionMessages!.push({id:uid(),speaker:'char',text,at:now(),status:'active',replyTo:latest.id});
-      syslog('intermission','用户通过爪印触发戏外 AI 回复',{source:p.id});save();
+      if(!saveLogged('intermission','用户通过爪印触发戏外 AI 回复',{source:p.id})){
+        p.intermissionMessages!.length=previous;
+        offerUnstoredReply(reply);
+      }
     }catch(e){notify('幕间回复失败：'+(e instanceof Error?e.message:String(e))+'；你的发言已保留。');}
     finally{busy=false;render(false);const area=$('#intermission-scroll');if(area)area.scrollTop=area.scrollHeight;}
   }
@@ -4478,6 +4514,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     terminalAppearance.detach();
     homePager.detach();
     renderWithAvatars(app,markup);
+    refreshSaveAccess();
     clearMediaURLs();
     novelDisplay.mount(app);
     if(view==='terminal'){terminalApi.mount(document.getElementById('terminal-api-root'));terminalAppearance.mount(document.querySelector('.terminal-page'));}
@@ -4512,7 +4549,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if(leavingPresets)return;
       leavingPresets=true;void fruitManager.beforeLeave().then(ok=>{if(ok){view='home';go(v);}}).finally(()=>{leavingPresets=false;});return;
     }
-    completeFocusIfDue();
+    if(saveSession.hasWriter())completeFocusIfDue();
     if (activeFocus()?.phase === 'work' && v !== 'focus' && v !== 'novel') {
       view = 'focus';
       render();
@@ -4548,14 +4585,14 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       v = 'landing';
     }
     if (
-      role() &&
+      role() && saveSession.current() &&
       !['landing', 'roleform', 'userprofile', 'deleterole'].includes(v)
     ) {
       simulate(role()!);
       deliverPending(role());
     }
     view = v;
-    if(persist)save();
+    if(persist&&saveSession.hasWriter())save();
     render(!preserveStage);
     if(role())resumeLocalSceneReplies(role()!);
   }
@@ -4564,7 +4601,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     const settings={...data.settings},requestToken=token,url=settings.endpoint.trim().replace(/\/+$/,'');
     if(!/^https?:\/\//.test(url)||!settings.model.trim()||!requestToken.trim())throw new Error('请先在终端连接 API、选择模型并保存 Key；原消息保留');
     syslog('api',`请求 ${kind}`,{messages:messages.length});
-    return fetch(url+'/chat/completions',{method:'POST',signal,headers:{'Content-Type':'application/json',Authorization:'Bearer '+requestToken},body:JSON.stringify({model:settings.model,messages,stream:false,temperature:+settings.temperature,...sampling,...completionLimit(settings,kind)})});
+    return postModel(url+'/chat/completions',{method:'POST',signal,headers:{'Content-Type':'application/json',Authorization:'Bearer '+requestToken},body:JSON.stringify({model:settings.model,messages,stream:false,temperature:+settings.temperature,...sampling,...completionLimit(settings,kind)})});
   }
 
   async function apiReply(r:RoleData,kind:'intermission',input:string):Promise<string> {
@@ -4602,7 +4639,11 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         ...(thirdParty?{novelOutput:{presetId:options.presetId,mode:kind==='play'?'theatre' as const:'meeting' as const,memoryEligible:false as const,...result.auxiliary}}:{})};
       if(thirdParty&&result.sections&&item.novelOutput)item.novelOutput.document=bindNovelDocument(result.sections,{roleId:r.id,stageId:task.stage.id,messageId:item.id,mode:kind==='play'?'theatre':'meeting',revisionCount:item.revisionCount||0,createdAt:item.at,presetId:options.presetId,presetHash:options.preset.sha256});
       if(prepared&&result.sceneEvent)item.sceneReply={...prepared.ticket,payload:result.sceneEvent};
-      commitNovelReply(r,task,item,save,regeneration||undefined,now());
+      commitNovelReply(r,task,item,()=>{
+        if(save())return true;
+        offerUnstoredReply(result.text);
+        return false;
+      },regeneration||undefined,now());
       if(item.sceneReply)await applySavedSceneReply(r,item);
       syslog('api',`小说回复已保存 ${kind}`,{presetId:options.presetId});
       if(regenerateId)notify('已重新生成；原版本及修订记录保留');
@@ -4641,7 +4682,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       const chatsBefore=r.chats.length,eventsBefore=r.events.length,firstBefore=r.firstMessageState,privateBefore=r.personalThreads;
       const created=applyGeneratedFirstMessage(r, bubbles, now());
       if(raw.payload)applyPersonalReply(r,personal.ticket,raw.payload,now(),created);
-      if(!save()){r.chats.length=chatsBefore;r.events.length=eventsBefore;r.firstMessageState=firstBefore;r.personalThreads=privateBefore;throw new Error('首条消息未能保存，请重试');}
+      if(!save()){r.chats.length=chatsBefore;r.events.length=eventsBefore;r.firstMessageState=firstBefore;r.personalThreads=privateBefore;offerUnstoredReply(bubbles.join('\n'));throw new Error('首条消息已返回，保存未确认；重新发送可能再次计费');}
       syslog('role', `${r.name} 已生成首条开场消息`);
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
@@ -4683,6 +4724,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     dateKey: string,
     manualTrigger = false
   ): Promise<boolean> {
+    if(!saveSession.current()){if(manualTrigger)notify('请求尚未发送。'+saveError());return false;}
     if(dateKey>=toLocalDateKey(now())){if(manualTrigger)notify('这一天尚未结束，跨日后再归档。');return false;}
     syncRoleDiaryTasks(r, data.settings, now());
     if (hasCharacterDiaryForDate(r, dateKey)) {
@@ -4750,7 +4792,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         sourceEventIds: facts.sourceEventIds,
       });
 
-      const res = await fetch(url + '/chat/completions', {
+      const res = await postModel(url + '/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -4803,7 +4845,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   }
 
   async function processDiaryQueue(): Promise<void> {
-    if (diaryQueueBusy || lifeBusy) return;
+    if (diaryQueueBusy || lifeBusy || !saveSession.current()) return;
     for (const roleItem of data.roles) {
       syncRoleDiaryTasks(roleItem, data.settings, now());
     }
@@ -4816,7 +4858,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       let guard = 0;
       while (guard < 25) {
         guard++;
-        if (!canUseRealModel(data.settings)) break;
+        if (!canUseRealModel(data.settings)||!saveSession.current()) break;
         const orderedRoles = [
           ...(role() ? [role()!] : []),
           ...data.roles.filter((x) => x.id !== role()?.id),
@@ -5424,6 +5466,10 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if (!b) return;
     const act = b.dataset.action;
     let r = role();
+    if(act==='reloadworld'){
+      if(window.confirm('重新读取会关闭当前页面的未保存草稿。请先复制需要保留的内容。现在重新读取？'))location.reload();
+      return;
+    }
 
     if(act==='nainpreflight'){
       if(!r||busy||diaryQueueBusy||lifeBusy){notify('请等待当前请求结束后再清档。');return;}
@@ -5492,7 +5538,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if(data.selected&&novelTasks.cancel(data.selected))busy=false;
       data.selected = b.dataset.id || null;
       r = role();
-      if (r) {
+      if (r&&saveSession.current()) {
         simulate(r);
         deliverPending(r);
       }
@@ -6462,7 +6508,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if (f.id === 'novel-form') {
       const inputEl = $('#novel-input') as HTMLTextAreaElement | null;
       const t = inputEl?.value || '';
-      if(busy||!t.trim())return;
+      if(busy||!t.trim()||!checkWriteAccess())return;
       if(f.dataset.sceneId==='')novelDraft = '';
       if (inputEl) inputEl.value = '';
       captureMeetingDraft();
@@ -6799,22 +6845,22 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     }
   });
 
-  for (const roleItem of data.roles) {
-    recoverChatTiming(roleItem);
-    recoverProactive(roleItem);
-    syncRoleDiaryTasks(roleItem, data.settings, now(), { resetGenerating: true });
+  if(saveSession.hasWriter()){
+    for (const roleItem of data.roles) {
+      recoverChatTiming(roleItem);
+      recoverProactive(roleItem);
+      syncRoleDiaryTasks(roleItem, data.settings, now(), { resetGenerating: true });
+    }
+    traceStorage('app-recovery-started',{scenes:data.roles.filter(r=>r.scene).length,tickets:data.roles.reduce((n,r)=>n+r.chats.filter(m=>m.sceneReply).length,0)});
+    if(!save()){traceStorage('startup-save-failed');throw Error('startup-storage-unconfirmed');}
+    traceStorage('startup-save-confirmed');
+    for(const item of data.roles)resumeLocalSceneReplies(item);
+    if(canUseRealModel(data.settings))void processDiaryQueue();
   }
-  traceStorage('app-recovery-started',{scenes:data.roles.filter(r=>r.scene).length,tickets:data.roles.reduce((n,r)=>n+r.chats.filter(m=>m.sceneReply).length,0)});
-  if(!save()){traceStorage('startup-save-failed');throw Error('startup-storage-unconfirmed');}
-  traceStorage('startup-save-confirmed');
-  for(const item of data.roles)resumeLocalSceneReplies(item);
-  if (canUseRealModel(data.settings)) {
-    void processDiaryQueue();
-  }
-
-  document.addEventListener('visibilitychange',()=>{captureMeetingDraft();if(!document.hidden&&saveSession.current()){pumpChatSchedules();pumpProactive();pumpRoleLife();if(view==='home')homeTasks.refresh();}});
+  window.addEventListener('storage',event=>{if(event.key===STORAGE_KEY||event.key===null)refreshSaveAccess();});
+  document.addEventListener('visibilitychange',()=>{captureMeetingDraft();if(!document.hidden){refreshSaveAccess();if(saveSession.current()){pumpChatSchedules();pumpProactive();pumpRoleLife();if(view==='home')homeTasks.refresh();}}});
   queueMicrotask(()=>{if(saveSession.current()){pumpChatSchedules();pumpProactive();pumpRoleLife();}});
-  window.addEventListener('pageshow',()=>{if(!saveSession.current())return;pumpChatSchedules();pumpProactive();pumpRoleLife();if(view==='home')homeTasks.refresh();});
+  window.addEventListener('pageshow',()=>{refreshSaveAccess();if(!saveSession.current())return;pumpChatSchedules();pumpProactive();pumpRoleLife();if(view==='home')homeTasks.refresh();});
 
   if (typeof setInterval === 'function') {
     setInterval(() => {

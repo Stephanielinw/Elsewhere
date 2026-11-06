@@ -59,11 +59,16 @@ function readMedia(p) {
   }, {mediaDb, mediaStore});
 }
 
-function initFaults({storageKey, mediaStore}) {
+function initFaults({storageKey, mediaStore, capability}) {
   const {getItem, setItem} = Storage.prototype;
   Storage.prototype.integrityRead = getItem;
   window.integrityFault = {};
   window.integrityTrace = [];
+  if (capability === 'no-locks') Object.defineProperty(navigator, 'locks', {value:undefined});
+  if (capability === 'lock-denied') Object.defineProperty(navigator, 'locks', {value:{request:()=>Promise.reject(new DOMException('synthetic deny','SecurityError'))}});
+  if (capability === 'no-idb' && window.name === 'no-idb') {
+    indexedDB.open = () => {throw new DOMException('synthetic IDB unavailable','SecurityError');};
+  }
   let blockedRead = false;
   Storage.prototype.getItem = function(key) {
     if (key === storageKey && blockedRead) throw new DOMException('INTEGRITY_FIXTURE_PRIVATE', 'SecurityError');
@@ -152,15 +157,22 @@ async function main() {
     data._media = [asAttachment('shared-id', incomingPhoto), asAttachment('frame-id', incomingFrame), asAttachment('font-id', font)];
     return data;
   }
-  async function run(name, body, {api = false, shared = false} = {}) {
+  async function run(name, body, {api = false, shared = false, capability, mock, empty = false} = {}) {
     if (process.env.TEST_CASE && !name.includes(process.env.TEST_CASE)) return;
     const context = await browser.newContext({viewport:{width:390, height:844}, serviceWorkers:'block'});
     try {
       let bootstrap = true;
       const posts = [], errors = [];
+      context.on('page', page => page.on('pageerror', error => errors.push(error.message)));
       await context.route('**/*', route => {
         const req = route.request(), url = new URL(req.url());
-        if (req.method() === 'POST') posts.push(url.pathname);
+        if (url.origin === new URL(mockEndpoint).origin && req.method() === 'OPTIONS' && mock) {
+          return route.fulfill({status:204,headers:{'access-control-allow-origin':'*','access-control-allow-methods':'POST','access-control-allow-headers':'*'}});
+        }
+        if (req.method() === 'POST') {
+          posts.push(url.pathname);
+          if (url.origin === new URL(mockEndpoint).origin && mock) return mock(route);
+        }
         if (bootstrap && req.isNavigationRequest() && req.url() === appUrl) {
           bootstrap = false;
           return route.fulfill({contentType:'text/html', body:'<!doctype html><title>Isolated storage fixture</title>'});
@@ -168,15 +180,14 @@ async function main() {
         if (req.method() === 'GET' && (req.url() === appUrl || (app.protocol !== 'file:' && url.origin === app.origin))) return route.continue();
         return route.abort();
       });
-      await context.addInitScript(initFaults, {storageKey, mediaStore});
+      await context.addInitScript(initFaults, {storageKey, mediaStore, capability});
       const p = await context.newPage();
       p.setDefaultTimeout(4500);
       p.setDefaultNavigationTimeout(8000);
-      p.on('pageerror', error => errors.push(error.message));
       await p.goto(appUrl);
       const seed = world('旧世界', api);
       if(shared)seed.roles.push({...seed.roles[0],id:'other-role',name:'共享素材角色'});
-      await p.evaluate(async ({storageKey, seed, mediaDb, mediaStore, priorMedia, mockEndpoint}) => {
+      if(!empty)await p.evaluate(async ({storageKey, seed, mediaDb, mediaStore, priorMedia, mockEndpoint}) => {
         localStorage.setItem(storageKey, JSON.stringify(seed));
         if (seed.settings.mode === 'api') localStorage.setItem('elsewhere-device-api-key-v1', JSON.stringify({endpoint:mockEndpoint, key:'synthetic-credential'}));
         await new Promise((resolve, reject) => {
@@ -191,9 +202,13 @@ async function main() {
           };
         });
       }, {storageKey, seed, mediaDb, mediaStore, priorMedia, mockEndpoint});
-      await reload(p);
-      await body(p);
-      assert.deepEqual(posts, [], 'local operations must dispatch zero model POSTs');
+      if(capability==='no-idb')await p.evaluate(()=>window.name='no-idb');
+      if(empty){
+        await p.reload();
+        await p.locator('#app[data-storage-state=empty-unverified]').waitFor();
+      }else await reload(p);
+      await body(p,posts);
+      assert.deepEqual(posts, mock?['/v1/chat/completions']:[], 'only the expected synthetic POST may be dispatched');
       assert.deepEqual(errors, [], 'uncaught page errors');
       console.log('PASS', name);
     } catch (error) {
@@ -458,6 +473,156 @@ async function main() {
       assert.notEqual(id,'frame-id');
       const media=await readMedia(p);assert.deepEqual(media[id],incomingFrame);assert.deepEqual(media['frame-id'],previousFrame);
     });
+
+    const writerState=p=>p.locator('#app').getAttribute('data-write-access');
+    async function otherPage(p) {
+      const other=await p.context().newPage();
+      other.setDefaultTimeout(4500);
+      await other.goto(appUrl);
+      await ready(other);
+      return other;
+    }
+    const roleName=p=>p.locator('#role-form [name=name]');
+    await run('F04 only the first tab may initialize an empty storage',async p=>{
+      const b=await p.context().newPage();
+      b.setDefaultTimeout(4500);
+      await b.goto(appUrl);
+      await b.locator('#app[data-storage-state=read-only]').waitFor();
+      assert.equal(await b.locator('[data-storage-create]').count(),0);
+      assert.equal(await raw(b),null);
+      await p.locator('[data-storage-create]').click();
+      await ready(p);
+      const bytes=await raw(p);
+      assert.ok(bytes);assert.equal(await raw(b),bytes);
+      await p.close();await reload(b);assert.equal(await writerState(b),'writer');
+      assert.ok((await stored(b)).roles.length>0);
+    },{empty:true});
+    for(const sameRole of [true,false])await run('F04 old tab cannot edit '+(sameRole?'the same role':'another role'),async p=>{
+      const b=await otherPage(p);
+      assert.equal(await writerState(p),'writer');assert.equal(await writerState(b),'read-only');
+      const initial=await raw(p);assert.equal(await raw(b),initial);
+      await b.locator('[data-action=editrole][data-id='+ (sameRole?'fixture-role':'other-role') +']').click();
+      await roleName(b).fill('保留冲突表单');
+      await edit(p);await roleName(p).fill('先提交的角色');await submitRole(p);
+      await toast(p,'角色资料与头像框修改已保存');
+      const committed=await raw(p);
+      assert.notEqual(committed,initial);
+      await b.evaluate(()=>{window.dispatchEvent(new Event('pageshow'));document.dispatchEvent(new Event('visibilitychange'));});
+      await submitRole(b);await toast(b,'存档版本已过期');
+      assert.equal(await raw(b),committed);assert.equal(await roleName(b).inputValue(),'保留冲突表单');
+      assert.equal(await b.locator('.toast').filter({hasText:'修改已保存'}).count(),0);
+      b.once('dialog',dialog=>dialog.dismiss());
+      await b.locator('[data-action=reloadworld]').click();
+      assert.equal(await roleName(b).inputValue(),'保留冲突表单');
+      await p.close();
+      await reload(b);assert.equal(await writerState(b),'writer');
+      assert.equal((await stored(b)).roles[0].name,'先提交的角色');
+      assert.deepEqual(await readMedia(b),priorMedia);
+    },{shared:!sameRole});
+
+    await run('F04 owner and contender cannot both confirm creation from the same save',async p=>{
+      const b=await otherPage(p);
+      assert.equal(await raw(b),await raw(p));
+      await Promise.all([p.getByTestId('create-role-btn').click(),b.getByTestId('create-role-btn').click()]);
+      await Promise.all([roleName(p).fill('唯一已提交角色'),roleName(b).fill('未提交角色草稿')]);
+      await Promise.all([submitRole(p),submitRole(b)]);
+      await toast(p,'已创建角色');
+      assert.equal(await roleName(b).inputValue(),'未提交角色草稿');
+      const disk=await raw(p);
+      assert.equal(await raw(b),disk);
+      assert.deepEqual(JSON.parse(disk).roles.map(r=>r.name),['旧世界','唯一已提交角色']);
+      await p.close();await reload(b);
+      assert.equal(await writerState(b),'writer');assert.deepEqual((await stored(b)).roles.map(r=>r.name),['旧世界','唯一已提交角色']);
+    });
+
+    await run('F04 tab taking over commits and the restored prior writer cannot save its diary draft',async p=>{
+      await enter(p);
+      await p.locator('[data-view=diary]').first().evaluate(el=>el.click());
+      await p.locator('[data-action=diarytab][data-tab=me]').click();
+      const form=p.locator('#diary-form'),field=form.locator('textarea');
+      await field.fill('跨页面保留的私人日记');
+      await p.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true})));
+      const b=await otherPage(p);
+      assert.equal(await writerState(b),'writer');
+      await edit(b);await roleName(b).fill('接管后保存的角色');await submitRole(b);await toast(b,'角色资料与头像框修改已保存');
+      const disk=await raw(b);
+      await p.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true})));
+      await form.locator('button').click();await toast(p,'存档版本已过期');
+      assert.equal(await field.inputValue(),'跨页面保留的私人日记');assert.equal(await raw(p),disk);
+      assert.deepEqual((await stored(b)).roles[0].diaries,[]);
+    });
+
+    await run('F04 stale page cannot restore deleted role or supersede new avatar reference',async p=>{
+      const b=await otherPage(p);
+      await b.locator('[data-action=editrole][data-id=other-role]').click();
+      await roleName(b).fill('应保留但不能复活角色');
+      await edit(p);await uploadAvatar(p);await submitRole(p);await toast(p,'角色资料与头像框修改已保存');
+      const currentId=(await stored(p)).roles[0].avatarMediaId;
+      await p.locator('[data-action=editrole][data-id=other-role]').click();
+      await p.locator('[data-action=askdelete]').click();
+      const form=p.locator('#delete-role-form');
+      await form.locator('[name=confirmName]').fill('共享素材角色');await form.locator('button').click();await toast(p,'已删除角色');
+      const disk=await raw(p);
+      await submitRole(b);await toast(b,'存档版本已过期');
+      assert.equal(await raw(b),disk);assert.equal(await roleName(b).inputValue(),'应保留但不能复活角色');
+      assert.equal(JSON.parse(disk).roles.length,1);assert.equal(JSON.parse(disk).roles[0].avatarMediaId,currentId);
+      const media=await readMedia(b);
+      assert.deepEqual(media[currentId],incomingPhoto);assert.deepEqual(media['shared-id'],previousPhoto);
+    },{shared:true});
+
+    await run('F04 contender retains a chat draft and does not dispatch a request',async p=>{
+      const b=await otherPage(p);
+      await enter(b);await b.locator('[data-action=openconversation]').click();
+      const input=b.locator('#message-input');
+      await input.fill('只读页面的未发送内容');
+      const before=await raw(p);
+      await b.locator('#message-form .send-btn').click();
+      await toast(b,'只有读取权限');
+      assert.equal(await input.inputValue(),'只读页面的未发送内容');
+      assert.equal(await raw(p),before);
+    },{api:true});
+
+    for(const capability of ['no-locks','lock-denied','no-idb'])await run('F04 capability '+capability,async p=>{
+      const before=await raw(p);
+      await p.getByTestId('create-role-btn').click();await roleName(p).fill('权限测试角色');await submitRole(p);
+      if(capability==='no-idb'){
+        await toast(p,'已创建角色');assert.equal(await writerState(p),'writer');
+        assert.equal((await stored(p)).roles.at(-1).name,'权限测试角色');
+      }else{
+        await toast(p,'只有读取权限');assert.equal(await writerState(p),'read-only');
+        assert.equal(await raw(p),before);assert.equal(await roleName(p).inputValue(),'权限测试角色');
+      }
+    },{capability});
+
+    let allowReply,postStarted;
+    const replyGate=new Promise(resolve=>{allowReply=resolve;});
+    const started=new Promise(resolve=>{postStarted=resolve;});
+    await run('F04 already dispatched reply stays copyable without overwriting or reissuing',async(p,posts)=>{
+      await p.clock.install();
+      await enter(p);await p.locator('[data-action=openconversation]').click();
+      await p.locator('#message-input').fill('合成并发请求');
+      await p.locator('#message-form .send-btn').click();
+      await p.clock.fastForward(130000);
+      let timer;try{await Promise.race([started,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('mock POST did not start')),6500);})]);}finally{clearTimeout(timer);}
+      assert.equal(posts.length,1);
+      await p.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true})));
+      const b=await otherPage(p);assert.equal(await writerState(b),'writer');
+      await edit(b);await roleName(b).fill('并发请求之后更新');await submitRole(b);await toast(b,'角色资料与头像框修改已保存');
+      const committed=await raw(b);
+      allowReply();
+      const recovery=p.getByRole('textbox',{name:'可复制的未确认回复'});
+      await recovery.waitFor();
+      assert.equal(await recovery.inputValue(),'合成的迟到回复。');
+      assert.equal(await raw(p),committed);
+      await reload(b);
+      const state=await stored(b);
+      assert.equal(state.roles[0].name,'并发请求之后更新');
+      assert.ok(!state.roles[0].chats.some(m=>m.text==='合成的迟到回复。'));
+      assert.equal(state.roles[0].chatTiming.blocked,'failed');
+    },{api:true,mock:async route=>{
+      postStarted();await replyGate;
+      return route.fulfill({json:{choices:[{message:{role:'assistant',content:'合成的迟到回复。'},finish_reason:'stop'}]},headers:{'access-control-allow-origin':'*'}});
+    }});
   } finally {
     await browser.close();
   }

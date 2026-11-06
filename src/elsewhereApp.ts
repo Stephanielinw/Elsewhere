@@ -223,9 +223,17 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   let meetingDraftDirty=false;
   let systemLogDate:string|null=null;
   let intermissionDraft = '';
-  let voiceRecorder: MediaRecorder | null = null;
-  let voiceStart = 0;
-  let voiceCancelled = false;
+  type VoiceOperation = {
+    id:number;world:AppData;owner:RoleData;
+    phase:'waiting'|'recording'|'finishing'|'saving'|'done';
+    recoveryOnly:boolean;recoveryOffered?:boolean;stream?:MediaStream;recorder?:MediaRecorder;
+    startedAt:number;seconds:number;caption:string;quote:ChatMessage['quote'];
+    stopTimer?:ReturnType<typeof setTimeout>;
+  };
+  const voiceLimit=8*1024*1024;
+  let voiceOperation:VoiceOperation|null=null,voiceSequence=0,voicePageHidden=false;
+  const voiceFinishing=new Map<VoiceOperation,Blob|null>();
+  const voiceRecoveries=new WeakMap<RoleData,Map<number,{world:AppData;blob:Blob|null}>>();
   const mediaSources = createMediaSources(mediaGet);
   const avatarLoadingIds=new Set<string>();
   const avatarPreviewURLs=new Map<string,boolean>();
@@ -1757,7 +1765,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     }).catch(()=>{lifeJournalError='生活任务协调失败，自动推进已暂停。';}).finally(()=>{lifeBusy=false;});
   }
 
-  function acceptPhoneMessage(r:RoleData,item:ChatMessage):boolean {
+  function acceptPhoneMessage(r:RoleData,item:ChatMessage,updateComposer=true):boolean {
     const timing=r.chatTiming;
     if(timing?.inFlight?.entry||timing?.pending.length&&chatSceneEntry(timing)&&item.at>=timing.quietUntil){
       notify('本轮线下聚合已结束，未发送的内容仍保留。');return false;
@@ -1767,7 +1775,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     r.chats.push(item);eMemory(r,item.text,'me','chat',item.at,item.id);syncRoleMemory(r,item.at);enqueueChat(r,item.id,item.at);r.meetingPlan=meetingPlan(r,item.at);
     if(!save()){r.chats.length=chatsBefore;r.events.length=eventsBefore;r.chatTiming=timingBefore;r.meetingPlan=planBefore;r.memory=memoryBefore;return false;}
     if(r.proactive?.attempts.some(t=>t.status==='attempted'))activeChatRequests.get(r.id)?.abort();
-    if(role()?.id===r.id)quotingMessage=null;
+    if(updateComposer&&role()===r)quotingMessage=null;
     // Accepted sends reveal the new bubble after the caller restores its draft/focus.
     queueMicrotask(()=>{
       const pane=$<HTMLElement>('#scroll-area');
@@ -2858,17 +2866,26 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       )} 选择照片（最大 8MB）<input type="file" id="photo-upload" accept="image/png,image/jpeg,image/gif,image/webp" class="file-input"></label></section>`;
     }
     if (chatPanel === 'voice') {
-      return `<section class="chat-drawer" aria-label="发送语音">${bar}<p class="drawer-note">点击录音，再点击结束并发送；也可以选择音频文件。请允许浏览器使用麦克风。</p><input class="caption-field" id="voice-caption" placeholder="可选：语音的文字内容（角色才能理解）" maxlength="800"><div class="voice-actions"><button data-action="recordtoggle" class="record-btn">${attachmentIcon(
-        'voice'
-      )} ${
-        voiceRecorder?.state === 'recording' ? '结束并发送' : '开始录音'
-      }</button>${
-        voiceRecorder?.state === 'recording'
-          ? '<button data-action="recordcancel" class="minor-btn">取消</button>'
-          : ''
-      }</div><label class="file-pick">${attachmentIcon(
-        'voice'
-      )} 选择现有音频文件（最大 8MB）<input type="file" id="audio-upload" accept="audio/*" class="file-input"></label><p class="drawer-note">没有文字内容的语音可以播放，但当前 AI 无法听懂；不会假装已经听过。</p></section>`;
+      const owner=role(),phase=voiceOperation?.phase;
+      const waiting=phase==='waiting',recording=phase==='recording',finishing=phase==='finishing'||phase==='saving';
+      const label=waiting?'等待麦克风授权':recording?'结束并发送':finishing?'正在收尾或保存':'开始录音';
+      const recovery=owner?[...(voiceRecoveries.get(owner)||[])].filter(([,item])=>item.world===data):[];
+      const recoveryMarkup=recovery.map(([id,item])=>`<div class="drawer-note" role="status">${item.blob?`
+        语音保存未确认。可以下载录音并核对聊天记录。
+        <button type="button" class="minor-btn" data-action="download-voice-recovery" data-id="${id}">下载未确认的录音</button>
+        <button type="button" class="minor-btn" data-action="discard-voice-recovery" data-id="${id}">移除恢复项</button>
+      `:'浏览器尚未交付录音结尾，无法确认录音完整。'}</div>`).join('');
+      return `<section class="chat-drawer" aria-label="发送语音">${bar}
+        <p class="drawer-note">点击录音，再点击结束并发送；也可以选择音频文件。请允许浏览器使用麦克风。</p>
+        <input class="caption-field" id="voice-caption" placeholder="可选：语音的文字内容（角色才能理解）" maxlength="800">
+        <div class="voice-actions">
+          <button data-action="recordtoggle" class="record-btn" ${waiting||finishing?'disabled':''}>${attachmentIcon('voice')} ${label}</button>
+          ${waiting||recording?'<button data-action="recordcancel" class="minor-btn">取消</button>':''}
+        </div>
+        ${recoveryMarkup}
+        <label class="file-pick">${attachmentIcon('voice')} 选择现有音频文件（最大 8MB）<input type="file" id="audio-upload" accept="audio/*" class="file-input"></label>
+        <p class="drawer-note">没有文字内容的语音可以播放，但当前 AI 无法听懂；不会假装已经听过。</p>
+      </section>`;
     }
     if (chatPanel === 'packet') {
       return `<section class="chat-drawer" aria-label="虚拟红包">${bar}<form id="packet-form"><div class="packet-fields"><label>金额（虚拟 ¥）<input name="amount" type="number" inputmode="decimal" required min="0.01" max="200" step="0.01" placeholder="6.66"></label><label>祝福语<input name="wish" maxlength="100" placeholder="收下这份心意" value="收下这份心意"></label></div><p class="drawer-note">仅故事内的趣味红包，不扣除真实货币，不连接支付服务或钱包。</p><button class="packet-submit" ${
@@ -4526,6 +4543,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     ) {
       view = 'landing';
     }
+    if(voiceOperation&&(view!=='chat'||role()!==voiceOperation.owner||!voiceOwnerCurrent(voiceOperation)))leaveVoicePanel();
     const markup =
       view === 'landing'
         ? screenLanding()
@@ -4608,6 +4626,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     }
     if(!settlingScene&&saveSession.hasWriter())completeFocusIfDue();
     if (activeFocus()?.phase === 'work' && v !== 'focus' && v !== 'novel') {
+      setChatPanel('');
       view = 'focus';
       render();
       notify('专注期间已锁定，先结束本轮才能切换手机');
@@ -4629,13 +4648,10 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         resetStagedTerminalFrame();
       }
     }
-    if (v !== 'chat') {
-      chatPanel = '';
-      if (voiceRecorder?.state === 'recording') stopRecording(true);
-    }
     if (!role() && !['roleform', 'userprofile', 'deleterole'].includes(v)) {
       v = 'landing';
     }
+    if(v!=='chat')setChatPanel('');
     if (
       !settlingScene && role() && saveSession.current() &&
       !['landing', 'roleform', 'userprofile', 'deleterole'].includes(v)
@@ -5154,11 +5170,15 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     return item.text || '';
   }
 
-  async function sendRichMessage(partial:Partial<ChatMessage>,r=role()):Promise<void> {
-    if(!r||!data.roles.includes(r))return;
+  function sendRichMessage(partial:Partial<ChatMessage>,r=role(),updateComposer=true):boolean {
+    if(!r||!data.roles.includes(r))return false;
     const item:ChatMessage={...partial,id:uid(),at:now(),speaker:'me',text:mediaNote(partial),status:'active',quote:partial.quote===undefined?(role()?.id===r.id?quotingMessage:null):partial.quote};
-    if(!acceptPhoneMessage(r,item))return;
-    if(role()?.id===r.id){chatPanel='';render(false);}
+    if(!acceptPhoneMessage(r,item,updateComposer))return false;
+    if(view==='chat'&&role()===r){
+      if(updateComposer){setChatPanel('');render(false);}
+      else patchDynamicRegionsOnTick();
+    }
+    return true;
   }
 
   async function sendFileAttachment(
@@ -5166,7 +5186,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     kind: 'photo' | 'sticker' | 'voice',
     caption = ''
   ): Promise<void> {
-    const owner=role(),quote=quotingMessage;
+    const owner=role(),quote=quotingMessage,composerOperation=voiceOperation;
     if (!file||!owner) return;
     const allowed =
       kind === 'voice'
@@ -5185,94 +5205,174 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     const id = uid();
     try {
       await mediaPut(id, file);
-      await sendRichMessage({
+      sendRichMessage({
         kind,
         mediaId: id,
         caption: caption.trim().slice(0, 800),
         seconds: 0,quote,
-      },owner);
+      },owner,voiceOperation===composerOperation);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       notify('文件保存失败：' + msg);
     }
   }
 
-  async function beginRecording(): Promise<void> {
-    const owner=role();if(!owner)return;
-    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-      notify('浏览器不支持直接录音；请使用「选择音频文件」');
-      return;
-    }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const allowed = [
-        'audio/webm;codecs=opus',
-        'audio/mp4',
-        'audio/webm',
-        'audio/ogg',
-      ].find((t) => MediaRecorder.isTypeSupported(t));
-      const rec = new MediaRecorder(
-        stream,
-        allowed ? { mimeType: allowed } : {}
-      );
-      const chunks: BlobPart[] = [];
-      voiceCancelled = false;
-      voiceRecorder = rec;
-      voiceStart = Date.now();
-      const content =
-        ($('#voice-caption') as HTMLInputElement | null)?.value || '';
-      rec.ondataavailable = (e) => {
-        if (e.data?.size) chunks.push(e.data);
-      };
-      rec.onerror = () => notify('录音过程中发生错误');
-      rec.onstop = async () => {
-        const elapsed = Math.round((Date.now() - voiceStart) / 1000);
-        stream.getTracks().forEach((t) => t.stop());
-        voiceRecorder = null;
-        if (voiceCancelled) {
-          voiceCancelled = false;
-          render();
-          return;
-        }
-        const blob = new Blob(chunks, {
-          type: rec.mimeType || 'audio/webm',
-        });
-        if (!blob.size) {
-          notify('录音为空，未发送');
-          render();
-          return;
-        }
-        if (blob.size > 8 * 1024 * 1024) {
-          notify('语音超过 8MB，未发送');
-          render();
-          return;
-        }
-        const id = uid();
-        try {
-          await mediaPut(id, blob);
-          await sendRichMessage({
-            kind: 'voice',
-            mediaId: id,
-            seconds: elapsed,
-            caption: content.trim(),
-          },owner);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          notify('录音保存失败：' + msg);
-          render();
-        }
-      };
-      rec.start(300);
-      render();
-    } catch {
-      notify('无法开始录音：请允许麦克风权限，或上传音频文件。');
+  function voiceOwnerCurrent(op:VoiceOperation):boolean {
+    return data===op.world&&data.roles.includes(op.owner);
+  }
+
+  function releaseVoiceStream(op:VoiceOperation):void {
+    const stream=op.stream;
+    op.stream=undefined;
+    stream?.getTracks().forEach(track=>track.stop());
+  }
+
+  function clearVoiceOperation(op:VoiceOperation):void {
+    op.phase='done';
+    clearTimeout(op.stopTimer);
+    voiceFinishing.delete(op);
+    if(voiceOperation===op)voiceOperation=null;
+    if(op.recorder){op.recorder.ondataavailable=null;op.recorder.onstop=null;op.recorder.onerror=null;}
+    op.recorder=undefined;
+  }
+
+  function cancelVoiceOperation(op:VoiceOperation):void {
+    const recorder=op.recorder;
+    clearVoiceOperation(op);
+    try{if(recorder&&recorder.state!=='inactive')recorder.stop();}
+    catch{/* The device still needs to be released if stop fails. */}
+    finally{releaseVoiceStream(op);}
+  }
+
+  function leaveVoicePanel():void {
+    const op=voiceOperation;
+    voiceOperation=null;
+    if(op&&(op.phase==='waiting'||op.phase==='recording'))cancelVoiceOperation(op);
+  }
+
+  function setChatPanel(next:string):void {
+    if(next!=='voice')leaveVoicePanel();
+    chatPanel=next;
+  }
+
+  function voicePanelCurrent(op:VoiceOperation):boolean {
+    return voiceOwnerCurrent(op)&&!voicePageHidden&&!document.hidden&&role()===op.owner&&view==='chat'&&chatPanel==='voice';
+  }
+
+  function renderVoiceResult(op:VoiceOperation):void {
+    if(voicePanelCurrent(op)&&(!voiceOperation||voiceOperation===op))render(false);
+  }
+
+  function retainVoice(op:VoiceOperation,blob:Blob|null):void {
+    if(!voiceOwnerCurrent(op)||op.recoveryOffered)return;
+    const recovery=voiceRecoveries.get(op.owner)||new Map<number,{world:AppData;blob:Blob|null}>();
+    recovery.set(op.id,{world:op.world,blob});
+    voiceRecoveries.set(op.owner,recovery);
+    if(blob)op.recoveryOffered=true;
+  }
+
+  function suspendVoiceOperations(retainEnding:boolean):void {
+    leaveVoicePanel();
+    for(const [op,blob] of voiceFinishing){
+      op.recoveryOnly=true;
+      releaseVoiceStream(op);
+      if(retainEnding)retainVoice(op,blob);
     }
   }
 
-  function stopRecording(cancel = false): void {
-    if (!voiceRecorder || voiceRecorder.state !== 'recording') return;
-    voiceCancelled = cancel;
-    voiceRecorder.stop();
+  async function persistRecording(op:VoiceOperation,blob:Blob):Promise<void> {
+    const canWrite=()=>!op.recoveryOnly&&!voicePageHidden&&voiceOwnerCurrent(op)&&saveSession.current();
+    let sent=false,updateComposer=false;
+    try{
+      if(!canWrite())return;
+      const mediaId=uid();
+      await mediaPut(mediaId,blob);
+      if(!canWrite())return;
+      updateComposer=voiceOperation===op&&voicePanelCurrent(op)&&quotingMessage===op.quote;
+      sent=sendRichMessage({kind:'voice',mediaId,seconds:op.seconds,caption:op.caption,quote:op.quote},op.owner,updateComposer);
+    }catch{
+      // The Blob remains available when media storage or the main save cannot be confirmed.
+    }finally{
+      if(!sent)retainVoice(op,blob);
+      clearVoiceOperation(op);
+      if(!sent||!updateComposer)renderVoiceResult(op);
+    }
+  }
+
+  async function beginRecording():Promise<void> {
+    const owner=role();
+    if(!owner||voiceOperation||view!=='chat'||chatPanel!=='voice'||voicePageHidden||document.hidden)return;
+    if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){
+      notify('浏览器不支持直接录音；请使用「选择音频文件」');return;
+    }
+    const op:VoiceOperation={id:++voiceSequence,world:data,owner,phase:'waiting',recoveryOnly:false,startedAt:0,seconds:0,caption:'',quote:null};
+    voiceOperation=op;
+    render(false);
+    try{
+      op.stream=await navigator.mediaDevices.getUserMedia({audio:true});
+      if(voiceOperation!==op||!voicePanelCurrent(op)){cancelVoiceOperation(op);return;}
+      const type=['audio/webm;codecs=opus','audio/mp4','audio/webm','audio/ogg'].find(t=>MediaRecorder.isTypeSupported(t));
+      const recorder=op.recorder=new MediaRecorder(op.stream,type?{mimeType:type}:{});
+      const chunks:Blob[]=[];
+      let size=0;
+      const fail=(message:string)=>{
+        const visible=voiceOperation===op&&voicePanelCurrent(op);
+        cancelVoiceOperation(op);
+        if(visible){render(false);notify(message);}
+      };
+      recorder.ondataavailable=event=>{
+        if(op.phase!=='recording'&&op.phase!=='finishing'||!event.data?.size)return;
+        size+=event.data.size;
+        if(size>voiceLimit){fail('语音超过 8MB，未发送');return;}
+        chunks.push(event.data);
+      };
+      recorder.onerror=()=>fail('录音过程中发生错误，未发送');
+      recorder.onstop=()=>{
+        if(op.phase!=='finishing'){fail('录音已中断，未发送');return;}
+        clearTimeout(op.stopTimer);
+        releaseVoiceStream(op);
+        if(!size){
+          voiceRecoveries.get(op.owner)?.delete(op.id);
+          fail('录音为空，未发送');return;
+        }
+        op.phase='saving';
+        recorder.onstop=null;recorder.ondataavailable=null;recorder.onerror=null;
+        const blob=new Blob(chunks,{type:recorder.mimeType||chunks[0].type||'audio/webm'});
+        voiceFinishing.set(op,blob);
+        void persistRecording(op,blob);
+      };
+      op.phase='recording';op.startedAt=now();
+      recorder.start(300);
+      render(false);
+    }catch{
+      const visible=voiceOperation===op&&voicePanelCurrent(op);
+      cancelVoiceOperation(op);
+      if(visible){render(false);notify('无法开始录音：请允许麦克风权限，或上传音频文件。');}
+    }
+  }
+
+  function stopRecording(cancel=false):void {
+    const op=voiceOperation;
+    if(!op)return;
+    if(cancel&&(op.phase==='waiting'||op.phase==='recording')){
+      cancelVoiceOperation(op);render(false);return;
+    }
+    if(cancel||op.phase!=='recording'||!op.recorder||!voicePanelCurrent(op))return;
+    op.phase='finishing';
+    op.seconds=Math.max(0,Math.round((now()-op.startedAt)/1000));
+    op.caption=($<HTMLInputElement>('#voice-caption')?.value||'').trim();
+    op.quote=quotingMessage;
+    voiceFinishing.set(op,null);
+    op.stopTimer=setTimeout(()=>{
+      op.recoveryOnly=true;
+      releaseVoiceStream(op);
+      voiceFinishing.delete(op);
+      retainVoice(op,null);
+      if(voiceOperation===op)voiceOperation=null;
+      renderVoiceResult(op);
+    },5000);
+    try{op.recorder.stop();render(false);}
+    catch{cancelVoiceOperation(op);render(false);notify('无法确认录音结尾，未发送。');}
   }
 
   async function submitText(
@@ -5548,6 +5648,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         if(data!==previous||saveSession.raw!==baseline)throw Error('暂存期间世界已变化，未替换存档。');
         if(!save(next))throw Error(saveError());
         try{for(const owner of next.roles)sessionStorage.removeItem('elsewhere-chat-draft:'+owner.id);}catch{/* Per-tab draft storage is optional. */}
+        suspendVoiceOperations(false);
         data = next;
         mediaSources.clear();
         document.querySelectorAll<HTMLElement>('[data-hydrated-key]').forEach(el=>delete el.dataset.hydratedKey);
@@ -5599,6 +5700,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if(!r||busy||diaryQueueBusy||lifeBusy){notify('请等待当前请求结束后再清档。');return;}
       if(!window.confirm(`仅清理当前奈恩的互动：${r.chats.length} 条聊天、${r.diaries.length} 篇日记、${r.events.length} 条事件，以及见面／戏剧／足迹状态。若有真实记录请取消。角色资料与其他角色保留；先创建恢复副本。本操作仅执行一次，确认继续？`))return;
       const result=resetNainStart(data,r.id,saveSession.storage,now());
+      if(data!==result.data)suspendVoiceOperations(false);
       data=result.data;
       if(result.cleaned){chatDrafts.delete(r);novelDraft='';intermissionDraft='';render(false);notify('奈恩已恢复到等待 API 首条消息的起点，恢复副本已保存。');}
       else notify(result.error||'当前角色已经清理过，未重复执行。');
@@ -5630,12 +5732,12 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     }
     if(act==='intermissionreply'){void requestIntermissionReply();return;}
     if (act === 'chatpanel') {
-      chatPanel = chatPanel === b.dataset.panel ? '' : b.dataset.panel || '';
+      setChatPanel(chatPanel===b.dataset.panel?'':b.dataset.panel||'');
       render(false);
       return;
     }
     if (act === 'closepanel') {
-      chatPanel = '';
+      setChatPanel('');
       render(false);
       return;
     }
@@ -5645,13 +5747,22 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       return;
     }
     if (act === 'recordtoggle') {
-      if (voiceRecorder?.state === 'recording') stopRecording();
-      else beginRecording();
+      if(voiceOperation?.phase==='recording')stopRecording();
+      else if(!voiceOperation)void beginRecording();
       return;
     }
     if (act === 'recordcancel') {
       stopRecording(true);
       return;
+    }
+    if(act==='download-voice-recovery'||act==='discard-voice-recovery'){
+      const recovery=r&&voiceRecoveries.get(r),id=Number(b.dataset.id),item=recovery?.get(id);
+      if(view!=='chat'||chatPanel!=='voice'||item?.world!==data||!item.blob)return;
+      if(act==='discard-voice-recovery'){recovery?.delete(id);render(false);return;}
+      const url=URL.createObjectURL(item.blob),link=document.createElement('a');
+      const ext=({'audio/mp4':'m4a','audio/webm':'webm','audio/ogg':'ogg','audio/wav':'wav'} as Record<string,string>)[item.blob.type.split(';')[0]]||'audio';
+      link.href=url;link.download='Elsewhere-未确认语音.'+ext;link.click();
+      setTimeout(()=>URL.revokeObjectURL(url),30000);return;
     }
     if (act === 'view') {
       go(b.dataset.view || 'home');
@@ -7005,7 +7116,18 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if(canUseRealModel(data.settings))void processDiaryQueue();
   }
   window.addEventListener('storage',event=>{if(event.key===STORAGE_KEY||event.key===null)refreshSaveAccess();});
+  window.addEventListener('pagehide',()=>{
+    voicePageHidden=true;
+    suspendVoiceOperations(true);
+  });
+  window.addEventListener('pageshow',event=>{
+    if(!event.persisted)return;
+    voicePageHidden=false;
+    if(view==='chat'&&chatPanel==='voice')render(false);
+  });
   document.addEventListener('visibilitychange',()=>{
+    if(document.hidden&&(voiceOperation?.phase==='waiting'||voiceOperation?.phase==='recording'))leaveVoicePanel();
+    else if(!document.hidden&&!voicePageHidden&&view==='chat'&&chatPanel==='voice')render(false);
     captureMeetingDraft(document.hidden&&saveSession.hasWriter());
     if(!document.hidden){refreshSaveAccess();if(view==='home')homeTasks.refresh();}
   });

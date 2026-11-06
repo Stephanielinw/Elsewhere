@@ -14773,9 +14773,10 @@ ${prevLogs}` : "",
     let meetingDraftDirty = false;
     let systemLogDate = null;
     let intermissionDraft = "";
-    let voiceRecorder = null;
-    let voiceStart = 0;
-    let voiceCancelled = false;
+    const voiceLimit = 8 * 1024 * 1024;
+    let voiceOperation = null, voiceSequence = 0, voicePageHidden = false;
+    const voiceFinishing = /* @__PURE__ */ new Map();
+    const voiceRecoveries = /* @__PURE__ */ new WeakMap();
     const mediaSources = createMediaSources(mediaGet);
     const avatarLoadingIds = /* @__PURE__ */ new Set();
     const avatarPreviewURLs = /* @__PURE__ */ new Map();
@@ -16130,7 +16131,7 @@ ${prevLogs}` : "",
         lifeBusy = false;
       });
     }
-    function acceptPhoneMessage(r, item) {
+    function acceptPhoneMessage(r, item, updateComposer = true) {
       const timing = r.chatTiming;
       if (timing?.inFlight?.entry || timing?.pending.length && chatSceneEntry(timing) && item.at >= timing.quietUntil) {
         notify("\u672C\u8F6E\u7EBF\u4E0B\u805A\u5408\u5DF2\u7ED3\u675F\uFF0C\u672A\u53D1\u9001\u7684\u5185\u5BB9\u4ECD\u4FDD\u7559\u3002");
@@ -16152,7 +16153,7 @@ ${prevLogs}` : "",
         return false;
       }
       if (r.proactive?.attempts.some((t) => t.status === "attempted")) activeChatRequests.get(r.id)?.abort();
-      if (role()?.id === r.id) quotingMessage = null;
+      if (updateComposer && role() === r) quotingMessage = null;
       queueMicrotask(() => {
         const pane = $("#scroll-area");
         if (view === "chat" && role()?.id === r.id && pane?.dataset.roleId === r.id) pane.scrollTop = pane.scrollHeight;
@@ -17074,11 +17075,26 @@ ${prevLogs}` : "",
         )} \u9009\u62E9\u7167\u7247\uFF08\u6700\u5927 8MB\uFF09<input type="file" id="photo-upload" accept="image/png,image/jpeg,image/gif,image/webp" class="file-input"></label></section>`;
       }
       if (chatPanel === "voice") {
-        return `<section class="chat-drawer" aria-label="\u53D1\u9001\u8BED\u97F3">${bar}<p class="drawer-note">\u70B9\u51FB\u5F55\u97F3\uFF0C\u518D\u70B9\u51FB\u7ED3\u675F\u5E76\u53D1\u9001\uFF1B\u4E5F\u53EF\u4EE5\u9009\u62E9\u97F3\u9891\u6587\u4EF6\u3002\u8BF7\u5141\u8BB8\u6D4F\u89C8\u5668\u4F7F\u7528\u9EA6\u514B\u98CE\u3002</p><input class="caption-field" id="voice-caption" placeholder="\u53EF\u9009\uFF1A\u8BED\u97F3\u7684\u6587\u5B57\u5185\u5BB9\uFF08\u89D2\u8272\u624D\u80FD\u7406\u89E3\uFF09" maxlength="800"><div class="voice-actions"><button data-action="recordtoggle" class="record-btn">${attachmentIcon(
-          "voice"
-        )} ${voiceRecorder?.state === "recording" ? "\u7ED3\u675F\u5E76\u53D1\u9001" : "\u5F00\u59CB\u5F55\u97F3"}</button>${voiceRecorder?.state === "recording" ? '<button data-action="recordcancel" class="minor-btn">\u53D6\u6D88</button>' : ""}</div><label class="file-pick">${attachmentIcon(
-          "voice"
-        )} \u9009\u62E9\u73B0\u6709\u97F3\u9891\u6587\u4EF6\uFF08\u6700\u5927 8MB\uFF09<input type="file" id="audio-upload" accept="audio/*" class="file-input"></label><p class="drawer-note">\u6CA1\u6709\u6587\u5B57\u5185\u5BB9\u7684\u8BED\u97F3\u53EF\u4EE5\u64AD\u653E\uFF0C\u4F46\u5F53\u524D AI \u65E0\u6CD5\u542C\u61C2\uFF1B\u4E0D\u4F1A\u5047\u88C5\u5DF2\u7ECF\u542C\u8FC7\u3002</p></section>`;
+        const owner = role(), phase = voiceOperation?.phase;
+        const waiting = phase === "waiting", recording = phase === "recording", finishing = phase === "finishing" || phase === "saving";
+        const label2 = waiting ? "\u7B49\u5F85\u9EA6\u514B\u98CE\u6388\u6743" : recording ? "\u7ED3\u675F\u5E76\u53D1\u9001" : finishing ? "\u6B63\u5728\u6536\u5C3E\u6216\u4FDD\u5B58" : "\u5F00\u59CB\u5F55\u97F3";
+        const recovery = owner ? [...voiceRecoveries.get(owner) || []].filter(([, item]) => item.world === data) : [];
+        const recoveryMarkup = recovery.map(([id, item]) => `<div class="drawer-note" role="status">${item.blob ? `
+        \u8BED\u97F3\u4FDD\u5B58\u672A\u786E\u8BA4\u3002\u53EF\u4EE5\u4E0B\u8F7D\u5F55\u97F3\u5E76\u6838\u5BF9\u804A\u5929\u8BB0\u5F55\u3002
+        <button type="button" class="minor-btn" data-action="download-voice-recovery" data-id="${id}">\u4E0B\u8F7D\u672A\u786E\u8BA4\u7684\u5F55\u97F3</button>
+        <button type="button" class="minor-btn" data-action="discard-voice-recovery" data-id="${id}">\u79FB\u9664\u6062\u590D\u9879</button>
+      ` : "\u6D4F\u89C8\u5668\u5C1A\u672A\u4EA4\u4ED8\u5F55\u97F3\u7ED3\u5C3E\uFF0C\u65E0\u6CD5\u786E\u8BA4\u5F55\u97F3\u5B8C\u6574\u3002"}</div>`).join("");
+        return `<section class="chat-drawer" aria-label="\u53D1\u9001\u8BED\u97F3">${bar}
+        <p class="drawer-note">\u70B9\u51FB\u5F55\u97F3\uFF0C\u518D\u70B9\u51FB\u7ED3\u675F\u5E76\u53D1\u9001\uFF1B\u4E5F\u53EF\u4EE5\u9009\u62E9\u97F3\u9891\u6587\u4EF6\u3002\u8BF7\u5141\u8BB8\u6D4F\u89C8\u5668\u4F7F\u7528\u9EA6\u514B\u98CE\u3002</p>
+        <input class="caption-field" id="voice-caption" placeholder="\u53EF\u9009\uFF1A\u8BED\u97F3\u7684\u6587\u5B57\u5185\u5BB9\uFF08\u89D2\u8272\u624D\u80FD\u7406\u89E3\uFF09" maxlength="800">
+        <div class="voice-actions">
+          <button data-action="recordtoggle" class="record-btn" ${waiting || finishing ? "disabled" : ""}>${attachmentIcon("voice")} ${label2}</button>
+          ${waiting || recording ? '<button data-action="recordcancel" class="minor-btn">\u53D6\u6D88</button>' : ""}
+        </div>
+        ${recoveryMarkup}
+        <label class="file-pick">${attachmentIcon("voice")} \u9009\u62E9\u73B0\u6709\u97F3\u9891\u6587\u4EF6\uFF08\u6700\u5927 8MB\uFF09<input type="file" id="audio-upload" accept="audio/*" class="file-input"></label>
+        <p class="drawer-note">\u6CA1\u6709\u6587\u5B57\u5185\u5BB9\u7684\u8BED\u97F3\u53EF\u4EE5\u64AD\u653E\uFF0C\u4F46\u5F53\u524D AI \u65E0\u6CD5\u542C\u61C2\uFF1B\u4E0D\u4F1A\u5047\u88C5\u5DF2\u7ECF\u542C\u8FC7\u3002</p>
+      </section>`;
       }
       if (chatPanel === "packet") {
         return `<section class="chat-drawer" aria-label="\u865A\u62DF\u7EA2\u5305">${bar}<form id="packet-form"><div class="packet-fields"><label>\u91D1\u989D\uFF08\u865A\u62DF \xA5\uFF09<input name="amount" type="number" inputmode="decimal" required min="0.01" max="200" step="0.01" placeholder="6.66"></label><label>\u795D\u798F\u8BED<input name="wish" maxlength="100" placeholder="\u6536\u4E0B\u8FD9\u4EFD\u5FC3\u610F" value="\u6536\u4E0B\u8FD9\u4EFD\u5FC3\u610F"></label></div><p class="drawer-note">\u4EC5\u6545\u4E8B\u5185\u7684\u8DA3\u5473\u7EA2\u5305\uFF0C\u4E0D\u6263\u9664\u771F\u5B9E\u8D27\u5E01\uFF0C\u4E0D\u8FDE\u63A5\u652F\u4ED8\u670D\u52A1\u6216\u94B1\u5305\u3002</p><button class="packet-submit" ${busy ? "disabled" : ""}>\u53D1\u9001\u865A\u62DF\u7EA2\u5305</button></form></section>`;
@@ -18347,6 +18363,7 @@ ${prevLogs}` : "",
       if (!data.selected && !["roleform", "userprofile", "deleterole"].includes(view)) {
         view = "landing";
       }
+      if (voiceOperation && (view !== "chat" || role() !== voiceOperation.owner || !voiceOwnerCurrent(voiceOperation))) leaveVoicePanel();
       const markup = view === "landing" ? screenLanding() : view === "roleform" ? screenRoleForm() : view === "userprofile" ? screenUserProfile() : view === "deleterole" ? screenDeleteRole() : view === "home" ? screenHome() : view === "chat" ? screenChat() : view === "diary" ? screenDiary() : view === "focus" ? screenFocus() : view === "monitor" ? screenMonitor() : view === "drama" ? screenDrama() : view === "novel" ? screenNovel() : view === "intermission" ? screenIntermission() : view === "roleinfo" ? screenRoleInfo() : view === "meetingdetail" ? screenMeetingDetail() : view === "playdetail" ? screenPlayDetail() : view === "presets" ? screenPresets() : view === "terminal" ? screenTerminal() : screenHome();
       const sameView = view === lastRenderedView;
       lastRenderedView = view;
@@ -18409,6 +18426,7 @@ ${prevLogs}` : "",
       }
       if (!settlingScene && saveSession.hasWriter()) completeFocusIfDue();
       if (activeFocus()?.phase === "work" && v !== "focus" && v !== "novel") {
+        setChatPanel("");
         view = "focus";
         render();
         notify("\u4E13\u6CE8\u671F\u95F4\u5DF2\u9501\u5B9A\uFF0C\u5148\u7ED3\u675F\u672C\u8F6E\u624D\u80FD\u5207\u6362\u624B\u673A");
@@ -18430,13 +18448,10 @@ ${prevLogs}` : "",
           resetStagedTerminalFrame();
         }
       }
-      if (v !== "chat") {
-        chatPanel = "";
-        if (voiceRecorder?.state === "recording") stopRecording(true);
-      }
       if (!role() && !["roleform", "userprofile", "deleterole"].includes(v)) {
         v = "landing";
       }
+      if (v !== "chat") setChatPanel("");
       if (!settlingScene && role() && saveSession.current() && !["landing", "roleform", "userprofile", "deleterole"].includes(v)) {
         simulate(role());
         deliverPending(role());
@@ -18983,17 +18998,20 @@ ${prevLogs}` : "",
       }
       return item.text || "";
     }
-    async function sendRichMessage(partial, r = role()) {
-      if (!r || !data.roles.includes(r)) return;
+    function sendRichMessage(partial, r = role(), updateComposer = true) {
+      if (!r || !data.roles.includes(r)) return false;
       const item = { ...partial, id: uid(), at: now(), speaker: "me", text: mediaNote(partial), status: "active", quote: partial.quote === void 0 ? role()?.id === r.id ? quotingMessage : null : partial.quote };
-      if (!acceptPhoneMessage(r, item)) return;
-      if (role()?.id === r.id) {
-        chatPanel = "";
-        render(false);
+      if (!acceptPhoneMessage(r, item, updateComposer)) return false;
+      if (view === "chat" && role() === r) {
+        if (updateComposer) {
+          setChatPanel("");
+          render(false);
+        } else patchDynamicRegionsOnTick();
       }
+      return true;
     }
     async function sendFileAttachment(file, kind, caption = "") {
-      const owner = role(), quote = quotingMessage;
+      const owner = role(), quote = quotingMessage, composerOperation = voiceOperation;
       if (!file || !owner) return;
       const allowed = kind === "voice" ? file.type.startsWith("audio/") : ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(
         file.type
@@ -19009,93 +19027,196 @@ ${prevLogs}` : "",
       const id = uid();
       try {
         await mediaPut(id, file);
-        await sendRichMessage({
+        sendRichMessage({
           kind,
           mediaId: id,
           caption: caption.trim().slice(0, 800),
           seconds: 0,
           quote
-        }, owner);
+        }, owner, voiceOperation === composerOperation);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         notify("\u6587\u4EF6\u4FDD\u5B58\u5931\u8D25\uFF1A" + msg);
       }
     }
+    function voiceOwnerCurrent(op) {
+      return data === op.world && data.roles.includes(op.owner);
+    }
+    function releaseVoiceStream(op) {
+      const stream = op.stream;
+      op.stream = void 0;
+      stream?.getTracks().forEach((track) => track.stop());
+    }
+    function clearVoiceOperation(op) {
+      op.phase = "done";
+      clearTimeout(op.stopTimer);
+      voiceFinishing.delete(op);
+      if (voiceOperation === op) voiceOperation = null;
+      if (op.recorder) {
+        op.recorder.ondataavailable = null;
+        op.recorder.onstop = null;
+        op.recorder.onerror = null;
+      }
+      op.recorder = void 0;
+    }
+    function cancelVoiceOperation(op) {
+      const recorder = op.recorder;
+      clearVoiceOperation(op);
+      try {
+        if (recorder && recorder.state !== "inactive") recorder.stop();
+      } catch {
+      } finally {
+        releaseVoiceStream(op);
+      }
+    }
+    function leaveVoicePanel() {
+      const op = voiceOperation;
+      voiceOperation = null;
+      if (op && (op.phase === "waiting" || op.phase === "recording")) cancelVoiceOperation(op);
+    }
+    function setChatPanel(next) {
+      if (next !== "voice") leaveVoicePanel();
+      chatPanel = next;
+    }
+    function voicePanelCurrent(op) {
+      return voiceOwnerCurrent(op) && !voicePageHidden && !document.hidden && role() === op.owner && view === "chat" && chatPanel === "voice";
+    }
+    function renderVoiceResult(op) {
+      if (voicePanelCurrent(op) && (!voiceOperation || voiceOperation === op)) render(false);
+    }
+    function retainVoice(op, blob) {
+      if (!voiceOwnerCurrent(op) || op.recoveryOffered) return;
+      const recovery = voiceRecoveries.get(op.owner) || /* @__PURE__ */ new Map();
+      recovery.set(op.id, { world: op.world, blob });
+      voiceRecoveries.set(op.owner, recovery);
+      if (blob) op.recoveryOffered = true;
+    }
+    function suspendVoiceOperations(retainEnding) {
+      leaveVoicePanel();
+      for (const [op, blob] of voiceFinishing) {
+        op.recoveryOnly = true;
+        releaseVoiceStream(op);
+        if (retainEnding) retainVoice(op, blob);
+      }
+    }
+    async function persistRecording(op, blob) {
+      const canWrite = () => !op.recoveryOnly && !voicePageHidden && voiceOwnerCurrent(op) && saveSession.current();
+      let sent = false, updateComposer = false;
+      try {
+        if (!canWrite()) return;
+        const mediaId = uid();
+        await mediaPut(mediaId, blob);
+        if (!canWrite()) return;
+        updateComposer = voiceOperation === op && voicePanelCurrent(op) && quotingMessage === op.quote;
+        sent = sendRichMessage({ kind: "voice", mediaId, seconds: op.seconds, caption: op.caption, quote: op.quote }, op.owner, updateComposer);
+      } catch {
+      } finally {
+        if (!sent) retainVoice(op, blob);
+        clearVoiceOperation(op);
+        if (!sent || !updateComposer) renderVoiceResult(op);
+      }
+    }
     async function beginRecording() {
       const owner = role();
-      if (!owner) return;
+      if (!owner || voiceOperation || view !== "chat" || chatPanel !== "voice" || voicePageHidden || document.hidden) return;
       if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
         notify("\u6D4F\u89C8\u5668\u4E0D\u652F\u6301\u76F4\u63A5\u5F55\u97F3\uFF1B\u8BF7\u4F7F\u7528\u300C\u9009\u62E9\u97F3\u9891\u6587\u4EF6\u300D");
         return;
       }
+      const op = { id: ++voiceSequence, world: data, owner, phase: "waiting", recoveryOnly: false, startedAt: 0, seconds: 0, caption: "", quote: null };
+      voiceOperation = op;
+      render(false);
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const allowed = [
-          "audio/webm;codecs=opus",
-          "audio/mp4",
-          "audio/webm",
-          "audio/ogg"
-        ].find((t) => MediaRecorder.isTypeSupported(t));
-        const rec = new MediaRecorder(
-          stream,
-          allowed ? { mimeType: allowed } : {}
-        );
+        op.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (voiceOperation !== op || !voicePanelCurrent(op)) {
+          cancelVoiceOperation(op);
+          return;
+        }
+        const type = ["audio/webm;codecs=opus", "audio/mp4", "audio/webm", "audio/ogg"].find((t) => MediaRecorder.isTypeSupported(t));
+        const recorder = op.recorder = new MediaRecorder(op.stream, type ? { mimeType: type } : {});
         const chunks = [];
-        voiceCancelled = false;
-        voiceRecorder = rec;
-        voiceStart = Date.now();
-        const content = $("#voice-caption")?.value || "";
-        rec.ondataavailable = (e) => {
-          if (e.data?.size) chunks.push(e.data);
-        };
-        rec.onerror = () => notify("\u5F55\u97F3\u8FC7\u7A0B\u4E2D\u53D1\u751F\u9519\u8BEF");
-        rec.onstop = async () => {
-          const elapsed = Math.round((Date.now() - voiceStart) / 1e3);
-          stream.getTracks().forEach((t) => t.stop());
-          voiceRecorder = null;
-          if (voiceCancelled) {
-            voiceCancelled = false;
-            render();
-            return;
-          }
-          const blob = new Blob(chunks, {
-            type: rec.mimeType || "audio/webm"
-          });
-          if (!blob.size) {
-            notify("\u5F55\u97F3\u4E3A\u7A7A\uFF0C\u672A\u53D1\u9001");
-            render();
-            return;
-          }
-          if (blob.size > 8 * 1024 * 1024) {
-            notify("\u8BED\u97F3\u8D85\u8FC7 8MB\uFF0C\u672A\u53D1\u9001");
-            render();
-            return;
-          }
-          const id = uid();
-          try {
-            await mediaPut(id, blob);
-            await sendRichMessage({
-              kind: "voice",
-              mediaId: id,
-              seconds: elapsed,
-              caption: content.trim()
-            }, owner);
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            notify("\u5F55\u97F3\u4FDD\u5B58\u5931\u8D25\uFF1A" + msg);
-            render();
+        let size = 0;
+        const fail3 = (message) => {
+          const visible = voiceOperation === op && voicePanelCurrent(op);
+          cancelVoiceOperation(op);
+          if (visible) {
+            render(false);
+            notify(message);
           }
         };
-        rec.start(300);
-        render();
+        recorder.ondataavailable = (event) => {
+          if (op.phase !== "recording" && op.phase !== "finishing" || !event.data?.size) return;
+          size += event.data.size;
+          if (size > voiceLimit) {
+            fail3("\u8BED\u97F3\u8D85\u8FC7 8MB\uFF0C\u672A\u53D1\u9001");
+            return;
+          }
+          chunks.push(event.data);
+        };
+        recorder.onerror = () => fail3("\u5F55\u97F3\u8FC7\u7A0B\u4E2D\u53D1\u751F\u9519\u8BEF\uFF0C\u672A\u53D1\u9001");
+        recorder.onstop = () => {
+          if (op.phase !== "finishing") {
+            fail3("\u5F55\u97F3\u5DF2\u4E2D\u65AD\uFF0C\u672A\u53D1\u9001");
+            return;
+          }
+          clearTimeout(op.stopTimer);
+          releaseVoiceStream(op);
+          if (!size) {
+            voiceRecoveries.get(op.owner)?.delete(op.id);
+            fail3("\u5F55\u97F3\u4E3A\u7A7A\uFF0C\u672A\u53D1\u9001");
+            return;
+          }
+          op.phase = "saving";
+          recorder.onstop = null;
+          recorder.ondataavailable = null;
+          recorder.onerror = null;
+          const blob = new Blob(chunks, { type: recorder.mimeType || chunks[0].type || "audio/webm" });
+          voiceFinishing.set(op, blob);
+          void persistRecording(op, blob);
+        };
+        op.phase = "recording";
+        op.startedAt = now();
+        recorder.start(300);
+        render(false);
       } catch {
-        notify("\u65E0\u6CD5\u5F00\u59CB\u5F55\u97F3\uFF1A\u8BF7\u5141\u8BB8\u9EA6\u514B\u98CE\u6743\u9650\uFF0C\u6216\u4E0A\u4F20\u97F3\u9891\u6587\u4EF6\u3002");
+        const visible = voiceOperation === op && voicePanelCurrent(op);
+        cancelVoiceOperation(op);
+        if (visible) {
+          render(false);
+          notify("\u65E0\u6CD5\u5F00\u59CB\u5F55\u97F3\uFF1A\u8BF7\u5141\u8BB8\u9EA6\u514B\u98CE\u6743\u9650\uFF0C\u6216\u4E0A\u4F20\u97F3\u9891\u6587\u4EF6\u3002");
+        }
       }
     }
     function stopRecording(cancel = false) {
-      if (!voiceRecorder || voiceRecorder.state !== "recording") return;
-      voiceCancelled = cancel;
-      voiceRecorder.stop();
+      const op = voiceOperation;
+      if (!op) return;
+      if (cancel && (op.phase === "waiting" || op.phase === "recording")) {
+        cancelVoiceOperation(op);
+        render(false);
+        return;
+      }
+      if (cancel || op.phase !== "recording" || !op.recorder || !voicePanelCurrent(op)) return;
+      op.phase = "finishing";
+      op.seconds = Math.max(0, Math.round((now() - op.startedAt) / 1e3));
+      op.caption = ($("#voice-caption")?.value || "").trim();
+      op.quote = quotingMessage;
+      voiceFinishing.set(op, null);
+      op.stopTimer = setTimeout(() => {
+        op.recoveryOnly = true;
+        releaseVoiceStream(op);
+        voiceFinishing.delete(op);
+        retainVoice(op, null);
+        if (voiceOperation === op) voiceOperation = null;
+        renderVoiceResult(op);
+      }, 5e3);
+      try {
+        op.recorder.stop();
+        render(false);
+      } catch {
+        cancelVoiceOperation(op);
+        render(false);
+        notify("\u65E0\u6CD5\u786E\u8BA4\u5F55\u97F3\u7ED3\u5C3E\uFF0C\u672A\u53D1\u9001\u3002");
+      }
     }
     async function submitText(kind, text2) {
       const r = role();
@@ -19434,6 +19555,7 @@ ${prevLogs}` : "",
             for (const owner of next.roles) sessionStorage.removeItem("elsewhere-chat-draft:" + owner.id);
           } catch {
           }
+          suspendVoiceOperations(false);
           data = next;
           mediaSources.clear();
           document.querySelectorAll("[data-hydrated-key]").forEach((el) => delete el.dataset.hydratedKey);
@@ -19485,6 +19607,7 @@ ${prevLogs}` : "",
         }
         if (!window.confirm(`\u4EC5\u6E05\u7406\u5F53\u524D\u5948\u6069\u7684\u4E92\u52A8\uFF1A${r.chats.length} \u6761\u804A\u5929\u3001${r.diaries.length} \u7BC7\u65E5\u8BB0\u3001${r.events.length} \u6761\u4E8B\u4EF6\uFF0C\u4EE5\u53CA\u89C1\u9762\uFF0F\u620F\u5267\uFF0F\u8DB3\u8FF9\u72B6\u6001\u3002\u82E5\u6709\u771F\u5B9E\u8BB0\u5F55\u8BF7\u53D6\u6D88\u3002\u89D2\u8272\u8D44\u6599\u4E0E\u5176\u4ED6\u89D2\u8272\u4FDD\u7559\uFF1B\u5148\u521B\u5EFA\u6062\u590D\u526F\u672C\u3002\u672C\u64CD\u4F5C\u4EC5\u6267\u884C\u4E00\u6B21\uFF0C\u786E\u8BA4\u7EE7\u7EED\uFF1F`)) return;
         const result = resetNainStart(data, r.id, saveSession.storage, now());
+        if (data !== result.data) suspendVoiceOperations(false);
         data = result.data;
         if (result.cleaned) {
           chatDrafts.delete(r);
@@ -19548,12 +19671,12 @@ ${prevLogs}` : "",
         return;
       }
       if (act === "chatpanel") {
-        chatPanel = chatPanel === b.dataset.panel ? "" : b.dataset.panel || "";
+        setChatPanel(chatPanel === b.dataset.panel ? "" : b.dataset.panel || "");
         render(false);
         return;
       }
       if (act === "closepanel") {
-        chatPanel = "";
+        setChatPanel("");
         render(false);
         return;
       }
@@ -19563,12 +19686,28 @@ ${prevLogs}` : "",
         return;
       }
       if (act === "recordtoggle") {
-        if (voiceRecorder?.state === "recording") stopRecording();
-        else beginRecording();
+        if (voiceOperation?.phase === "recording") stopRecording();
+        else if (!voiceOperation) void beginRecording();
         return;
       }
       if (act === "recordcancel") {
         stopRecording(true);
+        return;
+      }
+      if (act === "download-voice-recovery" || act === "discard-voice-recovery") {
+        const recovery = r && voiceRecoveries.get(r), id = Number(b.dataset.id), item = recovery?.get(id);
+        if (view !== "chat" || chatPanel !== "voice" || item?.world !== data || !item.blob) return;
+        if (act === "discard-voice-recovery") {
+          recovery?.delete(id);
+          render(false);
+          return;
+        }
+        const url = URL.createObjectURL(item.blob), link = document.createElement("a");
+        const ext = { "audio/mp4": "m4a", "audio/webm": "webm", "audio/ogg": "ogg", "audio/wav": "wav" }[item.blob.type.split(";")[0]] || "audio";
+        link.href = url;
+        link.download = "Elsewhere-\u672A\u786E\u8BA4\u8BED\u97F3." + ext;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 3e4);
         return;
       }
       if (act === "view") {
@@ -20976,7 +21115,18 @@ ${prevLogs}` : "",
     window.addEventListener("storage", (event) => {
       if (event.key === STORAGE_KEY || event.key === null) refreshSaveAccess();
     });
+    window.addEventListener("pagehide", () => {
+      voicePageHidden = true;
+      suspendVoiceOperations(true);
+    });
+    window.addEventListener("pageshow", (event) => {
+      if (!event.persisted) return;
+      voicePageHidden = false;
+      if (view === "chat" && chatPanel === "voice") render(false);
+    });
     document.addEventListener("visibilitychange", () => {
+      if (document.hidden && (voiceOperation?.phase === "waiting" || voiceOperation?.phase === "recording")) leaveVoicePanel();
+      else if (!document.hidden && !voicePageHidden && view === "chat" && chatPanel === "voice") render(false);
       captureMeetingDraft(document.hidden && saveSession.hasWriter());
       if (!document.hidden) {
         refreshSaveAccess();

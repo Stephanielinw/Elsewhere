@@ -96,6 +96,7 @@ export type DiaryTaskStatus =
   | 'generating'
   | 'uncertain'
   | 'ready'
+  | 'stale'
   | 'completed'
   | 'failed';
 

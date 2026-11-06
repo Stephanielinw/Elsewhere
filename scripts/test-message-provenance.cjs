@@ -11,6 +11,21 @@ const diary='合成日记正文。',original='phone-origin',bridge='scene-bridge
 const ready=p=>p.locator('#app[data-storage-state=ready][data-write-access=writer]').waitFor();
 const read=p=>p.evaluate(key=>JSON.parse(localStorage.getItem(key)),key);
 const archived=async p=>(await read(p)).roles[0].diaries.find(d=>d.text===diary);
+async function recoveryRecord(p,day){
+ const world=await read(p),r=world.roles.find(r=>r.id==='fixture-role');
+ const task=r.diaryTasks.find(t=>t.dateKey===day&&t.roleId===r.id);
+ const id=JSON.stringify([world.diaryWorldId,r.id,day]);
+ const receipt=await p.evaluate(id=>new Promise((resolve,reject)=>{
+  const open=indexedDB.open('elsewhere-diary-requests-v1',1);
+  open.onerror=()=>reject(open.error);
+  open.onsuccess=()=>{
+   const db=open.result,tx=db.transaction('receipts'),request=tx.objectStore('receipts').get(id);
+   tx.oncomplete=()=>{db.close();resolve(request.result);};
+   tx.onabort=()=>{db.close();reject(tx.error);};
+  };
+ }),id);
+ return {id,task,receipt};
+}
 async function wait(fn,label){
  const until=Date.now()+8000;
  do{if(await fn())return;await new Promise(r=>setTimeout(r,40));}while(Date.now()<until);
@@ -27,10 +42,17 @@ async function main(){
   let bootstrap=true,release;
   const hold=new Promise(resolve=>{release=resolve;});
   try{
-   await ctx.addInitScript(()=>{
+   await ctx.addInitScript(key=>{
     window.provenanceDocument=Math.random();
     addEventListener('pageshow',event=>{window.provenanceRestored=event.persisted;});
-   });
+    const set=Storage.prototype.setItem;
+    Storage.prototype.setItem=function(k,v){
+     if(k===key&&window.blockRecoveryStatus&&JSON.parse(v).roles.some(r=>r.diaryTasks.some(t=>t.id==='fixture-diary'&&['ready','stale'].includes(t.status)))){
+      throw new DOMException('synthetic quota failure','QuotaExceededError');
+     }
+     return set.call(this,k,v);
+    };
+   },key);
    await ctx.route('**/*',async route=>{
     const req=route.request(),url=new URL(req.url());
     if(url.href===away&&req.method()==='GET')return route.fulfill({contentType:'text/html',body:'<!doctype html><title>Isolated navigation</title>'});
@@ -162,7 +184,7 @@ async function main(){
    assert.ok(!posts[1].includes(old)&&!posts[1].includes(middle));
    console.log('PASS actual Scene POST excludes replaced bridge and quote');
   });
-  for(const action of ['edit','retract']){
+  for(const [action,failStatusSave] of [['edit',false],['retract',false],['retract',true]]){
    await fixture({archived:true,hold:true},async({p,ctx,posts,release,day})=>{
     await wait(()=>posts.length===1,'in-flight diary POST');
     assert.ok(posts[0].includes(old));
@@ -185,16 +207,37 @@ async function main(){
      assert.equal(await p.evaluate(()=>window.provenanceDocument),before);
      assert.equal(await p.evaluate(()=>window.provenanceRestored),true);
     }
+    if(failStatusSave)await p.evaluate(()=>window.blockRecoveryStatus=true);
+    const sent=await recoveryRecord(p,day);
+    assert.equal(sent.receipt.state,'sent');
+    assert.equal(sent.task.requestAttempt,sent.receipt.attempt);
+    assert.ok(sent.task.sourceMessageIds.includes(original));
     release();
     const copy=p.locator('dialog[open] textarea[aria-label="可复制的未确认回复"]');
     await copy.waitFor();assert.equal(await copy.inputValue(),diary);
     await p.locator('dialog[open] button').click();
     assert.equal(await archived(p),undefined);
+    const stored=await recoveryRecord(p,day);
+    assert.equal(stored.receipt.state,'ready');
+    assert.equal(stored.receipt.result.text,diary);
+    assert.match(stored.receipt.result.sourceHash,/^[a-f0-9]{64}$/);
+    assert.equal(stored.receipt.attempt,sent.receipt.attempt);
+    if(failStatusSave)assert.equal(stored.task.status,'generating','fixture rejected main status write after IDB commit');
     await p.reload();await ready(p);
     await p.locator('[data-action=enter][data-id=fixture-role]').click();
-    await p.locator('[data-view=diary]').first().evaluate(el=>el.click());
-    await p.locator('[data-action=retrydiary][data-date="'+day+'"]').click();
+    await p.locator('[data-home-page="1"]').click();
+    await p.getByRole('button',{name:'打开日记'}).click();
+    const card=p.locator('[data-diary-task-date="'+day+'"]');
+    await card.getByText('正文待复制 · 来源已变化',{exact:true}).waitFor();
+    const restored=await recoveryRecord(p,day);
+    assert.equal(restored.id,stored.id);
+    assert.equal(restored.task.id,stored.task.id);
+    assert.equal(restored.task.requestAttempt,stored.receipt.attempt);
+    assert.deepEqual(restored.receipt,stored.receipt);
+    assert.ok(!restored.task.sourceMessageIds.includes(original));
+    await card.getByRole('button',{name:'查看并复制正文'}).click();
     await copy.waitFor();assert.equal(await copy.inputValue(),diary);
+    assert.match(await p.locator('dialog[open] h2').textContent(),/来源已变化/);
     await p.locator('dialog[open] button').click();
     assert.equal(await archived(p),undefined);
     assert.equal(posts.length,1,'editing, reopening and inspecting the stale result must not resend');
@@ -211,7 +254,8 @@ async function main(){
     assert.ok(posts[1].includes('用户主动发送合成新一轮'));
     assert.ok(!posts[1].includes(old)&&!posts[1].includes(middle));
     assert.equal(posts[1].includes(latest),action==='edit');
-    console.log('PASS',action,'in-flight diary stays recoverable, future phone POST is current, zero automatic retries');
+    assert.ok(!posts[1].includes(diary),'copied stale diary is not a memory source');
+    console.log('PASS',action,failStatusSave?'status-save failure':'normal save','in-flight diary stays recoverable, future phone POST is current, zero automatic retries');
    });
   }
  }finally{await browser.close();}

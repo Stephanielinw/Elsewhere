@@ -1432,10 +1432,14 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if (toastTimer) clearTimeout(toastTimer);
     toastTimer = setTimeout(() => el.remove(), 3200);
   };
-  function offerUnstoredReply(text:string):void{
+  function offerUnstoredReply(text:string,sourcesChanged=false):void{
     const dialog=document.createElement('dialog');
     dialog.className='fruit-dialog';
     dialog.innerHTML='<form method="dialog" class="fruit-dialog-body"><h2>回复已返回，保存未确认</h2><p>可以先复制这次的回复，再重新读取存档核对。应用不会因保存失败自动重发这条请求。</p><textarea class="field" aria-label="可复制的未确认回复" readonly rows="5"></textarea><button class="btn">关闭</button></form>';
+    if(sourcesChanged){
+      dialog.querySelector('h2')!.textContent='日记正文的来源已变化';
+      dialog.querySelector('p')!.textContent='这份正文仅供复制，未归档，也不会作为后续记忆。查看和复制不重新请求。';
+    }
     dialog.querySelector('textarea')!.value=text;
     dialog.addEventListener('close',()=>dialog.remove(),{once:true});
     document.body.append(dialog);
@@ -3101,6 +3105,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
                        ? `<span class="diary-task-badge generating">${uiIcon('hourglass')} 正在生成…</span>`
                        : t.status === 'ready'
                        ? `<span class="diary-task-badge pending">正文已生成 · 待保存</span>`
+                       : t.status === 'stale'
+                       ? `<span class="diary-task-badge pending">正文待复制 · 来源已变化</span>`
                        : t.status === 'claimed'
                        ? `<span class="diary-task-badge awaiting">已领取 · 发送状态待核对</span>`
                        : t.status === 'uncertain'
@@ -3133,7 +3139,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
                      }
                      <div class="diary-task-actions">
                        <button type="button" class="btn small ${
-                     ['failed','uncertain','ready'].includes(t.status) ? '' : 'secondary'
+                     ['failed','uncertain','ready','stale'].includes(t.status) ? '' : 'secondary'
                        }" data-action="retrydiary" data-date="${esc(
                      t.dateKey
                    )}" ${
@@ -3143,6 +3149,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
                        ? '正在生成…'
                        : t.status === 'ready'
                        ? '保存已有结果'
+                       : t.status === 'stale'
+                       ? '查看并复制正文'
                        : ['claimed','uncertain','failed'].includes(t.status)
                        ? '核对状态或恢复'
                        : '立即生成'
@@ -4606,6 +4614,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if(persist&&saveSession.hasWriter())save();
     render(!preserveStage);
     if(role())resumeLocalSceneReplies(role()!);
+    const diaryOwner=role();
+    if(v==='diary'&&diaryOwner)void inspectDiaryRecovery(diaryOwner);
   }
 
   async function requestSceneCompletion(messages:{role:string;content:string}[],kind:'scene'|'play'|'intermission',sampling:Record<string,number>={},signal?:AbortSignal):Promise<Response> {
@@ -4731,8 +4741,9 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   }
 
   async function generateCharacterDiaryForDate(
-    r:RoleData,dateKey:string,manualTrigger=false,replaceResult=false
+    r:RoleData,dateKey:string,action:'auto'|'recover'|'replace'|'inspect'='auto'
   ):Promise<boolean> {
+    const manualTrigger=action==='recover'||action==='replace';
     const world=data;
     const owned=()=>data===world&&world.roles.includes(r)&&world.roles.filter(item=>item.id===r.id).length===1;
     const valid=()=>owned()&&saveSession.current()&&!hasCharacterDiaryForDate(r,dateKey);
@@ -4743,18 +4754,20 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     const task=r.diaryTasks?.find(item=>item.dateKey===dateKey&&item.roleId===r.id);
     if(!task)return false;
     const status=(state:DiaryTaskStatus,message?:string)=>{
-      if(!valid())return false;
+      if(!valid()||!r.diaryTasks?.includes(task))return false;
+      if(task.status===state&&task.lastError===message)return true;
       const previous={...task};
       task.status=state;task.lastError=message;task.updatedAt=now();
       if(save())return true;
       restoreFields(task,previous);return false;
     };
-    const copyResult=(text:string)=>{
-      if(owned()&&role()===r)offerUnstoredReply(text);
+    const copyResult=(text:string,sourcesChanged=false)=>{
+      if(owned()&&role()===r)offerUnstoredReply(text,sourcesChanged);
     };
     let wireResult:string|undefined;
     try{
       if(typeof world.diaryWorldId!=='string'||!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(world.diaryWorldId)){
+        if(action==='inspect')return false;
         if(!token.trim()||!canUseRealModel(world.settings)){if(manualTrigger)notify('请先在终端配置 API。');return false;}
         const previous=world.diaryWorldId;
         world.diaryWorldId=crypto.randomUUID();
@@ -4763,17 +4776,22 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       const key=diaryRequestKey(world.diaryWorldId,r.id,dateKey);
       let receipt=await readDiaryReceipt(key);
       if(!valid())return false;
+      const recovering=receipt?.state==='ready'&&action!=='replace';
+      if(action==='inspect'&&(!recovering||!task.requestAttempt||task.requestAttempt!==receipt?.attempt))return false;
+      if(action==='recover'&&['ready','stale'].includes(task.status)&&!recovering){
+        notify('未找到可恢复的正文，本次未发送请求。');
+        return false;
+      }
+      if(action==='recover'&&task.status==='stale'&&receipt?.result){
+        copyResult(receipt.result.text,true);
+        return false;
+      }
       // Old archives can contain a generating marker without a receipt. Treat it as possibly billed.
       const legacyRisk=!receipt&&(task.attempts>0||!!task.requestAttempt||task.status==='uncertain');
-      if(!manualTrigger&&(receipt||legacyRisk)){
-        if(receipt?.state==='ready'){
-          status('ready','正文已生成，可以直接保存已有结果。自动补写已暂停。');
-          return false;
-        }
+      if(action==='auto'&&!recovering&&(receipt||legacyRisk)){
         if(receipt?.state==='claimed'&&!receipt.priorDispatch)return status('claimed','已确认尚未发送，可以手动重新领取。');
         return status('uncertain','此前请求可能已经计费，自动补写不会重复发送。');
       }
-      const recovering=receipt?.state==='ready'&&!replaceResult;
       if(!recovering&&(!token.trim()||!canUseRealModel(world.settings))){
         if(manualTrigger)notify('请先在终端配置 API。');
         return false;
@@ -4785,7 +4803,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       const snapshot=JSON.stringify([world.user,facts]);
       const sourcesMatch=()=>snapshot===JSON.stringify([world.user,collectDailyDiaryFacts(r,dateKey,true)])&&personalTicketValid(r,personal);
       const sourceHash=await diarySourceHash(JSON.stringify([snapshot,{...personal,id:''}]));
-      if(!valid()||!sourcesMatch())return false;
+      if(!valid()||!recovering&&!sourcesMatch())return false;
       if(!recovering){
         const claim:DiaryReceipt={attempt:crypto.randomUUID(),state:'claimed',priorDispatch:feeRisk};
         await replaceDiaryReceipt(key,receipt,claim);
@@ -4830,11 +4848,16 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       }
       if(!receipt?.result)return false;
       const result=receipt.result;
-      if(!valid()||!sourcesMatch()||result.sourceHash!==sourceHash||
-        (recovering?task.requestAttempt&&task.requestAttempt!==receipt.attempt:task.requestAttempt!==receipt.attempt)){
-        if(valid())status('ready','正文已保留，但原始资料或任务已变化。可以复制正文或明确重新生成。');
-        if(manualTrigger||wireResult)copyResult(result.text);
+      const sourcesChanged=!sourcesMatch()||result.sourceHash!==sourceHash||
+        Boolean(recovering?task.requestAttempt&&task.requestAttempt!==receipt.attempt:task.requestAttempt!==receipt.attempt);
+      if(!valid()||sourcesChanged){
+        if(sourcesChanged)status('stale','正文基于已变化的来源或任务，仅供复制，不能归档。');
+        if(manualTrigger||wireResult)copyResult(result.text,sourcesChanged);
         if(owned())notify('日记正文已保留，存档或资料已变化，未归档。');
+        return false;
+      }
+      if(recovering&&!manualTrigger){
+        status('ready','正文已生成，可以直接保存已有结果。自动补写已暂停。');
         return false;
       }
       const before={diaries:structuredClone(r.diaries),diaryTasks:structuredClone(r.diaryTasks),diaryDay:r.diaryDay,personalThreads:r.personalThreads};
@@ -4864,6 +4887,21 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     }
   }
 
+  async function inspectDiaryRecovery(r:RoleData,onlyUncertain=false):Promise<boolean> {
+    const world=data;
+    let changed=false;
+    for(const task of r.diaryTasks||[]){
+      if(!saveSession.current()||data!==world||!world.roles.includes(r))break;
+      if(task.requestAttempt&&(task.status==='uncertain'||!onlyUncertain&&['claimed','generating','ready'].includes(task.status))){
+        const {status,lastError}=task;
+        await generateCharacterDiaryForDate(r,task.dateKey,'inspect');
+        changed ||= task.status!==status||task.lastError!==lastError;
+      }
+    }
+    if(changed&&view==='diary'&&role()===r)safeRenderWhenNotTyping();
+    return changed;
+  }
+
   async function processDiaryQueue(): Promise<void> {
     if (diaryQueueBusy || lifeBusy || !saveSession.current()) return;
     for (const roleItem of data.roles) {
@@ -4875,6 +4913,10 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     }
     diaryQueueBusy = true;
     try {
+      // A saved IDB result can outlive a failed main-store status update.
+      for(const r of data.roles){
+        if(r.diaryTasks?.some(t=>t.status==='uncertain'&&t.requestAttempt)&&await inspectDiaryRecovery(r,true))return;
+      }
       let guard = 0;
       while (guard < 25) {
         guard++;
@@ -4906,7 +4948,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     }
     diaryQueueBusy = true;
     try {
-      await generateCharacterDiaryForDate(r,dateKey,true,replaceResult);
+      await generateCharacterDiaryForDate(r,dateKey,replaceResult?'replace':'recover');
     } finally {
       diaryQueueBusy = false;
       safeRenderWhenNotTyping();

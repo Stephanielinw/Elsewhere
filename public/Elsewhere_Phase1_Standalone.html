@@ -15732,10 +15732,14 @@ ${prevLogs}` : "",
       if (toastTimer) clearTimeout(toastTimer);
       toastTimer = setTimeout(() => el.remove(), 3200);
     };
-    function offerUnstoredReply(text2) {
+    function offerUnstoredReply(text2, sourcesChanged = false) {
       const dialog = document.createElement("dialog");
       dialog.className = "fruit-dialog";
       dialog.innerHTML = '<form method="dialog" class="fruit-dialog-body"><h2>\u56DE\u590D\u5DF2\u8FD4\u56DE\uFF0C\u4FDD\u5B58\u672A\u786E\u8BA4</h2><p>\u53EF\u4EE5\u5148\u590D\u5236\u8FD9\u6B21\u7684\u56DE\u590D\uFF0C\u518D\u91CD\u65B0\u8BFB\u53D6\u5B58\u6863\u6838\u5BF9\u3002\u5E94\u7528\u4E0D\u4F1A\u56E0\u4FDD\u5B58\u5931\u8D25\u81EA\u52A8\u91CD\u53D1\u8FD9\u6761\u8BF7\u6C42\u3002</p><textarea class="field" aria-label="\u53EF\u590D\u5236\u7684\u672A\u786E\u8BA4\u56DE\u590D" readonly rows="5"></textarea><button class="btn">\u5173\u95ED</button></form>';
+      if (sourcesChanged) {
+        dialog.querySelector("h2").textContent = "\u65E5\u8BB0\u6B63\u6587\u7684\u6765\u6E90\u5DF2\u53D8\u5316";
+        dialog.querySelector("p").textContent = "\u8FD9\u4EFD\u6B63\u6587\u4EC5\u4F9B\u590D\u5236\uFF0C\u672A\u5F52\u6863\uFF0C\u4E5F\u4E0D\u4F1A\u4F5C\u4E3A\u540E\u7EED\u8BB0\u5FC6\u3002\u67E5\u770B\u548C\u590D\u5236\u4E0D\u91CD\u65B0\u8BF7\u6C42\u3002";
+      }
       dialog.querySelector("textarea").value = text2;
       dialog.addEventListener("close", () => dialog.remove(), { once: true });
       document.body.append(dialog);
@@ -17260,7 +17264,7 @@ ${prevLogs}` : "",
           const bounds = getLocalDayBounds(t.dateKey);
           const sum = t.factSummary || collectDailyDiaryFacts(r, t.dateKey).summary;
           const factText = sum.hasUserInteraction ? `\u5F53\u65E5\u7D20\u6750\uFF1A${sum.chatCount} \u6761\u804A\u5929${sum.sceneCount ? ` \xB7 ${sum.sceneCount} \u6761\u89C1\u9762\u8BB0\u5F55` : ""}${sum.focusCount ? ` \xB7 ${sum.focusCount} \u6B21\u5171\u540C\u4E13\u6CE8` : ""}${sum.sharedDiaryCount ? ` \xB7 ${sum.sharedDiaryCount} \u7BC7\u4F60\u5206\u4EAB\u7684\u65E5\u8BB0` : ""}` : "\u5F53\u65E5\u65E0\u76F4\u63A5\u7528\u6237\u4E92\u52A8 \xB7 \u5C06\u4E66\u5199\u89D2\u8272\u72EC\u7ACB\u65E5\u5E38\u4E0E\u601D\u7EEA";
-          const statusBadge = t.status === "generating" ? `<span class="diary-task-badge generating">${uiIcon("hourglass")} \u6B63\u5728\u751F\u6210\u2026</span>` : t.status === "ready" ? `<span class="diary-task-badge pending">\u6B63\u6587\u5DF2\u751F\u6210 \xB7 \u5F85\u4FDD\u5B58</span>` : t.status === "claimed" ? `<span class="diary-task-badge awaiting">\u5DF2\u9886\u53D6 \xB7 \u53D1\u9001\u72B6\u6001\u5F85\u6838\u5BF9</span>` : t.status === "uncertain" ? `<span class="diary-task-badge failed">\u8BF7\u6C42\u7ED3\u679C\u672A\u786E\u8BA4 \xB7 \u53EF\u80FD\u5DF2\u8BA1\u8D39</span>` : t.status === "failed" ? `<span class="diary-task-badge failed">${uiIcon("warning")} \u751F\u6210\u5931\u8D25</span>` : t.status === "awaiting_api" ? `<span class="diary-task-badge awaiting">${uiIcon("plug")} \u5F85\u8FDE\u63A5 API \u8865\u5199</span>` : `<span class="diary-task-badge pending">${uiIcon("clock")} \u5F85\u8865\u5199\u961F\u5217</span>`;
+          const statusBadge = t.status === "generating" ? `<span class="diary-task-badge generating">${uiIcon("hourglass")} \u6B63\u5728\u751F\u6210\u2026</span>` : t.status === "ready" ? `<span class="diary-task-badge pending">\u6B63\u6587\u5DF2\u751F\u6210 \xB7 \u5F85\u4FDD\u5B58</span>` : t.status === "stale" ? `<span class="diary-task-badge pending">\u6B63\u6587\u5F85\u590D\u5236 \xB7 \u6765\u6E90\u5DF2\u53D8\u5316</span>` : t.status === "claimed" ? `<span class="diary-task-badge awaiting">\u5DF2\u9886\u53D6 \xB7 \u53D1\u9001\u72B6\u6001\u5F85\u6838\u5BF9</span>` : t.status === "uncertain" ? `<span class="diary-task-badge failed">\u8BF7\u6C42\u7ED3\u679C\u672A\u786E\u8BA4 \xB7 \u53EF\u80FD\u5DF2\u8BA1\u8D39</span>` : t.status === "failed" ? `<span class="diary-task-badge failed">${uiIcon("warning")} \u751F\u6210\u5931\u8D25</span>` : t.status === "awaiting_api" ? `<span class="diary-task-badge awaiting">${uiIcon("plug")} \u5F85\u8FDE\u63A5 API \u8865\u5199</span>` : `<span class="diary-task-badge pending">${uiIcon("clock")} \u5F85\u8865\u5199\u961F\u5217</span>`;
           return `<div class="card diary-task-card" data-diary-task-date="${esc(
             t.dateKey
           )}" data-diary-task-status="${esc(t.status)}">
@@ -17277,9 +17281,9 @@ ${prevLogs}` : "",
             t.lastError
           )}</div>` : t.status === "awaiting_api" ? `<div class="diary-task-note">\u672A\u4F7F\u7528\u5047\u6A21\u677F\u4EE3\u66FF\u751F\u6210\u3002\u8BF7\u5728\u300C\u7EC8\u7AEF\u300D\u914D\u7F6E\u81EA\u5B9A\u4E49 API \u4E0E\u6A21\u578B\u540E\u70B9\u51FB\u751F\u6210\u3002</div>` : ""}
                      <div class="diary-task-actions">
-                       <button type="button" class="btn small ${["failed", "uncertain", "ready"].includes(t.status) ? "" : "secondary"}" data-action="retrydiary" data-date="${esc(
+                       <button type="button" class="btn small ${["failed", "uncertain", "ready", "stale"].includes(t.status) ? "" : "secondary"}" data-action="retrydiary" data-date="${esc(
             t.dateKey
-          )}" ${t.status === "generating" || diaryQueueBusy ? "disabled" : ""}>${t.status === "generating" ? "\u6B63\u5728\u751F\u6210\u2026" : t.status === "ready" ? "\u4FDD\u5B58\u5DF2\u6709\u7ED3\u679C" : ["claimed", "uncertain", "failed"].includes(t.status) ? "\u6838\u5BF9\u72B6\u6001\u6216\u6062\u590D" : "\u7ACB\u5373\u751F\u6210"}</button>
+          )}" ${t.status === "generating" || diaryQueueBusy ? "disabled" : ""}>${t.status === "generating" ? "\u6B63\u5728\u751F\u6210\u2026" : t.status === "ready" ? "\u4FDD\u5B58\u5DF2\u6709\u7ED3\u679C" : t.status === "stale" ? "\u67E5\u770B\u5E76\u590D\u5236\u6B63\u6587" : ["claimed", "uncertain", "failed"].includes(t.status) ? "\u6838\u5BF9\u72B6\u6001\u6216\u6062\u590D" : "\u7ACB\u5373\u751F\u6210"}</button>
                        ${t.status === "ready" ? `<button type="button" class="btn small ghost" data-action="regeneratediary" data-date="${esc(t.dateKey)}" ${diaryQueueBusy ? "disabled" : ""}>\u91CD\u65B0\u751F\u6210</button>` : ""}
                        ${t.status === "awaiting_api" ? `<button type="button" class="btn small ghost" data-action="view" data-view="terminal">\u524D\u5F80\u7EC8\u7AEF\u914D\u7F6E API</button>` : ""}
                      </div>
@@ -18437,6 +18441,8 @@ ${prevLogs}` : "",
       if (persist && saveSession.hasWriter()) save();
       render(!preserveStage);
       if (role()) resumeLocalSceneReplies(role());
+      const diaryOwner = role();
+      if (v === "diary" && diaryOwner) void inspectDiaryRecovery(diaryOwner);
     }
     async function requestSceneCompletion(messages, kind, sampling = {}, signal) {
       const settings = { ...data.settings }, requestToken = token, url = settings.endpoint.trim().replace(/\/+$/, "");
@@ -18589,7 +18595,8 @@ ${prevLogs}` : "",
         render(false);
       }
     }
-    async function generateCharacterDiaryForDate(r, dateKey, manualTrigger = false, replaceResult = false) {
+    async function generateCharacterDiaryForDate(r, dateKey, action = "auto") {
+      const manualTrigger = action === "recover" || action === "replace";
       const world = data;
       const owned2 = () => data === world && world.roles.includes(r) && world.roles.filter((item) => item.id === r.id).length === 1;
       const valid = () => owned2() && saveSession.current() && !hasCharacterDiaryForDate(r, dateKey);
@@ -18609,7 +18616,8 @@ ${prevLogs}` : "",
       const task = r.diaryTasks?.find((item) => item.dateKey === dateKey && item.roleId === r.id);
       if (!task) return false;
       const status = (state2, message) => {
-        if (!valid()) return false;
+        if (!valid() || !r.diaryTasks?.includes(task)) return false;
+        if (task.status === state2 && task.lastError === message) return true;
         const previous = { ...task };
         task.status = state2;
         task.lastError = message;
@@ -18618,12 +18626,13 @@ ${prevLogs}` : "",
         restoreFields(task, previous);
         return false;
       };
-      const copyResult = (text2) => {
-        if (owned2() && role() === r) offerUnstoredReply(text2);
+      const copyResult = (text2, sourcesChanged = false) => {
+        if (owned2() && role() === r) offerUnstoredReply(text2, sourcesChanged);
       };
       let wireResult;
       try {
         if (typeof world.diaryWorldId !== "string" || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(world.diaryWorldId)) {
+          if (action === "inspect") return false;
           if (!token.trim() || !canUseRealModel(world.settings)) {
             if (manualTrigger) notify("\u8BF7\u5148\u5728\u7EC8\u7AEF\u914D\u7F6E API\u3002");
             return false;
@@ -18638,16 +18647,21 @@ ${prevLogs}` : "",
         const key2 = diaryRequestKey(world.diaryWorldId, r.id, dateKey);
         let receipt = await readDiaryReceipt(key2);
         if (!valid()) return false;
+        const recovering = receipt?.state === "ready" && action !== "replace";
+        if (action === "inspect" && (!recovering || !task.requestAttempt || task.requestAttempt !== receipt?.attempt)) return false;
+        if (action === "recover" && ["ready", "stale"].includes(task.status) && !recovering) {
+          notify("\u672A\u627E\u5230\u53EF\u6062\u590D\u7684\u6B63\u6587\uFF0C\u672C\u6B21\u672A\u53D1\u9001\u8BF7\u6C42\u3002");
+          return false;
+        }
+        if (action === "recover" && task.status === "stale" && receipt?.result) {
+          copyResult(receipt.result.text, true);
+          return false;
+        }
         const legacyRisk = !receipt && (task.attempts > 0 || !!task.requestAttempt || task.status === "uncertain");
-        if (!manualTrigger && (receipt || legacyRisk)) {
-          if (receipt?.state === "ready") {
-            status("ready", "\u6B63\u6587\u5DF2\u751F\u6210\uFF0C\u53EF\u4EE5\u76F4\u63A5\u4FDD\u5B58\u5DF2\u6709\u7ED3\u679C\u3002\u81EA\u52A8\u8865\u5199\u5DF2\u6682\u505C\u3002");
-            return false;
-          }
+        if (action === "auto" && !recovering && (receipt || legacyRisk)) {
           if (receipt?.state === "claimed" && !receipt.priorDispatch) return status("claimed", "\u5DF2\u786E\u8BA4\u5C1A\u672A\u53D1\u9001\uFF0C\u53EF\u4EE5\u624B\u52A8\u91CD\u65B0\u9886\u53D6\u3002");
           return status("uncertain", "\u6B64\u524D\u8BF7\u6C42\u53EF\u80FD\u5DF2\u7ECF\u8BA1\u8D39\uFF0C\u81EA\u52A8\u8865\u5199\u4E0D\u4F1A\u91CD\u590D\u53D1\u9001\u3002");
         }
-        const recovering = receipt?.state === "ready" && !replaceResult;
         if (!recovering && (!token.trim() || !canUseRealModel(world.settings))) {
           if (manualTrigger) notify("\u8BF7\u5148\u5728\u7EC8\u7AEF\u914D\u7F6E API\u3002");
           return false;
@@ -18658,7 +18672,7 @@ ${prevLogs}` : "",
         const snapshot3 = JSON.stringify([world.user, facts]);
         const sourcesMatch = () => snapshot3 === JSON.stringify([world.user, collectDailyDiaryFacts(r, dateKey, true)]) && personalTicketValid(r, personal);
         const sourceHash = await diarySourceHash(JSON.stringify([snapshot3, { ...personal, id: "" }]));
-        if (!valid() || !sourcesMatch()) return false;
+        if (!valid() || !recovering && !sourcesMatch()) return false;
         if (!recovering) {
           const claim = { attempt: crypto.randomUUID(), state: "claimed", priorDispatch: feeRisk };
           await replaceDiaryReceipt(key2, receipt, claim);
@@ -18712,10 +18726,15 @@ ${prevLogs}` : "",
         }
         if (!receipt?.result) return false;
         const result = receipt.result;
-        if (!valid() || !sourcesMatch() || result.sourceHash !== sourceHash || (recovering ? task.requestAttempt && task.requestAttempt !== receipt.attempt : task.requestAttempt !== receipt.attempt)) {
-          if (valid()) status("ready", "\u6B63\u6587\u5DF2\u4FDD\u7559\uFF0C\u4F46\u539F\u59CB\u8D44\u6599\u6216\u4EFB\u52A1\u5DF2\u53D8\u5316\u3002\u53EF\u4EE5\u590D\u5236\u6B63\u6587\u6216\u660E\u786E\u91CD\u65B0\u751F\u6210\u3002");
-          if (manualTrigger || wireResult) copyResult(result.text);
+        const sourcesChanged = !sourcesMatch() || result.sourceHash !== sourceHash || Boolean(recovering ? task.requestAttempt && task.requestAttempt !== receipt.attempt : task.requestAttempt !== receipt.attempt);
+        if (!valid() || sourcesChanged) {
+          if (sourcesChanged) status("stale", "\u6B63\u6587\u57FA\u4E8E\u5DF2\u53D8\u5316\u7684\u6765\u6E90\u6216\u4EFB\u52A1\uFF0C\u4EC5\u4F9B\u590D\u5236\uFF0C\u4E0D\u80FD\u5F52\u6863\u3002");
+          if (manualTrigger || wireResult) copyResult(result.text, sourcesChanged);
           if (owned2()) notify("\u65E5\u8BB0\u6B63\u6587\u5DF2\u4FDD\u7559\uFF0C\u5B58\u6863\u6216\u8D44\u6599\u5DF2\u53D8\u5316\uFF0C\u672A\u5F52\u6863\u3002");
+          return false;
+        }
+        if (recovering && !manualTrigger) {
+          status("ready", "\u6B63\u6587\u5DF2\u751F\u6210\uFF0C\u53EF\u4EE5\u76F4\u63A5\u4FDD\u5B58\u5DF2\u6709\u7ED3\u679C\u3002\u81EA\u52A8\u8865\u5199\u5DF2\u6682\u505C\u3002");
           return false;
         }
         const before = { diaries: structuredClone(r.diaries), diaryTasks: structuredClone(r.diaryTasks), diaryDay: r.diaryDay, personalThreads: r.personalThreads };
@@ -18750,6 +18769,20 @@ ${prevLogs}` : "",
         return false;
       }
     }
+    async function inspectDiaryRecovery(r, onlyUncertain = false) {
+      const world = data;
+      let changed = false;
+      for (const task of r.diaryTasks || []) {
+        if (!saveSession.current() || data !== world || !world.roles.includes(r)) break;
+        if (task.requestAttempt && (task.status === "uncertain" || !onlyUncertain && ["claimed", "generating", "ready"].includes(task.status))) {
+          const { status, lastError } = task;
+          await generateCharacterDiaryForDate(r, task.dateKey, "inspect");
+          changed || (changed = task.status !== status || task.lastError !== lastError);
+        }
+      }
+      if (changed && view === "diary" && role() === r) safeRenderWhenNotTyping();
+      return changed;
+    }
     async function processDiaryQueue() {
       if (diaryQueueBusy || lifeBusy || !saveSession.current()) return;
       for (const roleItem of data.roles) {
@@ -18761,6 +18794,9 @@ ${prevLogs}` : "",
       }
       diaryQueueBusy = true;
       try {
+        for (const r of data.roles) {
+          if (r.diaryTasks?.some((t) => t.status === "uncertain" && t.requestAttempt) && await inspectDiaryRecovery(r, true)) return;
+        }
         let guard = 0;
         while (guard < 25) {
           guard++;
@@ -18785,7 +18821,7 @@ ${prevLogs}` : "",
       }
       diaryQueueBusy = true;
       try {
-        await generateCharacterDiaryForDate(r, dateKey, true, replaceResult);
+        await generateCharacterDiaryForDate(r, dateKey, replaceResult ? "replace" : "recover");
       } finally {
         diaryQueueBusy = false;
         safeRenderWhenNotTyping();

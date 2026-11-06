@@ -29,6 +29,7 @@ export function lifeQuotaAvailable(tasks:LifeTask[],roleId:string,at:number):boo
 export function claimLifeTask(roles:RoleData[],r:RoleData,at:number,ready:boolean,journal:LifeTask[]=[]):LifeTask|null {
  if(!ready||!roles.some(x=>x.id===r.id)||r.scene||r.play||r.chatTiming?.pending.length||r.chatTiming?.inFlight||r.pendingReplies?.length||r.firstMessageState?.status!=='ready'&&!getActiveMessages(r.chats).some(m=>m.speaker==='char'))return null;
  const dateKey=toLocalDateKey(at),tasks=allTasks(roles,journal),id='life:'+encodeURIComponent(r.id)+':'+dateKey;
+ if(r.events.some(e=>e.lifeRecord?.taskId===id||e.source==='autonomous-life-v1:'+id))return null;
  if(!lifeQuotaAvailable(tasks,r.id,at))return null;
  const from=Math.max(getLocalDayBounds(dateKey).startMs,at-6*3600000,r.firstMessageState?.updatedAt||Math.min(...getActiveMessages(r.chats).filter(m=>m.speaker==='char').map(m=>m.at)));
  if(at-from<2*3600000)return null;
@@ -50,7 +51,7 @@ export function prepareLifeTask(r:RoleData,user:AppData['user'],task:LifeTask):L
  const profileText=`身份：${r.job}\n世界与所在地：${r.place}\n人物资料：${r.profile}\n关系：${r.relationship}`;
  const anchors:Anchor[]=[{id:'profile:'+r.id,text:profileText,ref:privateTicket.sources.find(s=>s.kind==='profile')!},...life.events.slice(-4).flatMap(e=>{const ref=privateTicket.sources.find(s=>s.kind==='event'&&s.id===e.id);return ref?[{id:'event:'+e.id,text:e.title+'：'+e.detail,ref}]:[];}),...life.threads.slice(0,3).flatMap(t=>{const ref=privateTicket.sources.find(s=>s.kind==='thread'&&s.id===t.id);return ref?[{id:'thread:'+t.id,text:t.text,ref}]:[];})];
  const messages=[{role:'system',content:`[Elsewhere Autonomous Life v1]\n你推进角色自己世界中的低风险日常，不回复用户，不润色聊天。使用人物性格、职业、已知处境自行选择，不能统一安排现代上下班。只能在给定已过去的窗口内记录0至3个微小活动；安静也可返回空数组。不要求固定结构或每天忙碌。不得代替用户行动，不生成新人物、消费、外部结果、秘密证实、死亡、受伤、关系变化或任何重大剧情。只能从已有资料中引用活动对象/熟识人物/地点；计划、担忧和推测不能当成结果。Canon是约束，不是已发生事件。\n输出严格JSON：{requestId,roleId,events:[{at,action:rest|walk|read|organize|practice|care|social,durationMinutes:1至30,focus?:{sourceId,quote},person?:{sourceId,quote},location?:{sourceId,quote}}],thoughts?:[{kind:concern|opinion|plan|observation|relationship,text:200字内,sources:["profile:角色ID"或已给来源ID],shareable:false}]}。不用title/summary/自由结果字段，记录由可信动作适配器构成。rest可无focus；walk可无地点；其他非social动作需focus。social需已知人物且不能是用户；不创造关系或谈话结论。最多2项私人想法，可省略，不要求每条活动有心理。引用quote须为来源里的短原文，不能引用未来或假设内容。不要输出HTML、脚本、Markdown或推理。`},
- {role:'user',content:JSON.stringify({requestId:task.id,roleId:r.id,name:r.name,personality:r.traits,canon:r.canonNotes||'',window:{from:task.from,to:task.to,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone},unavailable:[...[...(r.meetings||[]),...(r.plays||[])].map(s=>({from:s.startedAt,to:s.endedAt??task.to})),...life.events.filter(e=>e.at>=task.from).map(e=>({from:e.at,to:e.lifeRecord?.until??e.at+1}))],sources:anchors.map(({id,text,ref})=>({id,text,at:ref.at,kind:ref.kind}))})}];
+ {role:'user',content:JSON.stringify({requestId:task.id,roleId:r.id,name:r.name,personality:r.traits,canon:r.canonNotes||'',window:{from:task.from,to:task.to,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone},unavailable:[...[...(r.meetings||[]),...(r.plays||[])].map(s=>({from:s.startedAt,to:s.endedAt??task.to})),...life.events.filter(e=>e.at>=task.from).map(e=>({from:e.at,to:e.lifeRecord?.until??e.at+1}))],sources:anchors.map(({id,text,ref})=>({id,text,at:ref.at,kind:ref.kind,...(ref.kind==='event'&&life.historicalProfileEventIds.has(ref.id)?{context:'旧档案历史，仅解释过去；当前身份、地点和关系以当前档案为准'}:{})}))})}];
  if(estimateTextTokens(messages.map(m=>m.content).join('\n'))>6000)throw Error('生活上下文超过本地预算，未裁掉Canon或发送请求');
  privateTicket.sources=anchors.map(a=>a.ref);
  return {ticket:privateTicket,anchors,messages,blockedPeople:[user.name,r.userAlias||''].filter(Boolean)};
@@ -60,7 +61,10 @@ function anchorValue(value:unknown,p:LifePreparation,mode:'focus'|'person'|'loca
  if(!source||source.ref.kind!=='profile'&&source.ref.at>eventAt||source.ref.kind==='thread'||!quote||quote.length>32||/[<>\[\]{}\n]/.test(quote)||!source.text.includes(quote))return;
  const index=source.text.indexOf(quote),clause=source.text.slice(Math.max(source.text.lastIndexOf('。',index),source.text.lastIndexOf('\n',index))+1).split(/[。\n]/)[0];
  if(/尚未|假设|如果|将来|未来|还未|未曾/.test(clause))return;
- if(mode==='location'&&quote!==r.place&&!collectRoleLife(r,p.ticket.at).events.some(e=>e.where===quote))return;
+ if(mode==='location'&&quote!==r.place){
+  const life=collectRoleLife(r,p.ticket.at);
+  if(!life.events.some(e=>e.where===quote&&!life.historicalProfileEventIds.has(e.id)))return;
+ }
  if(mode==='person'&&(source.ref.kind!=='profile'||p.blockedPeople.includes(quote)||!/^[\p{L} ·-]{2,32}$/u.test(quote)||/用户|玩家|创作者|你|\buser\b|\bplayer\b/i.test(quote)||!/朋友|恋人|同事|熟识|家人|父|母|兄|弟|姐|妹|friend|partner|colleague|family/i.test(clause)))return;
  return {text:quote,ref:source.ref};
 }

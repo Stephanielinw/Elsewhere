@@ -463,9 +463,10 @@ export function buildCharacterDiaryPrompt(
     )
     .join('\n');
 
+  const historicalLife=collectRoleLife(role,facts.endMs).historicalProfileEventIds;
   const routineSummary = facts.lifeRoutines
     .slice(-4)
-    .map((e) => `[生活记录 ${e.id} · ${formatHm(e.at)}] ${e.title}（${memoryExcerpt(e.detail,'',80)}）`)
+    .map((e) => `[生活记录 ${e.id} · ${formatHm(e.at)}] ${historicalLife.has(e.id)?'（旧档案历史）':''}${e.title}（${memoryExcerpt(e.detail,'',80)}）`)
     .join('；');
 
   const otherKnownEvents = facts.knownEvents

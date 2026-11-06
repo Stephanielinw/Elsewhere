@@ -43,8 +43,9 @@ export function routine(
     return {icon:'chat',where:r.scene.where,doing:'与对方当面交谈',label:'正在见面'};
   if (r.play && !r.play.endedAt && r.play.startedAt <= t)
     return {icon:'drama',where:'戏剧场景',doing:r.play.paused?'正在幕间讨论':'正在排演戏剧',label:r.play.paused?'幕间讨论':'戏剧演出'};
-  const life = r.id&&Array.isArray(r.chats)&&Array.isArray(r.diaries)&&Array.isArray(r.events)?collectRoleLife(r as RoleData,t).events:[];
-  const observation = life.filter(e =>
+  const life = r.id&&Array.isArray(r.chats)&&Array.isArray(r.diaries)&&Array.isArray(r.events)?collectRoleLife(r as RoleData,t):null;
+  const observation = (life?.events||[]).filter(e =>
+    !life!.historicalProfileEventIds.has(e.id)&&
     e.kind === 'life' && e.at <= t && t - e.at <= 30 * 60000 &&
     e.status !== 'retracted' && e.status !== 'superseded' &&
     e.source && e.knownBy?.includes(r.id || '')
@@ -71,12 +72,13 @@ export function retrieve(
   r: RoleData,
   query: string,
   limit = 9,
-  nowTs = Date.now()
+  nowTs = Date.now(),
+  candidates = getRoleKnownEvents(r)
 ): EventRecord[] {
   const ks = keywords(query);
   const rejected=projectRoleMemory(r,nowTs).supersededSources,messageIndex=memoryMessageIndex(r,nowTs);
   const trustedLife=new Set(collectRoleLife(r,nowTs).events.map(e=>e.id));
-  const permittedEvents = getRoleKnownEvents(r).filter(e=>(e.kind!=='life'||trustedLife.has(e.id))&&eventSourceValid(r,e,nowTs,messageIndex,rejected));
+  const permittedEvents = candidates.filter(e=>(e.kind!=='life'||trustedLife.has(e.id))&&eventSourceValid(r,e,nowTs,messageIndex,rejected));
   return permittedEvents
     .map((e) => ({
       e,
@@ -169,8 +171,8 @@ export function buildNativeContext(
     const p = r.play!;
     base = `你正在参与一段独立、封闭的虚构戏剧。仅作为剧中角色行动，不知道剧外的手机、聊天、角色本人真实身份、用户真实身份、日记或其他生活记录。剧名：${p.title}。世界规则与开场：${p.world}。用户在剧内的身份：${p.user}。你在剧内的身份：${p.char}。推进场景、表现人物心理与自身动作，不代替用户做出选择。剧内角色之间的关系仅以剧本及本场对白为准。`;
   } else {
-    const trustedLife=new Set(collectRoleLife(memoryRole,nowTs).events.map(e=>e.id));
-    const a = routine({...r,events:r.events.filter(e=>e.kind!=='life'||trustedLife.has(e.id))}, nowTs);
+    const life=collectRoleLife(memoryRole,nowTs),trustedLife=new Set(life.events.map(e=>e.id));
+    const a = routine(memoryRole, nowTs);
     const bridgedIds=new Set((kind==='scene'?recentMessages:[]).flatMap(m=>m.sourceMessageId?[m.sourceMessageId,m.id]:[]));
     const candidates=getRoleKnownEvents(r).filter(e=>{
       const message=e.messageId?shownPhoneSources.get(e.messageId):undefined;
@@ -179,7 +181,7 @@ export function buildNativeContext(
       if(kind==='chat'&&e.kind==='life')return false; // Read trusted life once through the shared private projection.
       return eventSourceValid(memoryRole,e,nowTs,messageIndex,memory.supersededSources)&&!duplicate&&e.kind!=='drama'&&(e.kind!=='life'||trustedLife.has(e.id))&&e.at<=nowTs&&(!e.messageId||!bridgedIds.has(e.messageId));
     });
-    if(kind!=='chat')recalled=retrieve({...r,events:candidates},input,12,nowTs);
+    if(kind!=='chat')recalled=retrieve(memoryRole,input,12,nowTs,candidates);
     if(kind==='chat'){
       const scored=candidates.map(e=>({e,score:memoryRelevance(e.title+' '+e.detail,input)})).sort((a,b)=>b.score-a.score||b.e.at-a.e.at);
       episodeCandidates=scored.slice(0,12).map(item=>item.e);
@@ -187,7 +189,7 @@ export function buildNativeContext(
       recalled=selectMemoryItems(ranked,e=>e.detail,past?1200:260,past?6:3);
     }
     facts = recalled
-      .map((e) => kind==='chat'?`[${e.id} · ${new Date(e.at).toISOString().slice(0,10)} · ${e.speaker==='char'?'角色原话/观点，非外部事实证实':e.speaker==='me'?'用户原话/报告':'有来源的事件'}] ${e.title}: ${e.detail}`:`[${dt(e.at)} | ${e.kind} | ${e.id} | ${e.speaker==='char'?'角色原话/观点，非外部事实证实':e.speaker==='me'?'用户原话/报告':'有来源的事件'}] ${e.title}: ${e.detail}`)
+      .map((e) => kind==='chat'?`[${e.id} · ${new Date(e.at).toISOString().slice(0,10)} · ${e.speaker==='char'?'角色原话/观点，非外部事实证实':e.speaker==='me'?'用户原话/报告':'有来源的事件'}] ${e.title}: ${e.detail}`:`[${dt(e.at)} | ${e.kind} | ${e.id} | ${e.speaker==='char'?'角色原话/观点，非外部事实证实':e.speaker==='me'?'用户原话/报告':life.historicalProfileEventIds.has(e.id)?'旧档案历史，当前身份、地点和关系以当前档案为准':'有来源的事件'}] ${e.title}: ${e.detail}`)
       .join('\n');
     const sharedDiaries = getSharedUserDiariesForRole(r)
       .filter(d=>d.at<=nowTs&&(d.sharedAt?.[r.id]??d.at)<=nowTs)

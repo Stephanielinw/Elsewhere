@@ -3,6 +3,7 @@ import {getActiveEvents,getActiveMessages} from './revisions';
 import {messageSourceIndex,phoneMessagesAt} from './messageProvenance';
 import {eventSourceValid,memoryVersion,compactRoleMemory} from './memory';
 import {memoryExcerpt,memoryRelevance,selectMemoryItems} from './contextBudget';
+import {dateDayNumber} from './homeTasks';
 
 export interface PersonalSource {kind:'profile'|'message'|'event'|'diary'|'thread';id:string;at:number;version:string}
 export interface PersonalThread {
@@ -21,16 +22,50 @@ function eventRef(e:EventRecord):PersonalSource{
  if(e.lifeRecord)fields.push(e.where,[e.lifeRecord.version,e.lifeRecord.roleId,e.lifeRecord.taskId,e.lifeRecord.origin,e.lifeRecord.action,e.lifeRecord.until,Array.isArray(e.lifeRecord.sources)?e.lifeRecord.sources.map(s=>s&&[s.kind,s.id,s.at]):null]);
  return {kind:'event',id:e.id,at:e.at,version:version(fields)};
 }
-function referenceValid(r:RoleData,s:PersonalSource,at:number,seen=new Set<string>(),memory=compactRoleMemory(r,at)):boolean {
+function archivedProfileValid(r:RoleData,s:PersonalSource,taskAt:number):boolean {
+ if(!s||s.kind!=='profile'||s.id!==r.id||s.at!==taskAt||typeof s.version!=='string')return false;
+ try{
+  const fields:unknown=JSON.parse(s.version);
+  return Array.isArray(fields)&&fields.length===8&&typeof fields[0]==='string'&&Boolean(fields[0].trim())&&
+   fields.every(value=>value===null||typeof value==='string');
+ }catch{return false;}
+}
+function referenceValid(r:RoleData,s:PersonalSource,at:number,seen=new Set<string>(),memory=compactRoleMemory(r,at),historical=new Set<string>()):boolean {
  if(!s||typeof s.version!=='string'||!Number.isFinite(s.at)||s.at>at)return false;
  if(s.kind==='profile')return s.id===r.id&&s.version===profile(r);
  if(s.kind==='message'){const m=messageSourceIndex(r,at).get(s.id);return Boolean(m&&m.speaker!=='note'&&messageRef(m).version===s.version&&!memory.supersededSources.has(m.id));}
  if(s.kind==='event'){
   if(seen.has('event:'+s.id))return false;
-  const e=getActiveEvents(r.events).find(e=>e.id===s.id&&e.at<=at&&e.knownBy?.includes(r.id)&&e.kind!=='drama'&&e.kind!=='diary');
-  const life=e?.lifeRecord,task=life&&Array.isArray(r.lifeTasks)?r.lifeTasks.find(t=>t.id===life.taskId):undefined;
+  const allEvents=Array.isArray(r.events)?r.events:[];
+  const matches=allEvents.filter(e=>e?.id===s.id);
+  if(matches.length!==1)return false;
+  const e=getActiveEvents(matches).find(e=>e.at===s.at&&e.at<=at&&e.knownBy?.includes(r.id)&&e.kind!=='drama'&&e.kind!=='diary');
+  const life=e?.lifeRecord;
   if(!life&&e?.source?.startsWith('autonomous-life-v1:'))return false;
-  if(life&&(!e||life.version!==1||life.roleId!==r.id||life.origin!=='simulation'||!task||task.roleId!==r.id||task.status!=='completed'||!task.eventIds?.includes(e.id)||e.at<task.from||life.until>task.to||life.until>at||life.until<e.at||!Number.isFinite(life.until)||!Array.isArray(life.sources)||!life.sources.length||!life.sources.every(ref=>referenceValid(r,ref,at,new Set([...seen,'event:'+s.id]),memory))))return false;
+  if(life){
+   const tasks=Array.isArray(r.lifeTasks)?r.lifeTasks.filter(t=>t?.id===life.taskId):[],task=tasks[0];
+   if(!e||life.version!==1||life.roleId!==r.id||life.origin!=='simulation'||tasks.length!==1||
+    task.roleId!==r.id||task.status!=='completed'||dateDayNumber(task.dateKey)===null||
+    task.id!=='life:'+encodeURIComponent(r.id)+':'+task.dateKey||
+    ![task.at,task.from,task.to].every(Number.isFinite)||task.to!==task.at||task.from>task.to||task.to>at||
+    !Array.isArray(task.eventIds)||!task.eventIds.length||task.eventIds.length>3||
+    !task.eventIds.every((id,i)=>id===task.id+':event:'+i)||
+    !task.eventIds.includes(e.id)||e.source!=='autonomous-life-v1:'+task.id||e.kind!=='life'||
+    typeof e.title!=='string'||typeof e.detail!=='string'||e.at<task.from||e.status!==undefined&&e.status!=='active'||
+    !Number.isFinite(life.until)||life.until>task.to||life.until>at||life.until<=e.at||
+    !Number.isInteger((life.until-e.at)/60000)||life.until-e.at>30*60000||
+    !['rest','walk','read','organize','practice','care','social'].includes(life.action)||
+    !Array.isArray(life.sources)||!life.sources.length||
+    life.sources.filter(ref=>ref?.kind==='profile').length!==1||
+    new Set(life.sources.map(ref=>ref?.kind+':'+ref?.id)).size!==life.sources.length)return false;
+   // The snapshot is context only; the completed task and every live dependency must also verify.
+   for(const ref of life.sources){
+    if(ref?.kind==='profile'){
+     if(!archivedProfileValid(r,ref,task.to))return false;
+    }else if(ref?.kind!=='event'||ref.at>e.at||!referenceValid(r,ref,at,new Set([...seen,'event:'+s.id]),memory,historical))return false;
+   }
+   if(life.sources.some(ref=>ref.kind==='profile'?ref.version!==profile(r):historical.has(ref.id)))historical.add(e.id);
+  }
   return Boolean(e&&eventRef(e).version===s.version&&eventSourceValid(r,e,at,messageSourceIndex(r,at),memory.supersededSources)&&(e.kind!=='life'||e.lifeEvidence==='confirmed'&&e.source));
  }
  if(s.kind==='diary'){
@@ -42,44 +77,46 @@ function referenceValid(r:RoleData,s:PersonalSource,at:number,seen=new Set<strin
   return Boolean(d&&d.generatedAt&&d.generatedAt<=at&&diaryRef(d).version===s.version&&(d.sourceMessageIds||[]).every(id=>{
    const m=sources.get(id);
    return m&&(d.sourceMessageRevisions?d.sourceMessageRevisions[id]===(m.revisionCount||0):!m.editedAt&&!m.revisionCount);
-  })&&(d.sourceEventIds||[]).every(id=>getActiveEvents(r.events).some(e=>e.id===id&&e.knownBy?.includes(r.id)&&eventSourceValid(r,e,cutoff,sources,current.supersededSources)))&&(!d.continuitySources||d.continuitySources.every(ref=>referenceValid(r,ref,at,new Set([...seen,'diary:'+s.id]),memory))));
+  })&&(d.sourceEventIds||[]).every(id=>getActiveEvents(r.events).some(e=>e.id===id&&e.knownBy?.includes(r.id)&&eventSourceValid(r,e,cutoff,sources,current.supersededSources)&&
+   (e.kind!=='life'||referenceValid(r,eventRef(e),cutoff,new Set([...seen,'diary:'+s.id]),memory,historical))))&&(!d.continuitySources||d.continuitySources.every(ref=>referenceValid(r,ref,at,new Set([...seen,'diary:'+s.id]),memory,historical))));
  }
  const t=r.personalThreads?.find(t=>t.id===s.id);
  if(!t||seen.has(t.id)||t.roleId!==r.id||t.at>at||s.version!==threadVersion(t))return false;
- return t.sources.length>0&&t.sources.every(ref=>referenceValid(r,ref,at,new Set([...seen,t.id]),memory));
+ return t.sources.length>0&&t.sources.every(ref=>referenceValid(r,ref,at,new Set([...seen,t.id]),memory,historical));
 }
 
 /** Shared read-only life timeline: inferred monitor enrichments never become evidence. */
 export function collectRoleLife(r:RoleData,at=Date.now()) {
- const memory=compactRoleMemory(r,at);
- const events=getActiveEvents(r.events).filter(e=>e.kind==='life'&&e.lifeEvidence==='confirmed'&&Boolean(e.source)&&e.knownBy?.includes(r.id)&&e.at<=at&&referenceValid(r,eventRef(e),at,new Set(),memory)).sort((a,b)=>a.at-b.at);
+ const memory=compactRoleMemory(r,at),historical=new Set<string>();
+ const events=getActiveEvents(r.events).filter(e=>e.kind==='life'&&e.lifeEvidence==='confirmed'&&Boolean(e.source)&&e.knownBy?.includes(r.id)&&e.at<=at&&referenceValid(r,eventRef(e),at,new Set(),memory,historical)).sort((a,b)=>a.at-b.at);
  const latest=new Map<string,PersonalThread>();
  for(const t of r.personalThreads||[]){
   if(t.origin!=='model-private'||t.roleId!==r.id||t.at>at||!t.sources?.length||!t.sources.every(s=>referenceValid(r,s,at,new Set(),memory)))continue;
   const old=latest.get(t.key);if(!old||t.at>=old.at)latest.set(t.key,t);
  }
  const threads=[...latest.values()].filter(t=>t.status==='open').sort((a,b)=>b.at-a.at).slice(0,8);
- return {events,threads};
+ return {events,threads,historicalProfileEventIds:new Set(events.filter(e=>historical.has(e.id)).map(e=>e.id))};
 }
 export function personalDiaries(r:RoleData,at:number):DiaryEntry[] {
  const memory=compactRoleMemory(r,at);
  return r.diaries.filter(d=>d.speaker==='char'&&d.source==='ai'&&d.at<=at&&referenceValid(r,diaryRef(d),at,new Set(),memory)).sort((a,b)=>b.at-a.at).slice(0,2);
 }
 export function personalContext(r:RoleData,at:number,compact?:{query?:string;excludeEvents?:Set<string>}):string {
- const {events,threads}=collectRoleLife(r,at);
+ const {events,threads,historicalProfileEventIds}=collectRoleLife(r,at);
+ const historyNote=historicalProfileEventIds.size?'\n旧档案历史仅说明归档时语境，当前身份、地点和关系以当前档案为准。':'';
  if(compact){
   const query=compact.query||'',rank=<T extends {at:number}>(items:T[],text:(t:T)=>string)=>[...items].sort((a,b)=>memoryRelevance(text(b),query)-memoryRelevance(text(a),query)||b.at-a.at);
   const items=[
    ...rank(threads,t=>t.text).slice(0,2).map(t=>({text:memoryExcerpt(t.text,query,65),prefix:`[${t.id} · key=${t.key} · ${t.kind}] `})),
-   ...rank(events.filter(e=>!compact.excludeEvents?.has(e.id)),e=>e.detail).slice(0,2).map(e=>({text:memoryExcerpt(e.detail,query,70),prefix:`[生活记录 ${e.id} · ${new Date(e.at).toISOString().slice(0,10)}] ${e.title}：`})),
+   ...rank(events.filter(e=>!compact.excludeEvents?.has(e.id)),e=>e.detail).slice(0,2).map(e=>({text:memoryExcerpt(e.detail,query,70),prefix:`[生活记录 ${e.id} · ${new Date(e.at).toISOString().slice(0,10)}] ${historicalProfileEventIds.has(e.id)?'（旧档案历史）':''}${e.title}：`})),
    ...personalDiaries(r,at).slice(0,1).map(d=>({text:memoryExcerpt(d.text,query,55),prefix:`[${d.id} · ${new Date(d.at).toISOString().slice(0,10)}] 私人日记短摘：`})),
   ];
   const firstLife=items.findIndex(t=>t.prefix.startsWith('[生活记录 '));
   if(firstLife>1)items.splice(1,0,items.splice(firstLife,1)[0]);
-  return '角色自身生活材料（不是必须公开的话题）：\n私人关注/日记是主观文字，计划不是已发生的外部事实。\n'+selectMemoryItems(items,t=>t.text,210,4).map(t=>t.prefix+t.text).join('\n');
+  return '角色自身生活材料（不是必须公开的话题）：\n私人关注/日记是主观文字，计划不是已发生的外部事实。'+historyNote+'\n'+selectMemoryItems(items,t=>t.text,210,4).map(t=>t.prefix+t.text).join('\n');
  }
- return `角色自身生活材料（不是必须公开的话题）：\n`+
-  events.slice(-6).map(e=>`[生活记录 ${e.id} · ${new Date(e.at).toISOString()}] ${e.title}：${e.detail.slice(0,400)}`).join('\n')+
+ return `角色自身生活材料（不是必须公开的话题）：${historyNote}\n`+
+  events.slice(-6).map(e=>`[生活记录 ${e.id} · ${new Date(e.at).toISOString()}] ${historicalProfileEventIds.has(e.id)?'（旧档案历史）':''}${e.title}：${e.detail.slice(0,400)}`).join('\n')+
   '\n私人持续关注（模型此前写下的想法/打算，不是已确认的外部事件；不必告诉对方）：\n'+
   (threads.map(t=>`[${t.id} · key=${t.key} · ${new Date(t.at).toISOString()} · ${t.kind}] ${t.text}`).join('\n')||'暂无已记录关注点')+
   '\n此前私人日记短摘（本人的主观文字，不自动作为外部事实）：\n'+personalDiaries(r,at).map(d=>`[${d.id} · ${new Date(d.at).toISOString()}] ${d.text.slice(0,300)}`).join('\n');

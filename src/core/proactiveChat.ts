@@ -9,9 +9,10 @@ export interface ProactiveTask {
 export interface ProactiveState {attempts:ProactiveTask[];sentTopics:string[]}
 const chatVersion=(r:RoleData,id='')=>JSON.stringify(getActiveMessages(r.chats).filter(m=>m.replyTurnId!==id).map(m=>[m.id,m.speaker,m.at,m.text,m.revisionCount||0]));
 function topics(r:RoleData,at:number) {
- const {threads,events}=collectRoleLife(r,at);
+ const {threads,events,historicalProfileEventIds}=collectRoleLife(r,at);
+ const currentProfile=JSON.stringify([r.name,r.job,r.traits,r.place,r.profile,r.relationship,r.canonNotes,r.notes]);
  return [...threads.filter(t=>t.shareable&&at-t.at<=14*day).map(t=>({id:'thread:'+t.key,text:t.text,version:JSON.stringify(t)})),
- ...events.filter(e=>at-e.at<=7*day).reverse().map(e=>({id:'event:'+e.id,text:e.title+'：'+e.detail,version:JSON.stringify(e)}))];
+ ...events.filter(e=>at-e.at<=7*day).reverse().map(e=>({id:'event:'+e.id,text:(historicalProfileEventIds.has(e.id)?'旧档案历史（'+new Date(e.at).toISOString()+'），当前身份、地点和关系以当前档案为准：':'')+e.title+'：'+e.detail,version:JSON.stringify(historicalProfileEventIds.has(e.id)?[e,currentProfile]:e)}))];
 }
 /** An unsent topic makes outreach possible, not mandatory: the same generation can decline. */
 export function claimProactive(roles:RoleData[],r:RoleData,at:number,ready:boolean):ProactiveTask|null {

@@ -3353,7 +3353,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if(!state)try{state=lifeTaskState(data.roles,r,at,Boolean(token.trim())&&canUseRealModel(data.settings),data.settings.autonomousLife!==false,[...readLifeJournal(localStorage),...lifeClaims.map(t=>data.roles.find(r=>r.id===t.roleId)?.lifeTasks?.find(x=>x.id===t.id)||t)],lifeBusy&&Boolean(lifeController));}catch{state='生活调用额度记录无法核验，自动推进已暂停。';}
     const list=items.map(item=>{
       const event=item.category==='life'?life.events.find(e=>e.id===item.sourceEventIds[0]):undefined;
-      const source=event?.lifeRecord?'生活模拟 · 已归档':item.category==='life'?'有来源的生活记录':item.category==='drama'?'排演参与 · 不计作戏内人生':'有效互动';
+      const source=event?.lifeRecord?'生活模拟 · 已归档'+(life.historicalProfileEventIds.has(event.id)?' · 旧档案历史':''):item.category==='life'?'有来源的生活记录':item.category==='drama'?'排演参与 · 不计作戏内人生':'有效互动';
       return `<article class="card footprint-card" data-testid="footprint-item" data-fp-category="${esc(item.category)}" data-fp-id="${esc(item.id)}">
         <div class="row between"><time class="fp-time-badge">${esc(hm(item.timestamp))}</time><span class="tiny muted">${esc(source)}</span></div>
         <h3>${esc(item.title)}</h3><p class="life-narrative">${esc(item.summary)}</p>${item.where?`<div class="tiny muted">${uiIcon('pin')}${esc(item.where)}</div>`:''}

@@ -7857,7 +7857,8 @@ ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText
         task.lastError = void 0;
       } else {
         if (options.resetGenerating && task.status === "generating") {
-          task.status = apiReady ? "pending" : "awaiting_api";
+          task.status = "uncertain";
+          task.lastError = "\u65E7\u8BF7\u6C42\u53EF\u80FD\u5DF2\u53D1\u9001\u3002\u6838\u5BF9\u7ED3\u679C\u540E\u518D\u51B3\u5B9A\u662F\u5426\u91CD\u8BD5\u3002";
           task.updatedAt = nowTs;
         } else if (task.status === "awaiting_api" && apiReady) {
           task.status = "pending";
@@ -7962,35 +7963,6 @@ ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText
     task.factSummary = facts.summary;
     role.diaryDay = dateKey;
     return { ok: true, diary, task };
-  }
-  function markDiaryTaskFailed(role, dateKey, errorMsg, nowTs = Date.now()) {
-    if (!Array.isArray(role.diaryTasks)) role.diaryTasks = [];
-    const facts = collectDailyDiaryFacts(role, dateKey);
-    let task = role.diaryTasks.find((t) => t.dateKey === dateKey);
-    if (!task) {
-      task = {
-        id: makeUid("dtask"),
-        roleId: role.id,
-        dateKey,
-        status: "failed",
-        attempts: 1,
-        lastError: errorMsg,
-        createdAt: nowTs,
-        updatedAt: nowTs,
-        sourceMessageIds: facts.sourceMessageIds,
-        sourceEventIds: facts.sourceEventIds,
-        factSummary: facts.summary
-      };
-      role.diaryTasks.push(task);
-    } else {
-      task.status = "failed";
-      task.lastError = errorMsg;
-      task.updatedAt = nowTs;
-      task.sourceMessageIds = facts.sourceMessageIds;
-      task.sourceEventIds = facts.sourceEventIds;
-      task.factSummary = facts.summary;
-    }
-    return task;
   }
 
   // src/core/footprints.ts
@@ -11177,6 +11149,95 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
   }
   async function reserveLifeAttempt(task, prior) {
     return (await accessBudget(prior, task)).claimed;
+  }
+
+  // src/core/diaryRequests.ts
+  var DIARY_REQUEST_DB = "elsewhere-diary-requests-v1";
+  var storeName = "receipts";
+  function diaryRequestKey(worldId, roleId, dateKey) {
+    return JSON.stringify([worldId, roleId, dateKey]);
+  }
+  async function diarySourceHash(snapshot3) {
+    const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(snapshot3));
+    return Array.from(new Uint8Array(bytes), (value) => value.toString(16).padStart(2, "0")).join("");
+  }
+  function storageError() {
+    return Error("\u65E5\u8BB0\u4EFB\u52A1\u8BB0\u5F55\u65E0\u6CD5\u786E\u8BA4\uFF0C\u81EA\u52A8\u8865\u5199\u5DF2\u6682\u505C\u3002");
+  }
+  function openDiaryRequests() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(DIARY_REQUEST_DB, 1);
+      let expired = false;
+      const fail3 = () => {
+        expired = true;
+        clearTimeout(timer);
+        reject(storageError());
+      };
+      const timer = setTimeout(fail3, 5e3);
+      request.onblocked = request.onerror = fail3;
+      request.onupgradeneeded = () => request.result.createObjectStore(storeName);
+      request.onsuccess = () => {
+        clearTimeout(timer);
+        const db = request.result;
+        if (expired) {
+          db.close();
+          return;
+        }
+        db.onversionchange = () => db.close();
+        resolve(db);
+      };
+    });
+  }
+  function validReceipt(value) {
+    return value === void 0 || !!value && typeof value.attempt === "string" && ["claimed", "sent", "ready", "archived", "failed"].includes(value.state) && (value.state !== "ready" || !!value.result && typeof value.result.text === "string" && typeof value.result.sourceHash === "string" && typeof value.result.requestId === "string" && (value.result.payload === void 0 || typeof value.result.payload === "string"));
+  }
+  async function accessDiaryReceipt(key2, change) {
+    const db = await openDiaryRequests();
+    try {
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(storeName, change ? "readwrite" : "readonly", { durability: "strict" });
+        const store2 = tx.objectStore(storeName), get = store2.get(key2);
+        let receipt, updated = false;
+        const timer = setTimeout(() => {
+          try {
+            tx.abort();
+          } catch {
+          }
+          reject(storageError());
+        }, 5e3);
+        get.onsuccess = () => {
+          try {
+            receipt = get.result;
+            if (!validReceipt(receipt)) {
+              tx.abort();
+              return;
+            }
+            if (change && receipt?.attempt === change.before?.attempt && receipt?.state === change.before?.state) {
+              store2.put(change.after, key2);
+              updated = true;
+            }
+          } catch {
+            tx.abort();
+          }
+        };
+        tx.oncomplete = () => {
+          clearTimeout(timer);
+          resolve({ receipt, updated });
+        };
+        tx.onabort = tx.onerror = () => {
+          clearTimeout(timer);
+          reject(storageError());
+        };
+      });
+    } finally {
+      db.close();
+    }
+  }
+  async function readDiaryReceipt(key2) {
+    return (await accessDiaryReceipt(key2)).receipt;
+  }
+  async function replaceDiaryReceipt(key2, before, after) {
+    if (!(await accessDiaryReceipt(key2, { before, after })).updated) throw Error("\u65E5\u8BB0\u4EFB\u52A1\u5DF2\u7531\u53E6\u4E00\u5904\u5904\u7406\uFF0C\u8BF7\u6838\u5BF9\u72B6\u6001\u3002");
   }
 
   // src/core/proactiveChat.ts
@@ -17179,7 +17240,7 @@ ${prevLogs}` : "",
           const bounds = getLocalDayBounds(t.dateKey);
           const sum = t.factSummary || collectDailyDiaryFacts(r, t.dateKey).summary;
           const factText = sum.hasUserInteraction ? `\u5F53\u65E5\u7D20\u6750\uFF1A${sum.chatCount} \u6761\u804A\u5929${sum.sceneCount ? ` \xB7 ${sum.sceneCount} \u6761\u89C1\u9762\u8BB0\u5F55` : ""}${sum.focusCount ? ` \xB7 ${sum.focusCount} \u6B21\u5171\u540C\u4E13\u6CE8` : ""}${sum.sharedDiaryCount ? ` \xB7 ${sum.sharedDiaryCount} \u7BC7\u4F60\u5206\u4EAB\u7684\u65E5\u8BB0` : ""}` : "\u5F53\u65E5\u65E0\u76F4\u63A5\u7528\u6237\u4E92\u52A8 \xB7 \u5C06\u4E66\u5199\u89D2\u8272\u72EC\u7ACB\u65E5\u5E38\u4E0E\u601D\u7EEA";
-          const statusBadge = t.status === "generating" ? `<span class="diary-task-badge generating">${uiIcon("hourglass")} \u6B63\u5728\u751F\u6210\u2026</span>` : t.status === "failed" ? `<span class="diary-task-badge failed">${uiIcon("warning")} \u751F\u6210\u5931\u8D25</span>` : t.status === "awaiting_api" ? `<span class="diary-task-badge awaiting">${uiIcon("plug")} \u5F85\u8FDE\u63A5 API \u8865\u5199</span>` : `<span class="diary-task-badge pending">${uiIcon("clock")} \u5F85\u8865\u5199\u961F\u5217</span>`;
+          const statusBadge = t.status === "generating" ? `<span class="diary-task-badge generating">${uiIcon("hourglass")} \u6B63\u5728\u751F\u6210\u2026</span>` : t.status === "ready" ? `<span class="diary-task-badge pending">\u6B63\u6587\u5DF2\u751F\u6210 \xB7 \u5F85\u4FDD\u5B58</span>` : t.status === "claimed" ? `<span class="diary-task-badge awaiting">\u5DF2\u9886\u53D6 \xB7 \u53D1\u9001\u72B6\u6001\u5F85\u6838\u5BF9</span>` : t.status === "uncertain" ? `<span class="diary-task-badge failed">\u8BF7\u6C42\u7ED3\u679C\u672A\u786E\u8BA4 \xB7 \u53EF\u80FD\u5DF2\u8BA1\u8D39</span>` : t.status === "failed" ? `<span class="diary-task-badge failed">${uiIcon("warning")} \u751F\u6210\u5931\u8D25</span>` : t.status === "awaiting_api" ? `<span class="diary-task-badge awaiting">${uiIcon("plug")} \u5F85\u8FDE\u63A5 API \u8865\u5199</span>` : `<span class="diary-task-badge pending">${uiIcon("clock")} \u5F85\u8865\u5199\u961F\u5217</span>`;
           return `<div class="card diary-task-card" data-diary-task-date="${esc(
             t.dateKey
           )}" data-diary-task-status="${esc(t.status)}">
@@ -17192,13 +17253,14 @@ ${prevLogs}` : "",
                        </div>
                        ${statusBadge}
                      </div>
-                     ${t.status === "failed" && t.lastError ? `<div class="diary-task-error">\u539F\u56E0\uFF1A${esc(
+                     ${t.lastError ? `<div class="diary-task-error">\u539F\u56E0\uFF1A${esc(
             t.lastError
           )}</div>` : t.status === "awaiting_api" ? `<div class="diary-task-note">\u672A\u4F7F\u7528\u5047\u6A21\u677F\u4EE3\u66FF\u751F\u6210\u3002\u8BF7\u5728\u300C\u7EC8\u7AEF\u300D\u914D\u7F6E\u81EA\u5B9A\u4E49 API \u4E0E\u6A21\u578B\u540E\u70B9\u51FB\u751F\u6210\u3002</div>` : ""}
                      <div class="diary-task-actions">
-                       <button type="button" class="btn small ${t.status === "failed" ? "" : "secondary"}" data-action="retrydiary" data-date="${esc(
+                       <button type="button" class="btn small ${["failed", "uncertain", "ready"].includes(t.status) ? "" : "secondary"}" data-action="retrydiary" data-date="${esc(
             t.dateKey
-          )}" ${t.status === "generating" || diaryQueueBusy ? "disabled" : ""}>${t.status === "generating" ? "\u6B63\u5728\u751F\u6210\u2026" : t.status === "failed" ? "\u91CD\u8BD5\u751F\u6210" : "\u7ACB\u5373\u751F\u6210"}</button>
+          )}" ${t.status === "generating" || diaryQueueBusy ? "disabled" : ""}>${t.status === "generating" ? "\u6B63\u5728\u751F\u6210\u2026" : t.status === "ready" ? "\u4FDD\u5B58\u5DF2\u6709\u7ED3\u679C" : ["claimed", "uncertain", "failed"].includes(t.status) ? "\u6838\u5BF9\u72B6\u6001\u6216\u6062\u590D" : "\u7ACB\u5373\u751F\u6210"}</button>
+                       ${t.status === "ready" ? `<button type="button" class="btn small ghost" data-action="regeneratediary" data-date="${esc(t.dateKey)}" ${diaryQueueBusy ? "disabled" : ""}>\u91CD\u65B0\u751F\u6210</button>` : ""}
                        ${t.status === "awaiting_api" ? `<button type="button" class="btn small ghost" data-action="view" data-view="terminal">\u524D\u5F80\u7EC8\u7AEF\u914D\u7F6E API</button>` : ""}
                      </div>
                    </div>`;
@@ -18507,126 +18569,163 @@ ${prevLogs}` : "",
         render(false);
       }
     }
-    async function generateCharacterDiaryForDate(r, dateKey, manualTrigger = false) {
-      if (!saveSession.current()) {
+    async function generateCharacterDiaryForDate(r, dateKey, manualTrigger = false, replaceResult = false) {
+      const world = data;
+      const owned2 = () => data === world && world.roles.includes(r) && world.roles.filter((item) => item.id === r.id).length === 1;
+      const valid = () => owned2() && saveSession.current() && !hasCharacterDiaryForDate(r, dateKey);
+      if (!owned2() || !saveSession.current()) {
         if (manualTrigger) notify("\u8BF7\u6C42\u5C1A\u672A\u53D1\u9001\u3002" + saveError());
         return false;
       }
-      if (dateKey >= toLocalDateKey(now())) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey) || toLocalDateKey(getLocalDayBounds(dateKey).startMs) !== dateKey || dateKey >= toLocalDateKey(now())) {
         if (manualTrigger) notify("\u8FD9\u4E00\u5929\u5C1A\u672A\u7ED3\u675F\uFF0C\u8DE8\u65E5\u540E\u518D\u5F52\u6863\u3002");
         return false;
       }
-      syncRoleDiaryTasks(r, data.settings, now());
       if (hasCharacterDiaryForDate(r, dateKey)) {
         if (manualTrigger) notify("\u8FD9\u4E00\u5929\u5DF2\u6709\u5F52\u6863\u65E5\u8BB0\uFF0C\u539F\u6587\u4FDD\u7559\u3002");
-        return false;
-      }
-      if (!token.trim() || !canUseRealModel(data.settings)) {
-        const task2 = (r.diaryTasks || []).find((t) => t.dateKey === dateKey);
-        if (task2) {
-          task2.status = "awaiting_api";
-          task2.updatedAt = now();
-        }
-        save();
-        safeRenderWhenNotTyping();
-        if (manualTrigger) {
-          notify("\u8BF7\u5148\u5728\u300C\u7EC8\u7AEF\u300D\u5207\u6362\u4E3A\u81EA\u5B9A\u4E49 API \u5E76\u586B\u5199\u6A21\u578B ID \u540E\u518D\u751F\u6210\u65E5\u8BB0");
-        }
-        return false;
-      }
-      let task = (r.diaryTasks || []).find((t) => t.dateKey === dateKey);
-      if (!task) {
-        const facts = collectDailyDiaryFacts(r, dateKey);
-        task = {
-          id: uid(),
-          roleId: r.id,
-          dateKey,
-          status: "generating",
-          attempts: 1,
-          createdAt: now(),
-          updatedAt: now(),
-          sourceMessageIds: facts.sourceMessageIds,
-          sourceEventIds: facts.sourceEventIds,
-          factSummary: facts.summary
-        };
-        if (!Array.isArray(r.diaryTasks)) r.diaryTasks = [];
-        r.diaryTasks.push(task);
-      } else {
-        task.status = "generating";
-        task.attempts = (task.attempts || 0) + 1;
-        task.lastError = void 0;
-        task.updatedAt = now();
-      }
-      save();
-      safeRenderWhenNotTyping();
-      try {
-        const s = data.settings;
-        const url = s.endpoint.trim().replace(/\/+$/, "");
-        const { messages: prompt, facts, personal } = buildCharacterDiaryPrompt(
-          r,
-          data.user,
-          dateKey
-        );
-        const sourcesBefore = JSON.stringify(collectDailyDiaryFacts(r, dateKey, true));
-        const userBefore = JSON.stringify(data.user);
-        syslog("diary", `\u8BF7\u6C42\u751F\u6210\u89D2\u8272\u6BCF\u65E5\u65E5\u8BB0 \xB7 ${r.name} \xB7 ${dateKey}`, {
-          model: s.model,
-          dateKey,
-          chatCount: facts.summary.chatCount,
-          sceneCount: facts.summary.sceneCount,
-          focusCount: facts.summary.focusCount,
-          sharedDiaryCount: facts.summary.sharedDiaryCount,
-          sourceMessageIds: facts.sourceMessageIds,
-          sourceEventIds: facts.sourceEventIds
-        });
-        const res = await postModel(url + "/chat/completions", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...token ? { Authorization: "Bearer " + token } : {}
-          },
-          body: JSON.stringify({
-            model: s.model,
-            messages: prompt,
-            temperature: +s.temperature || 0.8,
-            ...completionLimit(s, "diary")
-          })
-        });
-        const raw = splitPersonalReply(await readChatResponse(res));
-        if (!data.roles.includes(r) || userBefore !== JSON.stringify(data.user) || !personalTicketValid(r, personal) || sourcesBefore !== JSON.stringify(collectDailyDiaryFacts(r, dateKey, true))) throw new Error("\u65E5\u8BB0\u6765\u6E90\u5DF2\u53D8\u5316\uFF0C\u672A\u5F52\u6863\uFF1B\u53EF\u91CD\u65B0\u751F\u6210");
-        const before = { diaries: structuredClone(r.diaries), diaryTasks: structuredClone(r.diaryTasks), diaryDay: r.diaryDay, personalThreads: r.personalThreads };
-        const applied = applyGeneratedCharacterDiary(r, dateKey, raw.text, now());
-        if (!applied.ok) {
-          throw new Error(applied.reason || "\u6A21\u578B\u8FD4\u56DE\u65E5\u8BB0\u5185\u5BB9\u4E3A\u7A7A");
-        }
-        if (applied.diary) applied.diary.continuitySources = personal.sources;
-        if (raw.payload && applied.diary) applyPersonalReply(r, personal, raw.payload, facts.endMs, [applied.diary]);
-        if (!save()) {
-          Object.assign(r, before);
-          throw new Error("\u65E5\u8BB0\u672A\u80FD\u4FDD\u5B58\uFF0C\u539F\u8BB0\u5F55\u4FDD\u7559");
-        }
-        syslog(
-          "diary",
-          `\u5DF2\u5F52\u6863 ${r.name} \u7684\u6BCF\u65E5\u65E5\u8BB0 (${dateKey}) \xB7 ${applied.diary?.wordCount || 0} \u5B57`,
-          {
-            dateKey,
-            diaryId: applied.diary?.id,
-            wordCount: applied.diary?.wordCount
-          }
-        );
-        safeRenderWhenNotTyping();
-        if (manualTrigger) {
-          notify(`\u5DF2\u751F\u6210\u5E76\u5F52\u6863 ${r.name} \u5728 ${dateKey} \u7684\u79C1\u4EBA\u65E5\u8BB0`);
-        }
         return true;
-      } catch (e) {
-        const errMsg = e instanceof Error ? e.message : String(e);
-        markDiaryTaskFailed(r, dateKey, errMsg, now());
-        syslog("error", `\u89D2\u8272\u65E5\u8BB0\u751F\u6210\u5931\u8D25 (${r.name} \xB7 ${dateKey})\uFF1A${errMsg}`);
-        save();
-        safeRenderWhenNotTyping();
-        if (manualTrigger) {
-          notify("\u65E5\u8BB0\u751F\u6210\u5931\u8D25\uFF1A" + errMsg);
+      }
+      syncRoleDiaryTasks(r, world.settings, now());
+      const task = r.diaryTasks?.find((item) => item.dateKey === dateKey && item.roleId === r.id);
+      if (!task) return false;
+      const status = (state2, message) => {
+        if (!valid()) return false;
+        const previous = { ...task };
+        task.status = state2;
+        task.lastError = message;
+        task.updatedAt = now();
+        if (save()) return true;
+        restoreFields(task, previous);
+        return false;
+      };
+      const copyResult = (text2) => {
+        if (owned2() && role() === r) offerUnstoredReply(text2);
+      };
+      let wireResult;
+      try {
+        if (typeof world.diaryWorldId !== "string" || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(world.diaryWorldId)) {
+          if (!token.trim() || !canUseRealModel(world.settings)) {
+            if (manualTrigger) notify("\u8BF7\u5148\u5728\u7EC8\u7AEF\u914D\u7F6E API\u3002");
+            return false;
+          }
+          const previous = world.diaryWorldId;
+          world.diaryWorldId = crypto.randomUUID();
+          if (!save()) {
+            world.diaryWorldId = previous;
+            return false;
+          }
+        }
+        const key2 = diaryRequestKey(world.diaryWorldId, r.id, dateKey);
+        let receipt = await readDiaryReceipt(key2);
+        if (!valid()) return false;
+        const legacyRisk = !receipt && (task.attempts > 0 || !!task.requestAttempt || task.status === "uncertain");
+        if (!manualTrigger && (receipt || legacyRisk)) {
+          if (receipt?.state === "ready") {
+            status("ready", "\u6B63\u6587\u5DF2\u751F\u6210\uFF0C\u53EF\u4EE5\u76F4\u63A5\u4FDD\u5B58\u5DF2\u6709\u7ED3\u679C\u3002\u81EA\u52A8\u8865\u5199\u5DF2\u6682\u505C\u3002");
+            return false;
+          }
+          if (receipt?.state === "claimed" && !receipt.priorDispatch) return status("claimed", "\u5DF2\u786E\u8BA4\u5C1A\u672A\u53D1\u9001\uFF0C\u53EF\u4EE5\u624B\u52A8\u91CD\u65B0\u9886\u53D6\u3002");
+          return status("uncertain", "\u6B64\u524D\u8BF7\u6C42\u53EF\u80FD\u5DF2\u7ECF\u8BA1\u8D39\uFF0C\u81EA\u52A8\u8865\u5199\u4E0D\u4F1A\u91CD\u590D\u53D1\u9001\u3002");
+        }
+        const recovering = receipt?.state === "ready" && !replaceResult;
+        if (!recovering && (!token.trim() || !canUseRealModel(world.settings))) {
+          if (manualTrigger) notify("\u8BF7\u5148\u5728\u7EC8\u7AEF\u914D\u7F6E API\u3002");
+          return false;
+        }
+        const feeRisk = legacyRisk || !!receipt && (receipt.state !== "claimed" || !!receipt.priorDispatch);
+        if (!recovering && feeRisk && !window.confirm("\u6B64\u65E5\u671F\u7684\u65E5\u8BB0\u6B64\u524D\u53EF\u80FD\u5DF2\u7ECF\u8BA1\u8D39\u3002\u518D\u6B21\u751F\u6210\u53EF\u80FD\u4EA7\u751F\u7B2C\u4E8C\u6B21\u8D39\u7528\u3002" + (receipt?.state === "ready" ? "\u8FD9\u4F1A\u66FF\u6362\u76EE\u524D\u4FDD\u7559\u7684\u672A\u5F52\u6863\u6B63\u6587\u3002" : "") + "\u786E\u5B9A\u7EE7\u7EED\uFF1F")) return false;
+        const { messages, facts, personal } = buildCharacterDiaryPrompt(r, world.user, dateKey);
+        const snapshot3 = JSON.stringify([world.user, facts]);
+        const sourcesMatch = () => snapshot3 === JSON.stringify([world.user, collectDailyDiaryFacts(r, dateKey, true)]) && personalTicketValid(r, personal);
+        const sourceHash = await diarySourceHash(JSON.stringify([snapshot3, { ...personal, id: "" }]));
+        if (!valid() || !sourcesMatch()) return false;
+        if (!recovering) {
+          const claim = { attempt: crypto.randomUUID(), state: "claimed", priorDispatch: feeRisk };
+          await replaceDiaryReceipt(key2, receipt, claim);
+          if (!valid() || !sourcesMatch()) return false;
+          const previous = { ...task };
+          task.status = "claimed";
+          task.attempts = (Number.isSafeInteger(task.attempts) ? task.attempts : 0) + 1;
+          task.requestAttempt = claim.attempt;
+          task.lastError = void 0;
+          task.updatedAt = now();
+          if (!save()) {
+            restoreFields(task, previous);
+            return false;
+          }
+          if (!token.trim() || !canUseRealModel(world.settings)) return false;
+          const settings = world.settings, credential = token;
+          const sent = { ...claim, state: "sent" };
+          await replaceDiaryReceipt(key2, claim, sent);
+          if (!valid() || !sourcesMatch() || world.settings !== settings || token !== credential) {
+            await replaceDiaryReceipt(key2, sent, claim);
+            return false;
+          }
+          const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 9e4);
+          let text2, payload;
+          task.status = "generating";
+          syslog("diary", `\u8BF7\u6C42\u751F\u6210\u89D2\u8272\u6BCF\u65E5\u65E5\u8BB0 \xB7 ${r.name} \xB7 ${dateKey}`, { model: settings.model, dateKey, chatCount: facts.summary.chatCount, sceneCount: facts.summary.sceneCount });
+          try {
+            const pending = postModel(settings.endpoint.trim().replace(/\/+$/, "") + "/chat/completions", {
+              method: "POST",
+              signal: controller.signal,
+              headers: { "Content-Type": "application/json", ...credential ? { Authorization: "Bearer " + credential } : {} },
+              body: JSON.stringify({ model: settings.model, messages, temperature: +settings.temperature || 0.8, ...completionLimit(settings, "diary") })
+            });
+            safeRenderWhenNotTyping();
+            const res = await pending;
+            const result2 = splitPersonalReply(await readChatResponse(res));
+            text2 = cleanGeneratedDiaryText(result2.text);
+            payload = result2.payload;
+            if (!text2) throw Error("empty diary");
+          } catch {
+            await replaceDiaryReceipt(key2, sent, { ...sent, state: "failed" });
+            status("uncertain", "\u8BF7\u6C42\u7ED3\u679C\u672A\u786E\u8BA4\uFF0C\u53EF\u80FD\u5DF2\u8BA1\u8D39\u3002\u518D\u6B21\u751F\u6210\u9700\u624B\u52A8\u786E\u8BA4\u3002");
+            if (manualTrigger && owned2()) notify("\u65E5\u8BB0\u8BF7\u6C42\u7ED3\u679C\u672A\u786E\u8BA4\uFF0C\u53EF\u80FD\u5DF2\u8BA1\u8D39\u3002");
+            return false;
+          } finally {
+            clearTimeout(timer);
+          }
+          wireResult = text2;
+          receipt = { ...sent, state: "ready", result: { text: text2, payload, sourceHash, requestId: personal.id } };
+          await replaceDiaryReceipt(key2, sent, receipt);
+        }
+        if (!receipt?.result) return false;
+        const result = receipt.result;
+        if (!valid() || !sourcesMatch() || result.sourceHash !== sourceHash || (recovering ? task.requestAttempt && task.requestAttempt !== receipt.attempt : task.requestAttempt !== receipt.attempt)) {
+          if (valid()) status("ready", "\u6B63\u6587\u5DF2\u4FDD\u7559\uFF0C\u4F46\u539F\u59CB\u8D44\u6599\u6216\u4EFB\u52A1\u5DF2\u53D8\u5316\u3002\u53EF\u4EE5\u590D\u5236\u6B63\u6587\u6216\u660E\u786E\u91CD\u65B0\u751F\u6210\u3002");
+          if (manualTrigger || wireResult) copyResult(result.text);
+          if (owned2()) notify("\u65E5\u8BB0\u6B63\u6587\u5DF2\u4FDD\u7559\uFF0C\u5B58\u6863\u6216\u8D44\u6599\u5DF2\u53D8\u5316\uFF0C\u672A\u5F52\u6863\u3002");
+          return false;
+        }
+        const before = { diaries: structuredClone(r.diaries), diaryTasks: structuredClone(r.diaryTasks), diaryDay: r.diaryDay, personalThreads: r.personalThreads };
+        const applied = applyGeneratedCharacterDiary(r, dateKey, result.text, now());
+        if (!applied.ok) return false;
+        const ticket = { ...personal, id: result.requestId };
+        if (applied.diary) applied.diary.continuitySources = ticket.sources;
+        if (result.payload && applied.diary) applyPersonalReply(r, ticket, result.payload, facts.endMs, [applied.diary]);
+        if (!saveLogged("diary", `\u5DF2\u5F52\u6863 ${r.name} \u7684\u6BCF\u65E5\u65E5\u8BB0 (${dateKey}) \xB7 ${applied.diary?.wordCount || 0} \u5B57`, { dateKey, diaryId: applied.diary?.id, wordCount: applied.diary?.wordCount })) {
+          Object.assign(r, before);
+          const pending = r.diaryTasks?.find((item) => item.dateKey === dateKey);
+          if (pending) {
+            pending.status = "ready";
+            pending.lastError = "\u6B63\u6587\u5DF2\u751F\u6210\uFF0C\u4E3B\u6863\u4FDD\u5B58\u5931\u8D25\u3002\u53EF\u76F4\u63A5\u6062\u590D\u5DF2\u6709\u7ED3\u679C\u3002";
+          }
+          copyResult(result.text);
+          return false;
+        }
+        if (manualTrigger && owned2()) notify(`\u5DF2\u751F\u6210\u5E76\u5F52\u6863 ${r.name} \u5728 ${dateKey} \u7684\u79C1\u4EBA\u65E5\u8BB0`);
+        wireResult = void 0;
+        await replaceDiaryReceipt(key2, receipt, { attempt: receipt.attempt, state: "archived" });
+        return true;
+      } catch {
+        if (wireResult) copyResult(wireResult);
+        if (owned2()) {
+          if (task.status === "generating") {
+            task.status = "uncertain";
+            task.lastError = "\u7ED3\u679C\u672A\u80FD\u786E\u8BA4\u3002\u8BF7\u6838\u5BF9\u8D39\u7528\u53CA\u672C\u5730\u72B6\u6001\u3002";
+          }
+          notify("\u65E5\u8BB0\u4EFB\u52A1\u8BB0\u5F55\u65E0\u6CD5\u786E\u8BA4\uFF0C\u81EA\u52A8\u8865\u5199\u5DF2\u6682\u505C\u3002");
         }
         return false;
       }
@@ -18650,38 +18749,26 @@ ${prevLogs}` : "",
             ...role() ? [role()] : [],
             ...data.roles.filter((x) => x.id !== role()?.id)
           ];
-          let nextPair = null;
-          for (const roleItem of orderedRoles) {
-            const pendingTask = (roleItem.diaryTasks || []).filter(
-              (t) => t.status === "pending" && !hasCharacterDiaryForDate(roleItem, t.dateKey)
-            ).sort((a, b) => a.dateKey.localeCompare(b.dateKey))[0];
-            if (pendingTask) {
-              nextPair = { r: roleItem, dateKey: pendingTask.dateKey };
-              break;
-            }
-          }
-          if (!nextPair) break;
-          await generateCharacterDiaryForDate(nextPair.r, nextPair.dateKey, false);
+          const candidates = orderedRoles.flatMap((r) => (r.diaryTasks || []).filter((t) => (t.status === "pending" || t.status === "ready" || t.status === "claimed" && !t.lastError) && !hasCharacterDiaryForDate(r, t.dateKey)).map((task) => ({ r, task })));
+          const next = candidates.find(({ task }) => task.status !== "pending") || candidates[0];
+          if (!next || !await generateCharacterDiaryForDate(next.r, next.task.dateKey)) break;
         }
       } finally {
         diaryQueueBusy = false;
         safeRenderWhenNotTyping();
       }
     }
-    async function triggerDiaryTaskForRole(r, dateKey) {
+    async function triggerDiaryTaskForRole(r, dateKey, replaceResult = false) {
       if (diaryQueueBusy) {
         notify("\u65E5\u8BB0\u961F\u5217\u6B63\u5728\u751F\u6210\u4E2D\uFF0C\u8BF7\u7A0D\u5019");
         return;
       }
       diaryQueueBusy = true;
       try {
-        await generateCharacterDiaryForDate(r, dateKey, true);
+        await generateCharacterDiaryForDate(r, dateKey, true, replaceResult);
       } finally {
         diaryQueueBusy = false;
         safeRenderWhenNotTyping();
-      }
-      if (canUseRealModel(data.settings)) {
-        void processDiaryQueue();
       }
     }
     function demoReply(r, kind, input) {
@@ -19635,10 +19722,10 @@ ${prevLogs}` : "",
         notify(`\u5DF2\u5C06\u8FD9\u7BC7\u65E5\u8BB0\u5206\u4EAB\u7ED9 ${r.name}`);
         return;
       }
-      if (act === "retrydiary") {
+      if (act === "retrydiary" || act === "regeneratediary") {
         const dateKey = b.dataset.date || "";
         if (!r || !dateKey) return;
-        void triggerDiaryTaskForRole(r, dateKey);
+        void triggerDiaryTaskForRole(r, dateKey, act === "regeneratediary");
         return;
       }
       if (act === "genfirstmsg") {
@@ -21016,7 +21103,7 @@ ${prevLogs}` : "",
     try {
       const known = await savePresence() !== "none";
       const names = typeof indexedDB.databases === "function" ? (await indexedDB.databases()).map((d) => d.name) : [];
-      const other = names.some((n) => ["elsewhere-media-v1", "elsewhere-fruit-private-v1", "elsewhere-life-budget-v1"].includes(n || ""));
+      const other = names.some((n) => ["elsewhere-media-v1", "elsewhere-fruit-private-v1", "elsewhere-life-budget-v1", DIARY_REQUEST_DB].includes(n || ""));
       const otherLocal = Array.from({ length: store2.length }, (_, i) => store2.key(i)).some((k) => ["elsewhere-device-api-key-v1", "elsewhere-life-budget-v1"].includes(k || ""));
       if (known || other || otherLocal) {
         session = void 0;

@@ -1,6 +1,7 @@
 import {makeUid} from './core/revisions';
 import {STORAGE_KEY,defaults} from './core/defaults';
 import {SAVE_ACCESS_EVENT,SaveSession,readStoredSave,savePresence,traceStorage} from './core/storageSession';
+import {DIARY_REQUEST_DB} from './core/diaryRequests';
 
 // Hold the browser's exclusive grant across synchronous saves. All supported writers use this name.
 const SAVE_LOCK='elsewhere-main-writer-v1';
@@ -99,7 +100,7 @@ export async function startStoredApp(start:(session:SaveSession)=>void):Promise<
  try{
   const known=(await savePresence())!=='none';
   const names=typeof indexedDB.databases==='function'?(await indexedDB.databases()).map(d=>d.name):[];
-  const other=names.some(n=>['elsewhere-media-v1','elsewhere-fruit-private-v1','elsewhere-life-budget-v1'].includes(n||''));
+  const other=names.some(n=>['elsewhere-media-v1','elsewhere-fruit-private-v1','elsewhere-life-budget-v1',DIARY_REQUEST_DB].includes(n||''));
   const otherLocal=Array.from({length:store.length},(_,i)=>store.key(i)).some(k=>['elsewhere-device-api-key-v1','elsewhere-life-budget-v1'].includes(k||''));
   if(known||other||otherLocal){session=undefined;relinquish();show('missing-known','发现此来源已有存档或初始化记录，但当前未读到主存档。已暂停初始化，避免覆盖。请重新读取。');return;}
   const initialize=async()=>{

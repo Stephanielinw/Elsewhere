@@ -690,7 +690,8 @@ export function syncRoleDiaryTasks(
       task.lastError = undefined;
     } else {
       if (options.resetGenerating && task.status === 'generating') {
-        task.status = apiReady ? 'pending' : 'awaiting_api';
+        task.status = 'uncertain';
+        task.lastError = '旧请求可能已发送。核对结果后再决定是否重试。';
         task.updatedAt = nowTs;
       } else if (task.status === 'awaiting_api' && apiReady) {
         task.status = 'pending';

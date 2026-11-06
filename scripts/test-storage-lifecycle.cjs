@@ -49,6 +49,9 @@ async function main() {
     const owner = cache ? browser : (coldBrowser ||= await launch(false));
     const context = await owner.newContext({ignoreHTTPSErrors:true,serviceWorkers:'block'});
     const posts = [], errors = [];
+    context.on('request', request => {
+      if (request.method() === 'POST') posts.push(new URL(request.url()).pathname);
+    });
     let releaseReply;
     const replyGate = new Promise(resolve => {releaseReply = resolve;});
     try {
@@ -57,7 +60,6 @@ async function main() {
         if (url.href === away && req.method() === 'GET') {
           return route.fulfill({contentType:'text/html',body:'<!doctype html><title>Isolated navigation fixture</title>'});
         }
-        if (req.method() === 'POST') posts.push(url.pathname);
         if (url.href === endpoint+'/chat/completions' && pendingReply) {
           const headers = {'access-control-allow-origin':'*','access-control-allow-methods':'POST','access-control-allow-headers':'*'};
           if (req.method() === 'OPTIONS') return route.fulfill({status:204,headers});
@@ -231,13 +233,16 @@ async function main() {
       assert.equal(await held(p),1);
     });
 
-    for(const cache of [true,false])await run(`BFCache ${cache?'hit':'miss'} does not repeat a dispatched chat request`, async (p,_context,posts,releaseReply) => {
+    for(const cache of [true,false])await run(`BFCache ${cache?'hit':'miss'} does not repeat a dispatched chat request`, async (p,context,posts,releaseReply) => {
       const original = await identity(p);
       await p.clock.install();
       await enterChat(p);
       await chat(p).fill('已派发的合成聊天');
       await submitChat(p);
-      const dispatched = p.waitForRequest(req=>req.method()==='POST'&&req.url()===endpoint+'/chat/completions',{timeout:6000});
+      const dispatched = context.waitForEvent('request',{
+        predicate: req=>req.method()==='POST'&&req.url()===endpoint+'/chat/completions',
+        timeout:6000,
+      });
       await p.clock.fastForward(125000);
       await p.waitForFunction(key=>JSON.parse(localStorage.getItem(key)).roles[0].chatTiming.inFlight,key);
       await dispatched;

@@ -92,7 +92,10 @@ export interface DiaryFactSummary {
 export type DiaryTaskStatus =
   | 'pending'
   | 'awaiting_api'
+  | 'claimed'
   | 'generating'
+  | 'uncertain'
+  | 'ready'
   | 'completed'
   | 'failed';
 
@@ -102,6 +105,7 @@ export interface DiaryGenerationTask {
   dateKey: string; // YYYY-MM-DD local calendar date
   status: DiaryTaskStatus;
   attempts: number;
+  requestAttempt?: string;
   lastError?: string;
   createdAt: number;
   updatedAt: number;
@@ -552,6 +556,7 @@ export interface ApiSettings {
 
 export interface AppData {
   version: number;
+  diaryWorldId?: string;
   theme: ThemeName;
   font: 'system' | 'serif';
   offset: number;

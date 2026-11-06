@@ -19,6 +19,7 @@ import {compileChatBatchPrompt,buildPhoneRegeneration,readChatResponse} from './
 import {describeChatVoice,chatVoiceSummary} from './core/chatVoice';
 import {preparePersonalReply,splitPersonalReply,applyPersonalReply,personalTicketValid,collectRoleLife} from './core/roleLife';
 import {syncLifeBudget,reserveLifeAttempt} from './core/lifeBudget';
+import {diaryRequestKey,diarySourceHash,readDiaryReceipt,replaceDiaryReceipt,type DiaryReceipt} from './core/diaryRequests';
 import {claimLifeTask,prepareLifeTask,commitLifeTask,readLifeJournal,writeLifeJournal,lifeTaskState,LIFE_MAX_OUTPUT,type LifeTask} from './core/autonomousLife';
 import {syncRoleMemory} from './core/memory';
 import {claimProactive,proactiveTaskValid,finishProactive,recordProactiveDelivery,recoverProactive,proactiveInstruction,parseProactiveReply,type ProactiveTask} from './core/proactiveChat';
@@ -43,6 +44,7 @@ import type {
   AppData,
   ChatMessage,
   CustomAvatarFrame,
+  DiaryTaskStatus,
   EventRecord,
   MessageQuote,
   PlayData,
@@ -91,12 +93,12 @@ import {
   applyGeneratedCharacterDiary,
   buildCharacterDiaryPrompt,
   collectDailyDiaryFacts,
+  cleanGeneratedDiaryText,
   createUserDiary,
   getCharacterDiaryDateKey,
   getLocalDayBounds,
   hasCharacterDiaryForDate,
   isDiarySharedWithRole,
-  markDiaryTaskFailed,
    parseDateKeyParts,
   shareDiaryWithRole,
   shiftDateKey,
@@ -3097,6 +3099,12 @@ export function initElsewhereApp(saveSession:SaveSession): void {
                    const statusBadge =
                      t.status === 'generating'
                        ? `<span class="diary-task-badge generating">${uiIcon('hourglass')} 正在生成…</span>`
+                       : t.status === 'ready'
+                       ? `<span class="diary-task-badge pending">正文已生成 · 待保存</span>`
+                       : t.status === 'claimed'
+                       ? `<span class="diary-task-badge awaiting">已领取 · 发送状态待核对</span>`
+                       : t.status === 'uncertain'
+                       ? `<span class="diary-task-badge failed">请求结果未确认 · 可能已计费</span>`
                        : t.status === 'failed'
                        ? `<span class="diary-task-badge failed">${uiIcon('warning')} 生成失败</span>`
                        : t.status === 'awaiting_api'
@@ -3115,7 +3123,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
                        ${statusBadge}
                      </div>
                      ${
-                       t.status === 'failed' && t.lastError
+                       t.lastError
                          ? `<div class="diary-task-error">原因：${esc(
                              t.lastError
                            )}</div>`
@@ -3125,7 +3133,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
                      }
                      <div class="diary-task-actions">
                        <button type="button" class="btn small ${
-                         t.status === 'failed' ? '' : 'secondary'
+                     ['failed','uncertain','ready'].includes(t.status) ? '' : 'secondary'
                        }" data-action="retrydiary" data-date="${esc(
                      t.dateKey
                    )}" ${
@@ -3133,10 +3141,13 @@ export function initElsewhereApp(saveSession:SaveSession): void {
                    }>${
                      t.status === 'generating'
                        ? '正在生成…'
-                       : t.status === 'failed'
-                       ? '重试生成'
+                       : t.status === 'ready'
+                       ? '保存已有结果'
+                       : ['claimed','uncertain','failed'].includes(t.status)
+                       ? '核对状态或恢复'
                        : '立即生成'
                    }</button>
+                       ${t.status==='ready'? `<button type="button" class="btn small ghost" data-action="regeneratediary" data-date="${esc(t.dateKey)}" ${diaryQueueBusy?'disabled':''}>重新生成</button>`:''}
                        ${
                          t.status === 'awaiting_api'
                            ? `<button type="button" class="btn small ghost" data-action="view" data-view="terminal">前往终端配置 API</button>`
@@ -4720,125 +4731,134 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   }
 
   async function generateCharacterDiaryForDate(
-    r: RoleData,
-    dateKey: string,
-    manualTrigger = false
-  ): Promise<boolean> {
-    if(!saveSession.current()){if(manualTrigger)notify('请求尚未发送。'+saveError());return false;}
-    if(dateKey>=toLocalDateKey(now())){if(manualTrigger)notify('这一天尚未结束，跨日后再归档。');return false;}
-    syncRoleDiaryTasks(r, data.settings, now());
-    if (hasCharacterDiaryForDate(r, dateKey)) {
-      if(manualTrigger)notify('这一天已有归档日记，原文保留。');
-      return false;
-    }
-    if (!token.trim()||!canUseRealModel(data.settings)) {
-      const task = (r.diaryTasks || []).find((t) => t.dateKey === dateKey);
-      if (task) {
-        task.status = 'awaiting_api';
-        task.updatedAt = now();
+    r:RoleData,dateKey:string,manualTrigger=false,replaceResult=false
+  ):Promise<boolean> {
+    const world=data;
+    const owned=()=>data===world&&world.roles.includes(r)&&world.roles.filter(item=>item.id===r.id).length===1;
+    const valid=()=>owned()&&saveSession.current()&&!hasCharacterDiaryForDate(r,dateKey);
+    if(!owned()||!saveSession.current()){if(manualTrigger)notify('请求尚未发送。'+saveError());return false;}
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)||toLocalDateKey(getLocalDayBounds(dateKey).startMs)!==dateKey||dateKey>=toLocalDateKey(now())){if(manualTrigger)notify('这一天尚未结束，跨日后再归档。');return false;}
+    if(hasCharacterDiaryForDate(r,dateKey)){if(manualTrigger)notify('这一天已有归档日记，原文保留。');return true;}
+    syncRoleDiaryTasks(r,world.settings,now());
+    const task=r.diaryTasks?.find(item=>item.dateKey===dateKey&&item.roleId===r.id);
+    if(!task)return false;
+    const status=(state:DiaryTaskStatus,message?:string)=>{
+      if(!valid())return false;
+      const previous={...task};
+      task.status=state;task.lastError=message;task.updatedAt=now();
+      if(save())return true;
+      restoreFields(task,previous);return false;
+    };
+    const copyResult=(text:string)=>{
+      if(owned()&&role()===r)offerUnstoredReply(text);
+    };
+    let wireResult:string|undefined;
+    try{
+      if(typeof world.diaryWorldId!=='string'||!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(world.diaryWorldId)){
+        if(!token.trim()||!canUseRealModel(world.settings)){if(manualTrigger)notify('请先在终端配置 API。');return false;}
+        const previous=world.diaryWorldId;
+        world.diaryWorldId=crypto.randomUUID();
+        if(!save()){world.diaryWorldId=previous;return false;}
       }
-      save();
-      safeRenderWhenNotTyping();
-      if (manualTrigger) {
-        notify('请先在「终端」切换为自定义 API 并填写模型 ID 后再生成日记');
-      }
-      return false;
-    }
-
-    let task = (r.diaryTasks || []).find((t) => t.dateKey === dateKey);
-    if (!task) {
-      const facts = collectDailyDiaryFacts(r, dateKey);
-      task = {
-        id: uid(),
-        roleId: r.id,
-        dateKey,
-        status: 'generating',
-        attempts: 1,
-        createdAt: now(),
-        updatedAt: now(),
-        sourceMessageIds: facts.sourceMessageIds,
-        sourceEventIds: facts.sourceEventIds,
-        factSummary: facts.summary,
-      };
-      if (!Array.isArray(r.diaryTasks)) r.diaryTasks = [];
-      r.diaryTasks.push(task);
-    } else {
-      task.status = 'generating';
-      task.attempts = (task.attempts || 0) + 1;
-      task.lastError = undefined;
-      task.updatedAt = now();
-    }
-    save();
-    safeRenderWhenNotTyping();
-
-    try {
-      const s = data.settings;
-      const url = s.endpoint.trim().replace(/\/+$/, '');
-      const { messages: prompt, facts,personal } = buildCharacterDiaryPrompt(
-        r,
-        data.user,
-        dateKey
-      );
-      const sourcesBefore=JSON.stringify(collectDailyDiaryFacts(r,dateKey,true));
-      const userBefore=JSON.stringify(data.user);
-      syslog('diary', `请求生成角色每日日记 · ${r.name} · ${dateKey}`, {
-        model: s.model,
-        dateKey,
-        chatCount: facts.summary.chatCount,
-        sceneCount: facts.summary.sceneCount,
-        focusCount: facts.summary.focusCount,
-        sharedDiaryCount: facts.summary.sharedDiaryCount,
-        sourceMessageIds: facts.sourceMessageIds,
-        sourceEventIds: facts.sourceEventIds,
-      });
-
-      const res = await postModel(url + '/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: 'Bearer ' + token } : {}),
-        },
-        body: JSON.stringify({
-          model: s.model,
-          messages: prompt,
-          temperature: +s.temperature || 0.8,
-          ...completionLimit(s,'diary'),
-        }),
-      });
-      const raw=splitPersonalReply(await readChatResponse(res));
-      if(!data.roles.includes(r)||userBefore!==JSON.stringify(data.user)||!personalTicketValid(r,personal)||sourcesBefore!==JSON.stringify(collectDailyDiaryFacts(r,dateKey,true)))throw new Error('日记来源已变化，未归档；可重新生成');
-      const before={diaries:structuredClone(r.diaries),diaryTasks:structuredClone(r.diaryTasks),diaryDay:r.diaryDay,personalThreads:r.personalThreads};
-      const applied = applyGeneratedCharacterDiary(r, dateKey, raw.text, now());
-      if (!applied.ok) {
-        throw new Error(applied.reason || '模型返回日记内容为空');
-      }
-      if(applied.diary)applied.diary.continuitySources=personal.sources;
-      if(raw.payload&&applied.diary)applyPersonalReply(r,personal,raw.payload,facts.endMs,[applied.diary]);
-      if(!save()){Object.assign(r,before);throw new Error('日记未能保存，原记录保留');}
-      syslog(
-        'diary',
-        `已归档 ${r.name} 的每日日记 (${dateKey}) · ${
-          applied.diary?.wordCount || 0
-        } 字`,
-        {
-          dateKey,
-          diaryId: applied.diary?.id,
-          wordCount: applied.diary?.wordCount,
+      const key=diaryRequestKey(world.diaryWorldId,r.id,dateKey);
+      let receipt=await readDiaryReceipt(key);
+      if(!valid())return false;
+      // Old archives can contain a generating marker without a receipt. Treat it as possibly billed.
+      const legacyRisk=!receipt&&(task.attempts>0||!!task.requestAttempt||task.status==='uncertain');
+      if(!manualTrigger&&(receipt||legacyRisk)){
+        if(receipt?.state==='ready'){
+          status('ready','正文已生成，可以直接保存已有结果。自动补写已暂停。');
+          return false;
         }
-      );
-      safeRenderWhenNotTyping();
-      if (manualTrigger) {
-        notify(`已生成并归档 ${r.name} 在 ${dateKey} 的私人日记`);
+        if(receipt?.state==='claimed'&&!receipt.priorDispatch)return status('claimed','已确认尚未发送，可以手动重新领取。');
+        return status('uncertain','此前请求可能已经计费，自动补写不会重复发送。');
       }
+      const recovering=receipt?.state==='ready'&&!replaceResult;
+      if(!recovering&&(!token.trim()||!canUseRealModel(world.settings))){
+        if(manualTrigger)notify('请先在终端配置 API。');
+        return false;
+      }
+      const feeRisk=legacyRisk||!!receipt&&(receipt.state!=='claimed'||!!receipt.priorDispatch);
+      if(!recovering&&feeRisk&&!window.confirm('此日期的日记此前可能已经计费。再次生成可能产生第二次费用。'+
+        (receipt?.state==='ready'?'这会替换目前保留的未归档正文。':'')+'确定继续？'))return false;
+      const {messages,facts,personal}=buildCharacterDiaryPrompt(r,world.user,dateKey);
+      const snapshot=JSON.stringify([world.user,facts]);
+      const sourcesMatch=()=>snapshot===JSON.stringify([world.user,collectDailyDiaryFacts(r,dateKey,true)])&&personalTicketValid(r,personal);
+      const sourceHash=await diarySourceHash(JSON.stringify([snapshot,{...personal,id:''}]));
+      if(!valid()||!sourcesMatch())return false;
+      if(!recovering){
+        const claim:DiaryReceipt={attempt:crypto.randomUUID(),state:'claimed',priorDispatch:feeRisk};
+        await replaceDiaryReceipt(key,receipt,claim);
+        if(!valid()||!sourcesMatch())return false;
+        const previous={...task};
+        task.status='claimed';task.attempts=(Number.isSafeInteger(task.attempts)?task.attempts:0)+1;
+        task.requestAttempt=claim.attempt;task.lastError=undefined;task.updatedAt=now();
+        if(!save()){restoreFields(task,previous);return false;}
+        if(!token.trim()||!canUseRealModel(world.settings))return false;
+        const settings=world.settings,credential=token;
+        const sent:DiaryReceipt={...claim,state:'sent'};
+        await replaceDiaryReceipt(key,claim,sent);
+        // This marker is durable before fetch. A crash in the remaining gap is treated as potentially billed.
+        if(!valid()||!sourcesMatch()||world.settings!==settings||token!==credential){
+          await replaceDiaryReceipt(key,sent,claim);
+          return false;
+        }
+        const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),90000);
+        let text:string,payload:string|undefined;
+        task.status='generating';
+        syslog('diary',`请求生成角色每日日记 · ${r.name} · ${dateKey}`,{model:settings.model,dateKey,chatCount:facts.summary.chatCount,sceneCount:facts.summary.sceneCount});
+        try{
+          const pending=postModel(settings.endpoint.trim().replace(/\/+$/,'')+'/chat/completions',{
+            method:'POST',signal:controller.signal,
+            headers:{'Content-Type':'application/json',...(credential?{Authorization:'Bearer '+credential}:{})},
+            body:JSON.stringify({model:settings.model,messages,temperature:+settings.temperature||0.8,...completionLimit(settings,'diary')}),
+          });
+          safeRenderWhenNotTyping();
+          const res=await pending;
+          const result=splitPersonalReply(await readChatResponse(res));
+          text=cleanGeneratedDiaryText(result.text);payload=result.payload;
+          if(!text)throw Error('empty diary');
+        }catch{
+          await replaceDiaryReceipt(key,sent,{...sent,state:'failed'});
+          status('uncertain','请求结果未确认，可能已计费。再次生成需手动确认。');
+          if(manualTrigger&&owned())notify('日记请求结果未确认，可能已计费。');
+          return false;
+        }finally{clearTimeout(timer);}
+        wireResult=text;
+        receipt={...sent,state:'ready',result:{text,payload,sourceHash,requestId:personal.id}};
+        await replaceDiaryReceipt(key,sent,receipt);
+      }
+      if(!receipt?.result)return false;
+      const result=receipt.result;
+      if(!valid()||!sourcesMatch()||result.sourceHash!==sourceHash||
+        (recovering?task.requestAttempt&&task.requestAttempt!==receipt.attempt:task.requestAttempt!==receipt.attempt)){
+        if(valid())status('ready','正文已保留，但原始资料或任务已变化。可以复制正文或明确重新生成。');
+        if(manualTrigger||wireResult)copyResult(result.text);
+        if(owned())notify('日记正文已保留，存档或资料已变化，未归档。');
+        return false;
+      }
+      const before={diaries:structuredClone(r.diaries),diaryTasks:structuredClone(r.diaryTasks),diaryDay:r.diaryDay,personalThreads:r.personalThreads};
+      const applied=applyGeneratedCharacterDiary(r,dateKey,result.text,now());
+      if(!applied.ok)return false;
+      const ticket={...personal,id:result.requestId};
+      if(applied.diary)applied.diary.continuitySources=ticket.sources;
+      if(result.payload&&applied.diary)applyPersonalReply(r,ticket,result.payload,facts.endMs,[applied.diary]);
+      if(!saveLogged('diary',`已归档 ${r.name} 的每日日记 (${dateKey}) · ${applied.diary?.wordCount||0} 字`,{dateKey,diaryId:applied.diary?.id,wordCount:applied.diary?.wordCount})){
+        Object.assign(r,before);
+        const pending=r.diaryTasks?.find(item=>item.dateKey===dateKey);
+        if(pending){pending.status='ready';pending.lastError='正文已生成，主档保存失败。可直接恢复已有结果。';}
+        copyResult(result.text);
+        return false;
+      }
+      if(manualTrigger&&owned())notify(`已生成并归档 ${r.name} 在 ${dateKey} 的私人日记`);
+      wireResult=undefined;
+      await replaceDiaryReceipt(key,receipt,{attempt:receipt.attempt,state:'archived'});
       return true;
-    } catch (e) {
-      const errMsg = e instanceof Error ? e.message : String(e);
-      markDiaryTaskFailed(r, dateKey, errMsg, now());
-      syslog('error', `角色日记生成失败 (${r.name} · ${dateKey})：${errMsg}`);
-      save();
-      safeRenderWhenNotTyping();
-      if (manualTrigger) {
-        notify('日记生成失败：' + errMsg);
+    }catch{
+      if(wireResult)copyResult(wireResult);
+      if(owned()){
+        if(task.status==='generating'){task.status='uncertain';task.lastError='结果未能确认。请核对费用及本地状态。';}
+        notify('日记任务记录无法确认，自动补写已暂停。');
       }
       return false;
     }
@@ -4863,22 +4883,12 @@ export function initElsewhereApp(saveSession:SaveSession): void {
           ...(role() ? [role()!] : []),
           ...data.roles.filter((x) => x.id !== role()?.id),
         ];
-        let nextPair: { r: RoleData; dateKey: string } | null = null;
-        for (const roleItem of orderedRoles) {
-          const pendingTask = (roleItem.diaryTasks || [])
-            .filter(
-              (t) =>
-                t.status === 'pending' &&
-                !hasCharacterDiaryForDate(roleItem, t.dateKey)
-            )
-            .sort((a, b) => a.dateKey.localeCompare(b.dateKey))[0];
-          if (pendingTask) {
-            nextPair = { r: roleItem, dateKey: pendingTask.dateKey };
-            break;
-          }
-        }
-        if (!nextPair) break;
-        await generateCharacterDiaryForDate(nextPair.r, nextPair.dateKey, false);
+        const candidates=orderedRoles.flatMap(r=>(r.diaryTasks||[])
+          .filter(t=>(t.status==='pending'||t.status==='ready'||t.status==='claimed'&&!t.lastError)&&!hasCharacterDiaryForDate(r,t.dateKey))
+          .map(task=>({r,task})));
+        // Check unresolved writes before dispatching a different date or role.
+        const next=candidates.find(({task})=>task.status!=='pending')||candidates[0];
+        if(!next||!await generateCharacterDiaryForDate(next.r,next.task.dateKey))break;
       }
     } finally {
       diaryQueueBusy = false;
@@ -4888,7 +4898,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
 
   async function triggerDiaryTaskForRole(
     r: RoleData,
-    dateKey: string
+    dateKey: string,replaceResult=false
   ): Promise<void> {
     if (diaryQueueBusy) {
       notify('日记队列正在生成中，请稍候');
@@ -4896,13 +4906,10 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     }
     diaryQueueBusy = true;
     try {
-      await generateCharacterDiaryForDate(r, dateKey, true);
+      await generateCharacterDiaryForDate(r,dateKey,true,replaceResult);
     } finally {
       diaryQueueBusy = false;
       safeRenderWhenNotTyping();
-    }
-    if (canUseRealModel(data.settings)) {
-      void processDiaryQueue();
     }
   }
 
@@ -5769,10 +5776,10 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       notify(`已将这篇日记分享给 ${r.name}`);
       return;
     }
-    if (act === 'retrydiary') {
+    if (act === 'retrydiary'||act==='regeneratediary') {
       const dateKey = b.dataset.date || '';
       if (!r || !dateKey) return;
-      void triggerDiaryTaskForRole(r, dateKey);
+      void triggerDiaryTaskForRole(r,dateKey,act==='regeneratediary');
       return;
     }
     if (act === 'genfirstmsg') {

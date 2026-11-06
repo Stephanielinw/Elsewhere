@@ -3015,6 +3015,7 @@ ${msg.text}`;
   }
 
   // src/core/storageSession.ts
+  var SAVE_ACCESS_EVENT = "elsewhere-save-access";
   function traceStorage(phase, details = {}) {
     const trace = globalThis.__elsewhereStorageTrace;
     if (Array.isArray(trace)) {
@@ -20772,31 +20773,19 @@ ${prevLogs}` : "",
       if (event.key === STORAGE_KEY || event.key === null) refreshSaveAccess();
     });
     document.addEventListener("visibilitychange", () => {
-      captureMeetingDraft();
+      captureMeetingDraft(document.hidden && saveSession.hasWriter());
       if (!document.hidden) {
         refreshSaveAccess();
-        if (saveSession.current()) {
-          pumpChatSchedules();
-          pumpProactive();
-          pumpRoleLife();
-          if (view === "home") homeTasks.refresh();
-        }
+        if (view === "home") homeTasks.refresh();
       }
     });
+    window.addEventListener(SAVE_ACCESS_EVENT, refreshSaveAccess);
     queueMicrotask(() => {
       if (saveSession.current()) {
         pumpChatSchedules();
         pumpProactive();
         pumpRoleLife();
       }
-    });
-    window.addEventListener("pageshow", () => {
-      refreshSaveAccess();
-      if (!saveSession.current()) return;
-      pumpChatSchedules();
-      pumpProactive();
-      pumpRoleLife();
-      if (view === "home") homeTasks.refresh();
     });
     if (typeof setInterval === "function") {
       setInterval(() => {
@@ -20865,13 +20854,18 @@ ${prevLogs}` : "",
     try {
       if (!navigator.locks) return null;
       return await new Promise((resolve) => {
-        void navigator.locks.request(SAVE_LOCK, { ifAvailable: true }, (lock) => {
+        const finished = navigator.locks.request(SAVE_LOCK, { ifAvailable: true }, (lock) => {
           if (!lock) {
             resolve(null);
             return;
           }
-          return new Promise((release) => resolve(release));
-        }).catch(() => resolve(null));
+          return new Promise((unlock) => resolve(() => {
+            unlock();
+            return finished.catch(() => {
+            });
+          }));
+        });
+        void finished.catch(() => resolve(null));
       });
     } catch {
       return null;
@@ -20880,17 +20874,60 @@ ${prevLogs}` : "",
   async function startStoredApp(start) {
     const host = document.getElementById("app");
     if (!host) return;
-    let release = null, exiting = false;
+    let release = null, hidden = false, epoch = 0;
+    let pending, releasing;
+    let session, resumeBoot;
     const hasWriter = () => release !== null;
     const relinquish = () => {
       const end = release;
       release = null;
       host.dataset.writeAccess = "read-only";
-      end?.();
+      if (end) releasing = end().finally(() => {
+        releasing = void 0;
+      });
+      return releasing;
     };
+    async function acquireWriter() {
+      if (hidden || hasWriter()) return;
+      const requestedEpoch = epoch;
+      if (releasing) await releasing;
+      if (hidden || requestedEpoch !== epoch || hasWriter()) return;
+      if (pending) {
+        const previous = pending;
+        await previous.done;
+        if (previous.epoch !== requestedEpoch && requestedEpoch === epoch) await acquireWriter();
+        return;
+      }
+      const done = claimWriter().then(async (end) => {
+        if (!end) return;
+        if (hidden || requestedEpoch !== epoch) {
+          await end();
+          return;
+        }
+        release = end;
+        if (session && !session.current()) await relinquish();
+      }).finally(() => {
+        pending = void 0;
+      });
+      pending = { epoch: requestedEpoch, done };
+      await done;
+    }
     window.addEventListener("pagehide", () => {
-      exiting = true;
+      if (hidden) return;
+      hidden = true;
+      epoch++;
       relinquish();
+    });
+    window.addEventListener("pageshow", (event) => {
+      if (!event.persisted || !hidden) return;
+      hidden = false;
+      const resume = resumeBoot;
+      resumeBoot = void 0;
+      resume?.();
+      if (session) void acquireWriter().then(() => {
+        host.dataset.writeAccess = hasWriter() ? "writer" : "read-only";
+        window.dispatchEvent(new Event(SAVE_ACCESS_EVENT));
+      });
     });
     function show(state2, message, create) {
       traceStorage("boot-protected", { state: state2 });
@@ -20906,11 +20943,13 @@ ${prevLogs}` : "",
         }
       });
     }
-    function mount(session) {
+    function mount(archive) {
+      session = archive;
       try {
         host.dataset.storageState = "ready";
-        start(session);
+        start(archive);
       } catch {
+        session = void 0;
         relinquish();
         show("load-failed", "\u672C\u673A\u5B58\u6863\u672A\u80FD\u5B89\u5168\u8F7D\u5165\u6216\u4FDD\u5B58\u3002\u5DF2\u505C\u6B62\u521D\u59CB\u5316\uFF0C\u8BF7\u91CD\u65B0\u8BFB\u53D6\uFF1B\u4E0D\u4F1A\u7528\u9ED8\u8BA4\u6570\u636E\u8986\u76D6\u539F\u8BB0\u5F55\u3002");
       }
@@ -20922,10 +20961,13 @@ ${prevLogs}` : "",
       show("unavailable", "\u6D4F\u89C8\u5668\u4E0D\u5141\u8BB8\u8BFB\u53D6\u672C\u673A\u5B58\u6863\u3002\u672A\u521B\u5EFA\u6216\u8986\u76D6\u4EFB\u4F55\u6570\u636E\u3002");
       return;
     }
-    release = await claimWriter();
-    if (exiting) {
-      relinquish();
-      return;
+    for (; ; ) {
+      const started = epoch;
+      await acquireWriter();
+      if (hidden) await new Promise((resolve) => {
+        resumeBoot = resolve;
+      });
+      else if (started === epoch) break;
     }
     host.dataset.writeAccess = hasWriter() ? "writer" : "read-only";
     const snapshot3 = readStoredSave(store2);
@@ -20940,6 +20982,8 @@ ${prevLogs}` : "",
       return;
     }
     if (snapshot3.state === "loaded") {
+      const archive = new SaveSession(store2, snapshot3, hasWriter);
+      session = archive;
       if (hasWriter()) try {
         await savePresence("known");
       } catch {
@@ -20949,29 +20993,33 @@ ${prevLogs}` : "",
       try {
         current = store2.getItem(STORAGE_KEY);
       } catch {
+        session = void 0;
         relinquish();
         show("unavailable", "\u672C\u673A\u5B58\u6863\u6682\u65F6\u65E0\u6CD5\u8BFB\u53D6\uFF0C\u672A\u5199\u5165\u4EFB\u4F55\u6570\u636E\u3002\u8BF7\u91CD\u65B0\u8BFB\u53D6\u3002");
         return;
       }
       if (current !== snapshot3.raw) {
+        session = void 0;
         relinquish();
         show("changed", "\u5B58\u6863\u5728\u8BFB\u53D6\u671F\u95F4\u53D1\u751F\u53D8\u5316\u3002\u672A\u8986\u76D6\uFF0C\u8BF7\u91CD\u65B0\u8BFB\u53D6\u3002");
         return;
       }
       traceStorage("boot-ready");
-      mount(new SaveSession(store2, snapshot3, hasWriter));
+      mount(archive);
       return;
     }
     if (!hasWriter()) {
       show("read-only", "\u65E0\u6CD5\u53D6\u5F97\u6B64\u5B58\u6863\u7684\u72EC\u5360\u5199\u5165\u6743\u9650\u3002\u5173\u95ED\u5176\u4ED6 Elsewhere \u6807\u7B7E\u9875\u540E\u91CD\u65B0\u8BFB\u53D6\uFF1B\u7F3A\u5C11\u4E92\u65A5\u80FD\u529B\u65F6\u4E0D\u80FD\u5EFA\u7ACB\u65B0\u6863\u3002");
       return;
     }
+    session = new SaveSession(store2, { raw: null, value: null }, hasWriter);
     try {
       const known = await savePresence() !== "none";
       const names = typeof indexedDB.databases === "function" ? (await indexedDB.databases()).map((d) => d.name) : [];
       const other = names.some((n) => ["elsewhere-media-v1", "elsewhere-fruit-private-v1", "elsewhere-life-budget-v1"].includes(n || ""));
       const otherLocal = Array.from({ length: store2.length }, (_, i) => store2.key(i)).some((k) => ["elsewhere-device-api-key-v1", "elsewhere-life-budget-v1"].includes(k || ""));
       if (known || other || otherLocal) {
+        session = void 0;
         relinquish();
         show("missing-known", "\u53D1\u73B0\u6B64\u6765\u6E90\u5DF2\u6709\u5B58\u6863\u6216\u521D\u59CB\u5316\u8BB0\u5F55\uFF0C\u4F46\u5F53\u524D\u672A\u8BFB\u5230\u4E3B\u5B58\u6863\u3002\u5DF2\u6682\u505C\u521D\u59CB\u5316\uFF0C\u907F\u514D\u8986\u76D6\u3002\u8BF7\u91CD\u65B0\u8BFB\u53D6\u3002");
         return;
@@ -20992,9 +21040,10 @@ ${prevLogs}` : "",
           return;
         }
         traceStorage("initialize-explicit");
-        const value = defaults(), session = new SaveSession(store2, { raw: null, value }, hasWriter);
-        if (!session.write(JSON.stringify(value))) {
-          const retryable = session.error === "write-failed" && session.current() && await savePresence({ release: owner }) === "none";
+        const value = defaults(), archive = new SaveSession(store2, { raw: null, value }, hasWriter);
+        session = archive;
+        if (!archive.write(JSON.stringify(value))) {
+          const retryable = archive.error === "write-failed" && archive.current() && await savePresence({ release: owner }) === "none";
           show("write-failed", "\u65B0\u5B58\u6863\u672A\u80FD\u786E\u8BA4\u4FDD\u5B58\uFF0C\u5DF2\u505C\u6B62\u521D\u59CB\u5316\u3002\u672A\u8986\u76D6\u539F\u8BB0\u5F55\uFF0C\u8BF7\u6062\u590D\u5B58\u50A8\u540E\u91CD\u65B0\u8BFB\u53D6\u3002", retryable ? initialize : void 0);
           return;
         }
@@ -21003,10 +21052,11 @@ ${prevLogs}` : "",
         } catch {
           traceStorage("presence-unavailable");
         }
-        mount(session);
+        mount(archive);
       };
       show("empty-unverified", "\u5F53\u524D\u672A\u8BFB\u53D6\u5230\u672C\u673A\u5B58\u6863\uFF0C\u5C1A\u672A\u5199\u5165\u9ED8\u8BA4\u6570\u636E\u3002\u9996\u6B21\u4F7F\u7528\u65F6\u53EF\u5EFA\u7ACB\u65B0\u5B58\u6863\uFF1B\u5982\u679C\u4EE5\u524D\u4F7F\u7528\u8FC7\uFF0C\u8BF7\u5148\u91CD\u65B0\u8BFB\u53D6\u3002", initialize);
     } catch {
+      session = void 0;
       relinquish();
       show("unavailable", "\u65E0\u6CD5\u6838\u9A8C\u672C\u673A\u5B58\u50A8\u72B6\u6001\uFF0C\u5DF2\u6682\u505C\u521D\u59CB\u5316\u3002\u672A\u521B\u5EFA\u6216\u8986\u76D6\u4EFB\u4F55\u6570\u636E\u3002");
     }

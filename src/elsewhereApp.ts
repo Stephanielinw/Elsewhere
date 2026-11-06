@@ -1,4 +1,4 @@
-import {traceStorage,validateStoredWorld,type SaveSession} from './core/storageSession';
+import {SAVE_ACCESS_EVENT,traceStorage,validateStoredWorld,type SaveSession} from './core/storageSession';
 import {avatarView,renderWithAvatars} from './avatarView';
 import {frameDraft,frameStyle,saveFrameOnly,DEFAULT_FRAME_SCALE,type FrameDraft,type AvatarFrameFields} from './core/avatarAppearance';
 import {meetingTimeline,archiveMeeting} from './core/meetingHistory';
@@ -6858,9 +6858,12 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if(canUseRealModel(data.settings))void processDiaryQueue();
   }
   window.addEventListener('storage',event=>{if(event.key===STORAGE_KEY||event.key===null)refreshSaveAccess();});
-  document.addEventListener('visibilitychange',()=>{captureMeetingDraft();if(!document.hidden){refreshSaveAccess();if(saveSession.current()){pumpChatSchedules();pumpProactive();pumpRoleLife();if(view==='home')homeTasks.refresh();}}});
+  document.addEventListener('visibilitychange',()=>{
+    captureMeetingDraft(document.hidden&&saveSession.hasWriter());
+    if(!document.hidden){refreshSaveAccess();if(view==='home')homeTasks.refresh();}
+  });
+  window.addEventListener(SAVE_ACCESS_EVENT,refreshSaveAccess);
   queueMicrotask(()=>{if(saveSession.current()){pumpChatSchedules();pumpProactive();pumpRoleLife();}});
-  window.addEventListener('pageshow',()=>{refreshSaveAccess();if(!saveSession.current())return;pumpChatSchedules();pumpProactive();pumpRoleLife();if(view==='home')homeTasks.refresh();});
 
   if (typeof setInterval === 'function') {
     setInterval(() => {

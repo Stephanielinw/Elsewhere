@@ -2,6 +2,7 @@ import {DEFAULT_API_SETTINGS,STORAGE_KEY} from './defaults';
 import {normalizeApiBase} from './modelDiscovery';
 
 type Store=Pick<Storage,'getItem'|'setItem'>;
+export const SAVE_ACCESS_EVENT='elsewhere-save-access';
 export type SaveSnapshot={state:'loaded';raw:string;value:Record<string,unknown>}|{state:'empty'|'unavailable'|'invalid';raw:string|null};
 export function traceStorage(phase:string,details:Record<string,string|number|boolean>={}):void {
  const trace=(globalThis as typeof globalThis&{__elsewhereStorageTrace?:unknown}).__elsewhereStorageTrace;

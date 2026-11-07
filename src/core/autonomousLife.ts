@@ -4,6 +4,7 @@ import {collectRoleLife,preparePersonalReply,personalTicketValid,applyPersonalRe
 import {getActiveMessages} from './revisions';
 import {getLocalDayBounds,toLocalDateKey} from './diary';
 import {estimateTextTokens} from './contextBudget';
+import {dateDayNumber} from './homeTasks';
 
 export const LIFE_JOURNAL_KEY='elsewhere-life-budget-v1',LIFE_MAX_OUTPUT=1200;
 const day=86400000;
@@ -14,9 +15,14 @@ export function readLifeJournal(store:Store):LifeTask[] {
  const raw=store.getItem(LIFE_JOURNAL_KEY);if(!raw)return [];
  return decodeLifeJournal(JSON.parse(raw));
 }
+function originalTaskDayValid(task:LifeTask):boolean {
+ const date=typeof task.dateKey==='string'?dateDayNumber(task.dateKey):null;
+ // Legacy receipts have no timezone. This is date plausibility only, never a quota window.
+ return date!==null&&task.at>=date*day-14*3600000&&task.at<date*day+36*3600000;
+}
 export function decodeLifeJournal(value:unknown):LifeTask[] {
  if(value===undefined)return [];
- const data=value as {version?:number;tasks?:LifeTask[]}|null;if(data?.version!==1||!Array.isArray(data.tasks)||data.tasks.some((t:LifeTask)=>!t||typeof t.id!=='string'||typeof t.roleId!=='string'||t.id!=='life:'+encodeURIComponent(t.roleId)+':'+t.dateKey||t.dateKey!==toLocalDateKey(t.at)||t.to!==t.at||t.from>t.to||!Number.isFinite(t.at)||!Number.isFinite(t.from)||!Number.isFinite(t.to)||!['attempted','completed','quiet','failed','cancelled'].includes(t.status)))throw Error('生活调用记录不可验证，自动推进已暂停');
+ const data=value as {version?:number;tasks?:LifeTask[]}|null;if(data?.version!==1||!Array.isArray(data.tasks)||data.tasks.some((t:LifeTask)=>!t||typeof t.id!=='string'||typeof t.roleId!=='string'||t.id!=='life:'+encodeURIComponent(t.roleId)+':'+t.dateKey||!originalTaskDayValid(t)||t.to!==t.at||t.from>t.to||!Number.isFinite(t.at)||!Number.isFinite(t.from)||!Number.isFinite(t.to)||!['attempted','completed','quiet','failed','cancelled'].includes(t.status)))throw Error('生活调用记录不可验证，自动推进已暂停');
  if(new Set(data.tasks.map((t:LifeTask)=>t.id)).size!==data.tasks.length)throw Error('生活调用记录重复，自动推进已暂停');
  return data.tasks;
 }

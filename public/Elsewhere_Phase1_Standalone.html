@@ -11926,10 +11926,14 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
     if (!raw) return [];
     return decodeLifeJournal(JSON.parse(raw));
   }
+  function originalTaskDayValid(task) {
+    const date = typeof task.dateKey === "string" ? dateDayNumber(task.dateKey) : null;
+    return date !== null && task.at >= date * day - 14 * 36e5 && task.at < date * day + 36 * 36e5;
+  }
   function decodeLifeJournal(value) {
     if (value === void 0) return [];
     const data = value;
-    if (data?.version !== 1 || !Array.isArray(data.tasks) || data.tasks.some((t) => !t || typeof t.id !== "string" || typeof t.roleId !== "string" || t.id !== "life:" + encodeURIComponent(t.roleId) + ":" + t.dateKey || t.dateKey !== toLocalDateKey(t.at) || t.to !== t.at || t.from > t.to || !Number.isFinite(t.at) || !Number.isFinite(t.from) || !Number.isFinite(t.to) || !["attempted", "completed", "quiet", "failed", "cancelled"].includes(t.status))) throw Error("\u751F\u6D3B\u8C03\u7528\u8BB0\u5F55\u4E0D\u53EF\u9A8C\u8BC1\uFF0C\u81EA\u52A8\u63A8\u8FDB\u5DF2\u6682\u505C");
+    if (data?.version !== 1 || !Array.isArray(data.tasks) || data.tasks.some((t) => !t || typeof t.id !== "string" || typeof t.roleId !== "string" || t.id !== "life:" + encodeURIComponent(t.roleId) + ":" + t.dateKey || !originalTaskDayValid(t) || t.to !== t.at || t.from > t.to || !Number.isFinite(t.at) || !Number.isFinite(t.from) || !Number.isFinite(t.to) || !["attempted", "completed", "quiet", "failed", "cancelled"].includes(t.status))) throw Error("\u751F\u6D3B\u8C03\u7528\u8BB0\u5F55\u4E0D\u53EF\u9A8C\u8BC1\uFF0C\u81EA\u52A8\u63A8\u8FDB\u5DF2\u6682\u505C");
     if (new Set(data.tasks.map((t) => t.id)).size !== data.tasks.length) throw Error("\u751F\u6D3B\u8C03\u7528\u8BB0\u5F55\u91CD\u590D\uFF0C\u81EA\u52A8\u63A8\u8FDB\u5DF2\u6682\u505C");
     return data.tasks;
   }

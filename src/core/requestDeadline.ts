@@ -1,9 +1,10 @@
 const MODEL_READ_TIMEOUT = 90_000;
 
 /** Only transport and body reading belong in read. Persist results after this promise resolves. */
-export function startRequestDeadline<T>(read:(signal:AbortSignal)=>Promise<T>,parent?:AbortSignal) {
+export function startRequestDeadline<T>(read:(signal:AbortSignal)=>Promise<T>,parent?:AbortSignal,timeoutMs=MODEL_READ_TIMEOUT) {
+  if(!Number.isFinite(timeoutMs)||timeoutMs<1||timeoutMs>600_000)throw new Error('请求截止时间无效');
   const controller=new AbortController();
-  const deadline=Date.now()+MODEL_READ_TIMEOUT;
+  const deadline=Date.now()+timeoutMs;
   let settled=false;
   let timer:ReturnType<typeof setTimeout>|undefined;
   let rejectResult!:(error:unknown)=>void;
@@ -31,7 +32,7 @@ export function startRequestDeadline<T>(read:(signal:AbortSignal)=>Promise<T>,pa
     rejectResult=reject;
     if(parent?.aborted){cancel();return;}
     parent?.addEventListener('abort',cancel,{once:true});
-    timer=setTimeout(tick,MODEL_READ_TIMEOUT);
+    timer=setTimeout(tick,timeoutMs);
     void (async()=>{
       try {
         const body=await read(controller.signal);

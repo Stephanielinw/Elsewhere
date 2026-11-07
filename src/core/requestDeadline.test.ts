@@ -64,3 +64,8 @@ test('timer and parent cancellation settle despite a network read that ignores a
   await assert.rejects(unsent.result,{name:'AbortError'});
   assert.equal(reads,0);
 });
+
+test('novel deadlines can be extended without changing the existing ninety-second default',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:1000});const body=deferred<string>();const task=startRequestDeadline(()=>body.promise,undefined,240000);t.mock.timers.tick(90000);body.resolve('complete');assert.equal(await task.result,'complete');
+ const hung=startRequestDeadline(()=>new Promise<string>(()=>{}),undefined,30000);t.mock.timers.tick(30000);await assert.rejects(hung.result,{name:'TimeoutError'});assert.throws(()=>startRequestDeadline(async()=>'',undefined,Infinity));
+});

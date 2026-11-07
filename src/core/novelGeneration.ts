@@ -7,6 +7,8 @@ import {readChatResponse} from './chatBatchPrompt';
 import {splitSceneReply} from './sceneReply';
 
 export type NovelKind='scene'|'play';
+// Ten characters/second with queue allowance; this is a client wait bound, not a provider SLA.
+export function novelRequestTimeout(profile:FruitProfile){return Math.min(600_000,Math.max(180_000,profile.length.max*100));}
 const stage=(r:RoleData,kind:NovelKind)=>kind==='play'?r.play:r.scene;
 function revision(r:RoleData,kind:NovelKind){
  const p=stage(r,kind);
@@ -67,19 +69,21 @@ export function novelSamplingParameters(preset:FruitPreset){
  }
  return result;
 }
+export class NovelOutputError extends Error {constructor(public safeText:string){super('小说正文或完成状态无法接受；已接收的安全正文仅供复制，未归档');}}
+export function safeNovelText(text:string):string {try{return parseFruitOutput(text).safeText;}catch{return '';}}
 export async function readNovelResponse(response:Response,profile:FruitProfile,thirdParty:boolean){
  return parseNovelResponse(await readChatResponse(response),profile,thirdParty);
 }
 export function parseNovelResponse(text:string,profile:FruitProfile,thirdParty:boolean){
  const extracted=splitSceneReply(text),raw=extracted.text;
  if(!raw)throw new Error('小说正文为空，原记录保留');
- if(!thirdParty)return {text:raw,sections:undefined,auxiliary:undefined,...(extracted.payload?{sceneEvent:extracted.payload}:{})};
+ if(!thirdParty){const parsed=parseFruitOutput(raw),safe=parsed.content;if(!safe||/<\/?[\p{L}][^>]*(?:>|$)/u.test(safe))throw new NovelOutputError(safeNovelText(raw));return {text:safe,warnings:[] as string[],sections:undefined,auxiliary:undefined,...(extracted.payload?{sceneEvent:extracted.payload}:{})};}
  const parsed=parseFruitOutput(raw);
- if(!parsed.content||/<\/?[a-z][\w:-]*(?:\s[^>]*)?>/i.test(parsed.content))throw new Error('小说正文缺失、标签不完整或包含 HTML；原记录保留，可重试');
+ if(!parsed.content||/<\/?[\p{L}][^>]*(?:>|$)/u.test(parsed.content))throw new NovelOutputError(parsed.safeText&&!/<\/?[\p{L}][^>]*(?:>|$)/u.test(parsed.safeText)?parsed.safeText:'');
  const auxiliary:Pick<NonNullable<ChatMessage['novelOutput']>,'scene'|'summary'|'characters'|'choices'|'generatedAuxiliary'>={};
- if(profile.output.scene&&parsed.scene)auxiliary.scene=parsed.scene;
- if(profile.output.summary&&parsed.summary)auxiliary.summary=parsed.summary;
- if(profile.output.characters){if(parsed.characters)auxiliary.characters=parsed.characters;if(parsed.choices)auxiliary.choices=parsed.choices;}
- if(profile.output.auxiliary&&parsed.generatedAuxiliary)auxiliary.generatedAuxiliary=parsed.generatedAuxiliary;
- return {text:parsed.content,sections:permittedNovelSections(parsed.sections,profile),auxiliary,...(extracted.payload?{sceneEvent:extracted.payload}:{})};
+ if(!parsed.diagnostics.length&&profile.output.scene&&parsed.scene)auxiliary.scene=parsed.scene;
+ if(!parsed.diagnostics.length&&profile.output.summary&&parsed.summary)auxiliary.summary=parsed.summary;
+ if(!parsed.diagnostics.length&&profile.output.characters){if(parsed.characters)auxiliary.characters=parsed.characters;if(parsed.choices)auxiliary.choices=parsed.choices;}
+ if(!parsed.diagnostics.length&&profile.output.auxiliary&&parsed.generatedAuxiliary)auxiliary.generatedAuxiliary=parsed.generatedAuxiliary;
+ return {text:parsed.content,warnings:parsed.diagnostics,sections:permittedNovelSections(parsed.sections,profile),auxiliary,...(extracted.payload?{sceneEvent:extracted.payload}:{})};
 }

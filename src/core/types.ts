@@ -166,6 +166,12 @@ export interface SceneReplyTicket {
 
 export type EncounterPhase = 'approaching' | 'nearby' | 'interacting';
 
+export interface NovelAttempt {
+  id:string;inputId?:string;regenerateId?:string;at:number;
+  state:'not-sent'|'unknown'|'returned'|'archived';warning?:boolean;
+  code?:'preset'|'compile'|'timeout'|'cancelled'|'provider'|'format'|'save'|'stale'|'connection';
+  httpStatus?:number;finishReason?:string;presetId?:string;timeoutMs:number;
+}
 export interface SceneData {
   id: string;
   startedAt: number;
@@ -176,6 +182,7 @@ export interface SceneData {
   locationEvidence?: {origin:'agreement'|'generated'|'movement'|'unknown'|'manual';at:number;sources:MeetingPlan['sources'];contextIds?:string[]};
   draft?: string;
   opening?: {roundId:string;entry:'scheduled'|'immediate';status:'unsent'|'unknown'|'archived'};
+  novelAttempt?:NovelAttempt;
   messages: ChatMessage[];
 }
 
@@ -198,6 +205,7 @@ export interface PlayData {
   messages: ChatMessage[];
   intermissionMessages?: ChatMessage[];
   intermissionAttempts?: Record<string,{id:string;revision:number;status:'unknown'|'archived'}>;
+  novelAttempt?:NovelAttempt;
   revisions?: PlayRevision[];
 }
 

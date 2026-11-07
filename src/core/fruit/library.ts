@@ -47,9 +47,10 @@ export function serializePresetLibrary(library:PresetLibrary){
 }
 export class PresetLibraryRepository {
   constructor(private native:FruitPreset){}
-  async load(persistMigration=true):Promise<PresetLibrary>{
-    const db=persistMigration?await openFruitDatabase():await openFruitDatabaseReadonly();let records:{library:unknown;legacy:unknown}={library:undefined,legacy:undefined};
-    if(db)try{records=await new Promise((resolve,reject)=>{const stores=db.objectStoreNames.contains(STORE)?[STORE,'documents']:['documents'],tx=db.transaction(stores,'readonly'),a=stores.includes(STORE)?tx.objectStore(STORE).get(KEY):null,b=tx.objectStore('documents').get('current');tx.oncomplete=()=>resolve({library:a?.result,legacy:b.result});tx.onabort=()=>reject(new Error('读取预设库失败，原数据保留'));});}finally{db.close();}
+  async load(persistMigration=true,signal?:AbortSignal):Promise<PresetLibrary>{
+    const db=persistMigration?await openFruitDatabase():await openFruitDatabaseReadonly(signal);let records:{library:unknown;legacy:unknown}={library:undefined,legacy:undefined};
+    if(db)try{records=await new Promise((resolve,reject)=>{const stores=db.objectStoreNames.contains(STORE)?[STORE,'documents']:['documents'],tx=db.transaction(stores,'readonly'),a=stores.includes(STORE)?tx.objectStore(STORE).get(KEY):null,b=tx.objectStore('documents').get('current');const cancel=()=>{try{tx.abort();}catch{}reject(signal?.reason||new DOMException('预设读取已取消','AbortError'));};signal?.addEventListener('abort',cancel,{once:true});tx.oncomplete=()=>{signal?.removeEventListener('abort',cancel);resolve({library:a?.result,legacy:b.result});};tx.onabort=()=>{signal?.removeEventListener('abort',cancel);reject(signal?.reason||new Error('读取预设库失败，原数据保留'));};if(signal?.aborted)cancel();});}finally{db.close();}
+    if(signal?.aborted)throw signal.reason;
     if(records.library!==undefined)return decodePresetLibrary(records.library,this.native);
     const legacy=await decodeFruitDocument(records.legacy),migrated=migrateLegacyLibrary(legacy,this.native);return persistMigration?this.save(migrated,0,{legacyBackup:records.legacy}):migrated;
   }
@@ -73,7 +74,7 @@ export async function loadNativeRequestProfile(mode:ConversationMode){
  return {profile:structuredClone(entry.profiles[slot]),revision:library.revision,requestedPresetId:mode==='meeting'||mode==='theatre'?library.defaults[slot]:'native',actualPresetId:'native' as const};
 }
 export function selectRequestPreset(library:PresetLibrary,mode:ConversationMode,roleId:string){return selectRoleRequestPreset(library,mode,roleId);}
-export async function loadRequestPreset(mode:ConversationMode,roleId:string){return selectRequestPreset(await new PresetLibraryRepository(nativePreset('meeting')).load(false),mode,roleId);}
+export async function loadRequestPreset(mode:ConversationMode,roleId:string,signal?:AbortSignal){const library=await new PresetLibraryRepository(nativePreset('meeting')).load(false,signal);if(signal?.aborted)throw signal.reason;return selectRequestPreset(library,mode,roleId);}
 
 /** Explicit local backup only; never bundled or sent to any model. */
 export function encodePresetLibraryBackup(library:PresetLibrary):Uint8Array {

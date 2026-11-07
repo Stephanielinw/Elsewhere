@@ -10,7 +10,8 @@ test('novel output preserves section types and order and merges every complete b
  const r=await readNovelResponse(reply(raw),createFruitState().profiles.meeting,true);assert.equal(r.text,p.content);assert.ok(r.sections);assert.deepEqual(r.sections.map(s=>s.type),['novel_header','content','status_bar','content']);
 });
 test('novel parser rejects malformed recognized nesting while ignoring disabled opaque snow',async()=>{
- for(const raw of ['<content>a<content>b</content>c</content>','<content>a<status_bar>x</status_bar></content>','<content>a</content><novel_header>unclosed','</content><content>body</content>','<content>body</content><content','<content>body</content><status_bar','<content>body</content></content'])await assert.rejects(()=>readNovelResponse(reply(raw),createFruitState().profiles.meeting,true));
+ for(const raw of ['<content>a<content>b</content>c</content>','<content>a<status_bar>x</status_bar></content>','</content><content>body</content>','<content>body</content><content','<content>body</content></content'])await assert.rejects(()=>readNovelResponse(reply(raw),createFruitState().profiles.meeting,true));
+ for(const raw of ['<content>a</content><novel_header>unclosed','<content>body</content><status_bar']){const result=await readNovelResponse(reply(raw),createFruitState().profiles.meeting,true);assert.equal(result.text,raw.startsWith('<content>a')?'a':'body');assert.ok(result.warnings.includes('optional-format-recovered'));assert.ok(result.sections?.every(s=>s.type==='content'));}
  assert.equal(parseFruitOutput('<content>正文</content><snow>unclosed secret').content,'正文');assert.ok(!JSON.stringify(parseFruitOutput('<snow><content>SECRET</content></snow><content>正文</content>')).includes('SECRET'));
 });
 test('closed display blocks are not retained when auxiliary output is disabled',async()=>{

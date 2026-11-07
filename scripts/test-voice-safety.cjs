@@ -1,4 +1,5 @@
 const assert=require('node:assert/strict');
+const approveBackupImports=require('./backup-confirmation.cjs');
 const {pathToFileURL}=require('node:url');
 const {chromium,devices}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 
@@ -26,6 +27,7 @@ async function main(){
  async function run(label,test,{model=false,postsExpected=0}={}){
   if(process.env.TEST_CASE&&!label.includes(process.env.TEST_CASE))return;
   const context=await browser.newContext({...devices['iPhone 13'],ignoreHTTPSErrors:true,serviceWorkers:'block',acceptDownloads:true,timezoneId:'America/Los_Angeles'});
+  await approveBackupImports(context);
   const p=await context.newPage();p.setDefaultTimeout(6500);p.setDefaultNavigationTimeout(6500);
   const posts=[],errors=[];p.on('pageerror',e=>errors.push(e.message));
   try{

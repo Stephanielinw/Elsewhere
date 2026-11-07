@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const approveBackupImports=require('./backup-confirmation.cjs');
 const {join} = require('node:path');
 const {pathToFileURL} = require('node:url');
 const {readFile} = require('node:fs/promises');
@@ -160,6 +161,7 @@ async function main() {
   async function run(name, body, {api = false, shared = false, capability, mock, empty = false} = {}) {
     if (process.env.TEST_CASE && !name.includes(process.env.TEST_CASE)) return;
     const context = await browser.newContext({viewport:{width:390, height:844}, serviceWorkers:'block'});
+    await approveBackupImports(context);
     try {
       let bootstrap = true;
       const posts = [], errors = [];

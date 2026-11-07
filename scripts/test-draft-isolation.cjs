@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const approveBackupImports=require('./backup-confirmation.cjs');
 const {pathToFileURL} = require('node:url');
 const {chromium, devices} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const url = process.env.TEST_URL || pathToFileURL(process.cwd()+'/public/Elsewhere_Phase1_Standalone.html').href;
@@ -28,6 +29,7 @@ async function main() {
   async function run(label,test,{scene=false,denyDraft=false,legacyOnly=false,modelFailure=false,noLocks=false}={}) {
     if (process.env.TEST_CASE && !label.includes(process.env.TEST_CASE)) return;
     const ctx = await browser.newContext({...devices['iPhone 13'],ignoreHTTPSErrors:true,serviceWorkers:'block',timezoneId:'America/Los_Angeles'});
+    await approveBackupImports(ctx);
     const p = await ctx.newPage();
     p.setDefaultTimeout(8000);
     p.setDefaultNavigationTimeout(8000);

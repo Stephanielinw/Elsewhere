@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const approveBackupImports=require('./backup-confirmation.cjs');
 const {createServer} = require('node:http');
 const {once} = require('node:events');
 const {pathToFileURL} = require('node:url');
@@ -102,6 +103,7 @@ async function main(){
   async function run(name,seed,body,behavior={}){
     requests.length=0;current=behavior;redirects=0;
     const c=await browser.newContext({viewport:{width:390,height:844}});
+    await approveBackupImports(c);
     try{
       await c.route('**/*',route=>{
         const url=route.request().url();

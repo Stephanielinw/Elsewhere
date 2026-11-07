@@ -116,27 +116,32 @@ export function collectReferencedMediaIds(data: AppData): string[] {
   return [...new Set(Array.from(mediaReferences(data),ref=>ref.id))];
 }
 
-export async function buildBackupPayload(data: AppData): Promise<Record<string, unknown>> {
+export async function buildBackupPayload(data: AppData) {
   const pack = JSON.parse(JSON.stringify(data)) as Record<string, unknown>;
+  delete pack._media;
+  delete pack._backupIntegrity;
   const mediaArr: { id: string; data: string }[] = [];
   const ids = [...new Set(Array.from(mediaReferences(pack),ref=>ref.id))];
-
+  let missingCount=0;
   for (const id of ids) {
-    const media = await mediaGet(id);
-    if (!media) throw Error('找不到存档引用的附件，未生成不完整备份。');
-    const uri = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(media);
-    });
-    mediaArr.push({ id, data: uri });
+    try{
+      const media=await mediaGet(id);
+      if(!media){missingCount++;continue;}
+      const uri=await new Promise<string>((resolve,reject)=>{
+        const reader=new FileReader();
+        reader.onload=()=>resolve(String(reader.result));
+        reader.onerror=reader.onabort=()=>reject(Error('附件无法读取'));
+        reader.readAsDataURL(media);
+      });
+      mediaArr.push(...validateBackupAttachments([{id,data:uri}]));
+    }catch{missingCount++;}
   }
   pack._media = mediaArr;
-  return pack;
+  if(missingCount)pack._backupIntegrity={status:'incomplete',missingMediaCount:missingCount};
+  return {payload:pack,missingCount};
 }
 
-type BackupAttachment = { id: string; data: string };
+export type BackupAttachment = { id: string; data: string };
 
 export function validateBackupAttachments(value: unknown): BackupAttachment[] {
   if (value === undefined) return [];
@@ -153,11 +158,19 @@ export function validateBackupAttachments(value: unknown): BackupAttachment[] {
   return value;
 }
 
+export function verifyBackupMedia(candidate:AppData,attachments:BackupAttachment[]):number {
+  const available=new Set(attachments.map(item=>item.id));
+  const ids=collectReferencedMediaIds(candidate);
+  const missing=ids.filter(id=>!available.has(id)).length;
+  if(missing)throw Error(`备份缺少 ${missing} 个存档引用的附件，无法恢复为完整世界。`);
+  return ids.length;
+}
+
 export async function stageBackupMedia(candidate: AppData, attachments: BackupAttachment[]): Promise<void> {
   const refs = [...mediaReferences(candidate)];
   const byId = new Map(attachments.map(item=>[item.id,item.data]));
   const ids = [...new Set(refs.map(ref=>ref.id))];
-  if (ids.some(id=>!byId.has(id))) throw Error('备份缺少存档引用的附件，未恢复。');
+  verifyBackupMedia(candidate,attachments);
 
   const mapping = new Map<string,string>();
   const staged: {id:string;blob:Blob}[] = [];

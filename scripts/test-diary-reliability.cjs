@@ -1,4 +1,5 @@
 const assert=require('node:assert/strict');
+const approveBackupImports=require('./backup-confirmation.cjs');
 const {pathToFileURL}=require('node:url');
 const {join}=require('node:path');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
@@ -37,6 +38,7 @@ async function main(){
  async function run(name,body,{days=1,hold=false,fault='',count=1,claims=count,roles=1,onlyFirst=false,manual=false,legacyInFlight=false,existing=false,network='',sources=false}={}){
   if(process.env.TEST_CASE&&!name.includes(process.env.TEST_CASE))return;
   const ctx=await browser.newContext({serviceWorkers:'block',viewport:{width:390,height:844},ignoreHTTPSErrors:true});
+  await approveBackupImports(ctx);
   let bootstrap=true,unblock;
   const gate=new Promise(resolve=>{unblock=resolve;});
   const posts=[],errors=[],committedClaims=[];

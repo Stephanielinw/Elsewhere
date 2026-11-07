@@ -1,4 +1,4 @@
-import {DEFAULT_API_SETTINGS,STORAGE_KEY} from './defaults';
+import {DEFAULT_API_SETTINGS,STORAGE_KEY,normalizeAndMigrateData} from './defaults';
 import {normalizeApiBase} from './modelDiscovery';
 
 type Store=Pick<Storage,'getItem'|'setItem'>;
@@ -16,6 +16,10 @@ const positiveNumber=(value:unknown)=>finiteNumber(value)&&value>0;
 export function validateStoredWorld(value:unknown):Record<string,unknown> {
   if(!object(value)||!Array.isArray(value.roles)||!object(value.settings))throw Error('不是有效的 Elsewhere 存档');
   const settings=value.settings,legacy=value.version===undefined||value.version===1||value.version===2;
+  if(value.version===undefined&&!value.roles.length&&value.user===undefined&&
+    !['endpoint','mode','model','temperature','maxTokens','autonomousLife'].some(key=>Object.hasOwn(settings,key))){
+    throw Error('没有可识别的角色或存档信息');
+  }
   const {
     endpoint=legacy?'':undefined,
     mode=legacy?DEFAULT_API_SETTINGS.mode:undefined,
@@ -56,7 +60,50 @@ export function validateStoredWorld(value:unknown):Record<string,unknown> {
   if(value.roles.some(r=>!object(r)||typeof r.id!=='string'||typeof r.name!=='string'||!arrays(r,histories)||r.footprintsByDate!==undefined&&!object(r.footprintsByDate)||['avatarMediaId','frameId','frameMediaId'].some(k=>r[k]!==undefined&&typeof r[k]!=='string')||['chats','diaries','events'].some(k=>Array.isArray(r[k])&&(r[k] as unknown[]).some(m=>!object(m)))))throw Error('角色资料或历史结构无效');
   if(value.roles.some(r=>r.diaries?.some((entry:Record<string,unknown>)=>entry.wordCount!==undefined
     && (typeof entry.wordCount!=='number'||!Number.isSafeInteger(entry.wordCount)||entry.wordCount<0))))throw Error('日记归档字数无效');
+  for(const role of value.roles){
+    if(role.diaryTasks?.some((task:unknown)=>!object(task)||typeof task.dateKey!=='string')){
+      throw Error('日记任务记录无效');
+    }
+    const proactive=role.proactive;
+    if(proactive!=null&&(!object(proactive)||!arrays(proactive,['attempts','sentTopics'])||
+      (proactive.attempts as unknown[]|undefined)?.some(item=>!object(item))||
+      role.pendingReplies?.some((item:unknown)=>!object(item)))){
+      throw Error('主动联系任务记录无效');
+    }
+    const timing=role.chatTiming;
+    if(timing!=null&&(!object(timing)||!Array.isArray(timing.pending)||timing.pending.some(id=>typeof id!=='string')||
+      timing.inFlight!=null&&(!object(timing.inFlight)||!Array.isArray(timing.inFlight.sources)||
+        timing.inFlight.sources.some(item=>!object(item))))){
+      throw Error('聊天待发送记录无效');
+    }
+  }
   return {...value,settings:{...settings,endpoint:base,mode,model,temperature,maxTokens}};
+}
+
+export function normalizeStoredWorld(value:unknown) {
+ const input=value as {customFonts?:unknown[];bubblePresets?:unknown[]};
+ const fonts=input?.customFonts?.length||0,bubbles=input?.bubblePresets?.length||0;
+ const data=normalizeAndMigrateData(value);
+ if((data.customFonts?.length||0)<fonts||(data.bubblePresets?.length||0)<bubbles){
+  traceStorage('normalization-rejected',{reason:'appearance-list-loss'});
+  throw Error('存档中的外观记录无法完整恢复');
+ }
+ return data;
+}
+
+/** A failed or contradictory lookup must never be used as an empty recovery target. */
+export function readRecoveryBaseline(store:Pick<Storage,'getItem'|'length'|'key'>):string|null {
+ try{
+  const raw=store.getItem(STORAGE_KEY);
+  if(raw!==null)return raw;
+  const count=store.length;
+  for(let i=0;i<count;i++){
+   const key=store.key(i);
+   if(key===STORAGE_KEY||key===null)throw Error();
+  }
+  if(store.length===count&&store.getItem(STORAGE_KEY)===null)return null;
+ }catch{}
+ throw Error('暂时无法确认本机主档，请重新读取后再恢复。');
 }
 export function readStoredSave(store:Pick<Storage,'getItem'>):SaveSnapshot {
  let raw:string|null;try{raw=store.getItem(STORAGE_KEY);}catch{traceStorage('read-unavailable');return {state:'unavailable',raw:null};}

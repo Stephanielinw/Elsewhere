@@ -1,4 +1,5 @@
-import {SAVE_ACCESS_EVENT,traceStorage,validateStoredWorld,type SaveSession} from './core/storageSession';
+import {SAVE_ACCESS_EVENT,normalizeStoredWorld,traceStorage,type SaveSession} from './core/storageSession';
+import {backupImpact,downloadBackup,prepareBackup,readBackupFile} from './core/backup';
 import {avatarView,renderWithAvatars} from './avatarView';
 import {frameDraft,frameStyle,saveFrameOnly,DEFAULT_FRAME_SCALE,type FrameDraft,type AvatarFrameFields} from './core/avatarAppearance';
 import {meetingTimeline,archiveMeeting} from './core/meetingHistory';
@@ -60,15 +61,12 @@ import {
   STORAGE_KEY,
   createRole,
   defaults,
-  normalizeAndMigrateData,
 } from './core/defaults';
 import {
-  buildBackupPayload,
   createMediaSources,
   mediaGet,
   mediaPut,
   stageBackupMedia,
-  validateBackupAttachments,
 } from './core/media';
 import {
   buildQuoteMetadata,
@@ -194,10 +192,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   const now = (): number => Date.now();
 
   const rawLoaded=saveSession.initial.value,originalSave=saveSession.raw;
-  const stored=rawLoaded as Partial<AppData>|null;
-  const appearanceCounts=[stored?.customFonts?.length||0,stored?.bubblePresets?.length||0];
-  const normalizedData=normalizeAndMigrateData(rawLoaded);
-  if((normalizedData.customFonts?.length||0)<appearanceCounts[0]||(normalizedData.bubblePresets?.length||0)<appearanceCounts[1]){traceStorage('normalization-rejected',{reason:'appearance-list-loss'});throw Error('unsafe-normalization');}
+  const normalizedData=normalizeStoredWorld(rawLoaded);
   const nainMigration=originalSave&&saveSession.hasWriter()?migrateUntouchedNainDemo(normalizedData,saveSession.storage,Date.now(),originalSave):{data:normalizedData,cleaned:false,error:undefined};
   let data: AppData = nainMigration.data;
 
@@ -210,6 +205,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   let editingRoleId: string | null = null;
   let deleteRoleId: string | null = null;
   let busy = false;
+  let restoringBackup=false;
   const activeModelReads=new Map<Pick<ReturnType<typeof startRequestDeadline>,'cancel'|'check'>,boolean>();
   let modelPageEpoch=0;
   let modelPageHidden=false;
@@ -2083,6 +2079,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   }
 
   function completeFocusIfDue(): boolean {
+    if(restoringBackup)return false;
     const f = activeFocus();
     if (!f || f.status !== 'running' || focusRemaining(f) > 0) return false;
     syncFocusMoments();
@@ -5794,71 +5791,50 @@ export function initElsewhereApp(saveSession:SaveSession): void {
 
   async function exportData(): Promise<void> {
     try {
-      const pack = await buildBackupPayload(data);
-      const blob = new Blob([JSON.stringify(pack, null, 2)], {
-        type: 'application/json',
-      });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `elsewhere-backup-${new Date()
-        .toISOString()
-        .slice(0, 10)}.json`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 500);
+      notify(await downloadBackup(data,`elsewhere-backup-${new Date().toISOString().slice(0,10)}.json`));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       notify('附件备份失败：' + msg);
     }
   }
 
-  let restoringBackup=false;
-  function importBackup(file: File | undefined): void {
+  async function importBackup(file:File|undefined):Promise<void> {
     if (!file||restoringBackup) return;
     restoringBackup=true;
-    const fr = new FileReader();
-    fr.onerror=()=>{restoringBackup=false;notify('无法读取备份文件。');};
-    fr.onload = async () => {
-      try {
-        const previous=data,baseline=saveSession.raw;
-        if(!saveSession.current())throw Error(saveError());
-        let parsed: unknown;
-        try {parsed = JSON.parse(String(fr.result));}
-        catch {throw new Error('备份不是有效的 JSON');}
-        const d = validateStoredWorld(parsed);
-        const attachments = validateBackupAttachments(d._media);
-        delete d._media;
-        const fontCount=Array.isArray(d.customFonts)?d.customFonts.length:0;
-        const bubbleCount=Array.isArray(d.bubblePresets)?d.bubblePresets.length:0;
-        const next = normalizeAndMigrateData(d);
-        if((next.customFonts?.length||0)<fontCount||(next.bubblePresets?.length||0)<bubbleCount)throw Error('备份中的外观记录无法完整恢复。');
-        try {next.focus = ensureFocusStateNormalized(next.focus,next.roles);}
-        catch {throw new Error('专注备份结构无效');}
-        if(next.focus.active)delete next.focus.active.liveLogBusy;
-        next.selected = null;
-        delete next.draftWorldId;
-        await stageBackupMedia(next,attachments);
-        if(data!==previous||saveSession.raw!==baseline)throw Error('暂存期间世界已变化，未替换存档。');
-        if(!save(next))throw Error(saveError());
-        clearDrafts(()=>true);
-        suspendVoiceOperations(false);
-        modelPageEpoch++;
-        for(const owner of previous.roles){
-          if(novelTasks.cancel(owner.id))busy=false;
-        }
-        data = next;
-        mediaSources.clear();
-        document.querySelectorAll<HTMLElement>('[data-hydrated-key]').forEach(el=>delete el.dataset.hydratedKey);
-        token = readDeviceApiKey(localStorage,data.settings.endpoint);
-        terminalApi.reset();
-        go('landing',undefined,false);
-        notify('已导入备份及媒体附件');
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        notify('备份导入失败：' + msg);
-      } finally {restoringBackup=false;}
+    const previous=data,baseline=saveSession.raw,epoch=modelPageEpoch;
+    const check=()=>{
+      if(data!==previous||saveSession.raw!==baseline||epoch!==modelPageEpoch)throw Error('准备恢复期间世界已变化，未替换存档。');
+      if(!saveSession.current())throw Error(saveError());
     };
-    fr.readAsText(file);
+    try {
+      check();
+      const backup=prepareBackup(await readBackupFile(file));
+      check();
+      if(!window.confirm('确认恢复备份？\n'+backupImpact(backup,baseline!==null))){
+        notify('已取消恢复，原存档保留。');
+        return;
+      }
+      check();
+      const next=backup.world;
+      await stageBackupMedia(next,backup.attachments);
+      check();
+      if(!save(next))throw Error(saveError());
+      clearDrafts(()=>true);
+      suspendVoiceOperations(false);
+      modelPageEpoch++;
+      for(const owner of previous.roles){
+        if(novelTasks.cancel(owner.id))busy=false;
+      }
+      data=next;
+      mediaSources.clear();
+      document.querySelectorAll<HTMLElement>('[data-hydrated-key]').forEach(el=>delete el.dataset.hydratedKey);
+      token=readDeviceApiKey(localStorage,data.settings.endpoint);
+      terminalApi.reset();
+      go('landing',undefined,false);
+      notify('已导入备份及媒体附件');
+    }catch(error){
+      notify('备份导入失败：'+(error instanceof Error?error.message:'无法恢复这份备份。'));
+    }finally{restoringBackup=false;}
   }
 
   const appRoot = $('#app')!;
@@ -5908,8 +5884,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if(!raw){notify('未找到清档前恢复副本。');return;}
       void(async()=>{try{
         const snapshot=JSON.parse(raw) as AppData;
-        const payload=await buildBackupPayload(snapshot),blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),link=document.createElement('a');
-        link.href=url;link.download='Elsewhere_奈恩清档前恢复副本.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+        notify(await downloadBackup(snapshot,'Elsewhere_奈恩清档前恢复副本.json'));
       }catch{notify('恢复副本导出失败，原副本仍保留。');}})();return;
     }
     if(act==='resume-scene-opening'){
@@ -7199,7 +7174,9 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       );
     }
     if (el.id === 'backup-file' || el.id === 'landing-backup-file') {
-      importBackup(el.files?.[0]);
+      const file=el.files?.[0];
+      el.value='';
+      void importBackup(file);
     }
 
 

@@ -1,4 +1,5 @@
 const assert=require('node:assert/strict');
+const approveBackupImports=require('./backup-confirmation.cjs');
 const {pathToFileURL}=require('node:url');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 
@@ -27,6 +28,7 @@ async function main(){
   async function run(name,options,check){
     if(process.env.TEST_CASE&&!name.includes(process.env.TEST_CASE))return;
     const ctx=await browser.newContext({viewport:{width:390,height:844},timezoneId:'America/Los_Angeles',ignoreHTTPSErrors:true,serviceWorkers:'block'});
+    await approveBackupImports(ctx);
     const posts=[],wire=[],errors=[];
     let bootstrap=true,releaseHeaders;
     const headerGate=new Promise(resolve=>{releaseHeaders=resolve;});

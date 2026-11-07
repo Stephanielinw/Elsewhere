@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test src/core/*.test.ts",
     "build:standalone": "npm run typecheck && node scripts/build-standalone.mjs",
-    "verify": "npm run typecheck && npm test && node scripts/build-standalone.mjs && vite build"
+    "verify": "npm run typecheck && npm test && node scripts/build-standalone.mjs && vite build",
+    "release:check": "node scripts/release-gate.cjs"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -32,6 +33,7 @@
     "@types/react-dom": "^19.3.0",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.28.2",
+    "playwright": "1.62.1",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
     "typescript": "^7.0.2",

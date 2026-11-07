@@ -7,22 +7,22 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: github-pages
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    if: github.ref == 'refs/heads/main'
+  verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    timeout-minutes: 20
     steps:
+      - name: Require a new workflow Run
+        run: |
+          if [ "$GITHUB_RUN_ATTEMPT" != 1 ]; then
+            echo '::error::Deployment blocked. Start a new workflow_dispatch Run instead of re-running this Run.'
+            exit 1
+          fi
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -34,16 +34,62 @@ jobs:
           cache: npm
       - name: Install locked dependencies
         run: npm ci
-      - name: Build static website and offline download
-        run: npm run build
+      - name: Install locked Chromium and Linux dependencies
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Test release gate failure handling
+        run: node --test scripts/test-release-gate.cjs
+      - name: Typecheck, core units and final Pages and offline build
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/release-gate
+          npm run verify 2>&1 | tee artifacts/release-gate/verify.log
+          node scripts/release-gate.cjs --units artifacts/release-gate/verify.log
         env:
           GITHUB_PAGES: 'true'
-      - name: Configure Pages
-        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
-      - name: Upload dist only
+      - name: Test the frozen dist with isolated Mock browsers
+        run: npm run release:check
+      - name: Confirm exact upload bytes
+        run: node scripts/release-gate.cjs --check-manifest
+      - name: Upload verified dist only on main
+        if: github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
           path: dist
+      - name: Record verification and deployment eligibility
+        if: always()
+        env:
+          CHECK_RESULT: ${{ job.status }}
+        run: |
+          echo "Verification $CHECK_RESULT for $GITHUB_SHA on $GITHUB_REF." >> "$GITHUB_STEP_SUMMARY"
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo 'Validation branch only. Pages upload and deployment are intentionally disabled.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  deploy:
+    needs: verify
+    if: github.ref == 'refs/heads/main' && needs.verify.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Prevent duplicate deployments in the same Run
+        run: |
+          if [ "$GITHUB_RUN_ATTEMPT" != 1 ]; then
+            echo '::error::Deployment blocked. Start a new workflow_dispatch Run instead of re-running this Run.'
+            exit 1
+          fi
+      - name: Configure Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
       - name: Deploy to Pages
         id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5
+      - name: Record actual deployment outcome
+        if: always()
+        env:
+          DEPLOY_OUTCOME: ${{ steps.deployment.outcome }}
+        run: echo "Pages deployment outcome $DEPLOY_OUTCOME for $GITHUB_SHA." >> "$GITHUB_STEP_SUMMARY"

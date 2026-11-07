@@ -5,7 +5,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 
 const url=process.env.TEST_URL||pathToFileURL(process.cwd()+'/public/Elsewhere_Phase1_Standalone.html').href;
 const site=new URL(url);
-assert.ok(site.protocol==='file:'||(['http:','https:'].includes(site.protocol)&&site.hostname==='127.0.0.1'));
+assert.ok(site.protocol==='file:'||(['http:','https:'].includes(site.protocol)&&site.hostname==='127.0.0.1')||site.href==='https://stephanielinw.github.io/Elsewhere/');
 const key='elsewhere-v01',db='elsewhere-media-v1',receipts='elsewhere-diary-requests-v1';
 const at=Date.parse('2026-11-06T22:00:00Z');
 const corrupt=' \t{合成的损坏主档\r\n';

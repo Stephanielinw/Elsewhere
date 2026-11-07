@@ -127,6 +127,11 @@ async function main(){
    assert.ok(t.posts[0].body.messages.some(m=>m.role==='user'&&m.content.includes(before.chats[0].text)));
    await t.archived();
    await t.p.locator('[data-action=endnovel]').click();await t.draft.waitFor();
+   const card=t.p.locator('[data-meeting-id="'+id+'"]');
+   assert.ok(await card.evaluate(el=>el.getBoundingClientRect().height>=80));
+   await card.click();await t.p.locator('[data-meeting-record="'+id+'"]').waitFor();
+   assert.ok((await t.p.locator('[data-meeting-record]').innerText()).includes(opening));
+   await t.p.locator('.back-btn').click();assert.equal(t.posts.length,1);
    await t.reload();await t.chat();assert.equal(await t.draft.inputValue(),'尚未发送的合成草稿');
    await t.advance(75000);
    const after=await t.current();assert.equal(after.scene,null);

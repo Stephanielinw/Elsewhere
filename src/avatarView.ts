@@ -23,12 +23,17 @@ export function avatarView(owner:AvatarOwner|null|undefined,kind:'role'|'user',c
  return `<span class="${classes}${photo?' has-avatar-img':''}${src?' avatar-loaded':''}${frame?' has-avatar-frame':''}" data-avatar-box="${kind}" ${kind==='role'?`data-role-id="${esc(owner?.id||'')}"`:''} data-avatar-render-key="${esc(key)}"><span class="avatar-fallback">${esc(fallback)}</span>${photo}${frame}</span>`;
 }
 
-/** Walk only avatar ancestor branches; unrelated regions retain the existing HTML-render behavior. */
-export function renderWithAvatars(root:HTMLElement,html:string):void {
+/** Retain avatar branches and, when requested, the live chat subtree. */
+export function renderWithAvatars(root:HTMLElement,html:string,preserveChat=false):void {
  const template=document.createElement('template');template.innerHTML=html;
- const hasAvatar=(node:Node)=>node instanceof Element&&(node.matches('[data-avatar-box]')||Boolean(node.querySelector('[data-avatar-box]')));
+ const retainedSelector=preserveChat?'[data-avatar-box],.chat-conversation':'[data-avatar-box]';
+ const hasAvatar=(node:Node)=>node instanceof Element&&(node.matches(retainedSelector)||Boolean(node.querySelector(retainedSelector)));
  const key=(node:Node)=>{
   if(!(node instanceof Element))return node.nodeName;
+  if(preserveChat){
+   if(node.hasAttribute('data-chat-key'))return node.tagName+':'+node.getAttribute('data-chat-key');
+   if(node.hasAttribute('data-media-id'))return node.tagName+':media:'+node.getAttribute('data-media-id');
+  }
   if(node.matches('[data-avatar-box]'))return `avatar:${node.getAttribute('data-avatar-box')}:${node.getAttribute('data-role-id')||''}:${node.classList[0]}`;
   return `${node.tagName}:${node.id||node.getAttribute('data-msg-id')||node.classList[0]||''}`;
  };
@@ -41,22 +46,31 @@ export function renderWithAvatars(root:HTMLElement,html:string):void {
   if(photo&&!next.hasAttribute('data-media-id'))old.removeAttribute('data-hydrated-key');
  };
  const patch=(parent:Node,incoming:Node)=>{
+  const chat=preserveChat&&parent instanceof Element&&Boolean(parent.closest('.chat-conversation'));
+  if(chat){const wanted=new Set([...incoming.childNodes].map(key));for(const node of [...parent.childNodes])if(!wanted.has(key(node)))node.remove();}
   const pool=new Map<string,ChildNode[]>();
   for(const node of [...parent.childNodes]){const k=key(node);pool.set(k,[...(pool.get(k)||[]),node]);}
   let cursor=parent.firstChild;
   for(const next of [...incoming.childNodes]){
    const prior=pool.get(key(next))?.shift();let node=next;
    if(prior instanceof Element&&next instanceof Element&&prior.tagName===next.tagName){
-    if(prior.matches('.avatar-img')&&prior.closest('[data-avatar-box]')){
+    if(chat&&prior.isEqualNode(next))node=prior;
+    else if(prior.matches('.avatar-img')&&prior.closest('[data-avatar-box]')){
      attributes(prior,next,true);node=prior;
     }else if(prior.matches('.avatar-frame')&&prior.closest('[data-avatar-box]')){
      const sameSource=next.hasAttribute('data-media-id')?prior.getAttribute('data-media-id')===next.getAttribute('data-media-id'):prior.getAttribute('src')===next.getAttribute('src');
      if(sameSource&&prior.classList.contains('frame-img-error'))next.classList.add('frame-img-error');
      attributes(prior,next,true);node=prior;
+    }else if(chat){
+     const media=prior.hasAttribute('data-media-id')&&prior.getAttribute('data-media-id')===next.getAttribute('data-media-id');
+     if(prior.matches('[data-avatar-box]')&&prior.classList.contains('avatar-loaded')&&next.querySelector('.avatar-img'))next.classList.add('avatar-loaded');
+     attributes(prior,next,media);if(!media)patch(prior,next);node=prior;
     }else if(hasAvatar(prior)&&hasAvatar(next)){
      if(prior.matches('[data-avatar-box]')&&prior.classList.contains('avatar-loaded')&&next.querySelector('.avatar-img'))next.classList.add('avatar-loaded');
      attributes(prior,next);patch(prior,next);node=prior;
     }
+   }else if(chat&&prior&&prior.nodeType===next.nodeType&&!(prior instanceof Element)){
+    if(prior.nodeValue!==next.nodeValue)prior.nodeValue=next.nodeValue;node=prior;
    }
    if(node===cursor)cursor=cursor.nextSibling;
    else {parent.insertBefore(node,cursor);if(prior===cursor){cursor=prior.nextSibling;prior.remove();}}

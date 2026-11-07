@@ -35,9 +35,10 @@ import {meetingCardHtml,meetingRecordHtml} from '../meetingHistoryView';
 import {retractMessage} from './revisions';
 test('archive view is readonly, escapes novel content, and respects active revisions',()=>{
  const r=fixture();r.scene!.messages[1].text='<img src=x onerror=alert(1)>正文';r.scene!.messages.push({id:'gone',speaker:'char',text:'RETRACTED_TEXT',at,status:'retracted'});
- const scene=archiveMeeting(r,at+1000,()=>true)!;const html=meetingRecordHtml(r,scene),card=meetingCardHtml(scene);
+ const scene=archiveMeeting(r,at+1000,()=>true)!;const html=meetingRecordHtml(r,scene),card=meetingCardHtml(scene,r);
  assert.ok(html.includes('&lt;img'));assert.ok(!html.includes('<img'));assert.ok(!html.includes('RETRACTED_TEXT'));assert.ok(!/data-action="(?:regenmsg|starteditmsg|resume)|<form/.test(html));
  assert.ok(card.includes('data-id="scene-1"'));assert.ok(!card.includes('正文'));assert.ok(card.includes('约定庭院'));
+ assert.match(card,/^<button type="button"/);assert.match(card,/data-action="viewmeeting"/);assert.ok(card.includes(r.name));assert.ok(!card.includes('<details'));
  retractMessage({...r,scene},'scene','a',at+2000);assert.ok(!meetingRecordHtml(r,scene).includes('SCENE_ONLY'));
 });
 test('draft and archive references survive original JSON backup normalization without mutating preset or phone data',()=>{

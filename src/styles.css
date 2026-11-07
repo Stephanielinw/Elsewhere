@@ -177,6 +177,8 @@ html,body{overflow:hidden;background:var(--bg)}
 
 .bubble-quote{margin-bottom:7px;padding:6px 9px;border-left:2.5px solid var(--accent);background:color-mix(in srgb,var(--surface) 38%,transparent);border-radius:6px 10px 10px 6px;font-size:11px;line-height:1.45;color:var(--muted)}
 .bubble-quote b{display:block;color:var(--accent);font-size:10px;margin-bottom:2px}
+button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top:0;border-right:0;border-bottom:0;cursor:pointer}
+.chat-load-older{align-self:center;border:1px solid var(--line);border-radius:18px;background:var(--surface);color:var(--muted);padding:8px 14px;font:inherit;cursor:pointer}
 [data-theme=night] .bubble-quote{background:rgba(0,0,0,.22)}
 
 .compose-quote-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 16px;background:color-mix(in srgb,var(--surface) 52%,transparent);border-top:1px solid var(--glass-stroke);font-size:11px;color:var(--ink);backdrop-filter:blur(18px);flex-shrink:0}
@@ -2212,12 +2214,12 @@ html,body{overflow:hidden;background:var(--bg)}
 @media(prefers-reduced-transparency:reduce){.tile:before{background:var(--surface);-webkit-backdrop-filter:none;backdrop-filter:none}}
 
 /* Meeting archives reference the existing Scene rather than duplicating chat content. */
-.meeting-chat-card{margin:16px auto;width:min(100%,360px);border:1px solid var(--surface2);border-radius:18px;background:var(--surface);overflow:hidden;color:var(--ink)}
-.meeting-chat-card summary{display:flex;align-items:center;gap:10px;padding:14px;cursor:pointer;font-weight:600;list-style:none}
-.meeting-chat-card summary::-webkit-details-marker{display:none}
-.meeting-chat-card summary span{flex:1;min-width:0;overflow-wrap:anywhere}
-.meeting-chat-card summary small{display:block;margin-top:4px;color:var(--muted);font-weight:400}
-.meeting-card-body{padding:0 14px 14px;font-size:12px;line-height:1.8}
+.meeting-chat-card{flex:none;display:flex;align-items:center;gap:10px;padding:14px;min-height:80px;margin:16px auto;width:min(100%,360px);border:1px solid var(--surface2);border-radius:18px;background:var(--surface);color:var(--ink);font:inherit;text-align:left;cursor:pointer}
+.meeting-chat-card>svg{flex:none}
+.meeting-chat-card>span{flex:1;min-width:0;overflow-wrap:anywhere}
+.meeting-chat-card b{font-size:13px}
+.meeting-chat-card small{display:block;margin-top:4px;color:var(--muted);font-size:11px;line-height:1.5}
+.meeting-chat-card:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 .meeting-record .passage{overflow-wrap:anywhere}
 
 .meeting-record-view .top .back-btn{width:auto;min-width:max-content;white-space:nowrap}

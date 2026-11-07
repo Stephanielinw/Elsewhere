@@ -136,6 +136,8 @@ async function main() {
       await visit(chat(p),'聊天草稿');
       await submitChat(p);
       assert.equal((await roles(p))[0].chats.at(-1).text,'聊天草稿');
+      // Settle the normal scheduler write before asserting that BFCache recovery itself writes nothing.
+      await p.waitForFunction(key=>{const timing=JSON.parse(localStorage.getItem(key)).roles[0].chatTiming;return timing.pending.length>0&&timing.replyDueAt===timing.quietUntil;},key);
       await p.locator('.chat-back').click();
       await p.locator('[data-view=diary]').first().evaluate(el=>el.click());
       await p.locator('[data-action=diarytab][data-tab=me]').click();

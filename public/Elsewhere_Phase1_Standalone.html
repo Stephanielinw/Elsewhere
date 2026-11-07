@@ -187,6 +187,8 @@ html,body{overflow:hidden;background:var(--bg)}
 
 .bubble-quote{margin-bottom:7px;padding:6px 9px;border-left:2.5px solid var(--accent);background:color-mix(in srgb,var(--surface) 38%,transparent);border-radius:6px 10px 10px 6px;font-size:11px;line-height:1.45;color:var(--muted)}
 .bubble-quote b{display:block;color:var(--accent);font-size:10px;margin-bottom:2px}
+button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top:0;border-right:0;border-bottom:0;cursor:pointer}
+.chat-load-older{align-self:center;border:1px solid var(--line);border-radius:18px;background:var(--surface);color:var(--muted);padding:8px 14px;font:inherit;cursor:pointer}
 [data-theme=night] .bubble-quote{background:rgba(0,0,0,.22)}
 
 .compose-quote-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 16px;background:color-mix(in srgb,var(--surface) 52%,transparent);border-top:1px solid var(--glass-stroke);font-size:11px;color:var(--ink);backdrop-filter:blur(18px);flex-shrink:0}
@@ -2222,12 +2224,12 @@ html,body{overflow:hidden;background:var(--bg)}
 @media(prefers-reduced-transparency:reduce){.tile:before{background:var(--surface);-webkit-backdrop-filter:none;backdrop-filter:none}}
 
 /* Meeting archives reference the existing Scene rather than duplicating chat content. */
-.meeting-chat-card{margin:16px auto;width:min(100%,360px);border:1px solid var(--surface2);border-radius:18px;background:var(--surface);overflow:hidden;color:var(--ink)}
-.meeting-chat-card summary{display:flex;align-items:center;gap:10px;padding:14px;cursor:pointer;font-weight:600;list-style:none}
-.meeting-chat-card summary::-webkit-details-marker{display:none}
-.meeting-chat-card summary span{flex:1;min-width:0;overflow-wrap:anywhere}
-.meeting-chat-card summary small{display:block;margin-top:4px;color:var(--muted);font-weight:400}
-.meeting-card-body{padding:0 14px 14px;font-size:12px;line-height:1.8}
+.meeting-chat-card{flex:none;display:flex;align-items:center;gap:10px;padding:14px;min-height:80px;margin:16px auto;width:min(100%,360px);border:1px solid var(--surface2);border-radius:18px;background:var(--surface);color:var(--ink);font:inherit;text-align:left;cursor:pointer}
+.meeting-chat-card>svg{flex:none}
+.meeting-chat-card>span{flex:1;min-width:0;overflow-wrap:anywhere}
+.meeting-chat-card b{font-size:13px}
+.meeting-chat-card small{display:block;margin-top:4px;color:var(--muted);font-size:11px;line-height:1.5}
+.meeting-chat-card:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 .meeting-record .passage{overflow-wrap:anywhere}
 
 .meeting-record-view .top .back-btn{width:auto;min-width:max-content;white-space:nowrap}
@@ -9027,12 +9029,17 @@ ${prevLogs}` : "",
     const key2 = JSON.stringify([kind, owner?.id, classes, name, mediaId, src, opts.framePreviewUrl, frame]);
     return `<span class="${classes}${photo ? " has-avatar-img" : ""}${src ? " avatar-loaded" : ""}${frame ? " has-avatar-frame" : ""}" data-avatar-box="${kind}" ${kind === "role" ? `data-role-id="${escHtml(owner?.id || "")}"` : ""} data-avatar-render-key="${escHtml(key2)}"><span class="avatar-fallback">${escHtml(fallback)}</span>${photo}${frame}</span>`;
   }
-  function renderWithAvatars(root, html) {
+  function renderWithAvatars(root, html, preserveChat = false) {
     const template = document.createElement("template");
     template.innerHTML = html;
-    const hasAvatar = (node) => node instanceof Element && (node.matches("[data-avatar-box]") || Boolean(node.querySelector("[data-avatar-box]")));
+    const retainedSelector = preserveChat ? "[data-avatar-box],.chat-conversation" : "[data-avatar-box]";
+    const hasAvatar = (node) => node instanceof Element && (node.matches(retainedSelector) || Boolean(node.querySelector(retainedSelector)));
     const key2 = (node) => {
       if (!(node instanceof Element)) return node.nodeName;
+      if (preserveChat) {
+        if (node.hasAttribute("data-chat-key")) return node.tagName + ":" + node.getAttribute("data-chat-key");
+        if (node.hasAttribute("data-media-id")) return node.tagName + ":media:" + node.getAttribute("data-media-id");
+      }
       if (node.matches("[data-avatar-box]")) return `avatar:${node.getAttribute("data-avatar-box")}:${node.getAttribute("data-role-id") || ""}:${node.classList[0]}`;
       return `${node.tagName}:${node.id || node.getAttribute("data-msg-id") || node.classList[0] || ""}`;
     };
@@ -9045,6 +9052,11 @@ ${prevLogs}` : "",
       if (photo && !next.hasAttribute("data-media-id")) old.removeAttribute("data-hydrated-key");
     };
     const patch = (parent, incoming) => {
+      const chat = preserveChat && parent instanceof Element && Boolean(parent.closest(".chat-conversation"));
+      if (chat) {
+        const wanted = new Set([...incoming.childNodes].map(key2));
+        for (const node of [...parent.childNodes]) if (!wanted.has(key2(node))) node.remove();
+      }
       const pool = /* @__PURE__ */ new Map();
       for (const node of [...parent.childNodes]) {
         const k = key2(node);
@@ -9055,7 +9067,8 @@ ${prevLogs}` : "",
         const prior = pool.get(key2(next))?.shift();
         let node = next;
         if (prior instanceof Element && next instanceof Element && prior.tagName === next.tagName) {
-          if (prior.matches(".avatar-img") && prior.closest("[data-avatar-box]")) {
+          if (chat && prior.isEqualNode(next)) node = prior;
+          else if (prior.matches(".avatar-img") && prior.closest("[data-avatar-box]")) {
             attributes(prior, next, true);
             node = prior;
           } else if (prior.matches(".avatar-frame") && prior.closest("[data-avatar-box]")) {
@@ -9063,12 +9076,21 @@ ${prevLogs}` : "",
             if (sameSource && prior.classList.contains("frame-img-error")) next.classList.add("frame-img-error");
             attributes(prior, next, true);
             node = prior;
+          } else if (chat) {
+            const media = prior.hasAttribute("data-media-id") && prior.getAttribute("data-media-id") === next.getAttribute("data-media-id");
+            if (prior.matches("[data-avatar-box]") && prior.classList.contains("avatar-loaded") && next.querySelector(".avatar-img")) next.classList.add("avatar-loaded");
+            attributes(prior, next, media);
+            if (!media) patch(prior, next);
+            node = prior;
           } else if (hasAvatar(prior) && hasAvatar(next)) {
             if (prior.matches("[data-avatar-box]") && prior.classList.contains("avatar-loaded") && next.querySelector(".avatar-img")) next.classList.add("avatar-loaded");
             attributes(prior, next);
             patch(prior, next);
             node = prior;
           }
+        } else if (chat && prior && prior.nodeType === next.nodeType && !(prior instanceof Element)) {
+          if (prior.nodeValue !== next.nodeValue) prior.nodeValue = next.nodeValue;
+          node = prior;
         }
         if (node === cursor) cursor = cursor.nextSibling;
         else {
@@ -9729,6 +9751,176 @@ ${prevLogs}` : "",
     }
   }
 
+  // src/core/chatWindow.ts
+  var CHAT_PAGE_SIZE = 80;
+  var timelineKey = (item) => item.kind + ":" + item.id;
+  function chatWindow(all, oldest) {
+    let start = oldest ? all.findIndex((item) => timelineKey(item) === oldest.key) : -1;
+    if (start < 0 && oldest) start = all.findIndex((item) => item.at >= oldest.at);
+    if (start < 0) start = Math.max(0, all.length - CHAT_PAGE_SIZE);
+    return { start, items: all.slice(start), oldest: all[start] ? { key: timelineKey(all[start]), at: all[start].at } : void 0 };
+  }
+
+  // src/chatHistoryView.ts
+  function createChatHistory(hooks) {
+    const worlds = /* @__PURE__ */ new WeakMap();
+    let instance;
+    const storageKey = (world, owner) => world.draftWorldId ? "elsewhere-chat-view-v1:" + world.draftWorldId + ":" + owner.id : "";
+    function state2(owner) {
+      const world = hooks.world();
+      let roles = worlds.get(world);
+      if (!roles) {
+        roles = /* @__PURE__ */ new Map();
+        worlds.set(world, roles);
+      }
+      let saved = roles.get(owner.id);
+      if (!saved) {
+        saved = { bottom: true, top: 0 };
+        try {
+          const key2 = storageKey(world, owner), raw = key2 ? sessionStorage.getItem(key2) : null, value = raw ? JSON.parse(raw) : null;
+          if (value && typeof value.bottom === "boolean" && Number.isFinite(value.top)) {
+            saved = { bottom: value.bottom, top: value.top };
+            if (typeof value.oldest?.key === "string" && Number.isFinite(value.oldest.at)) saved.oldest = value.oldest;
+            if (typeof value.anchor?.key === "string" && Number.isFinite(value.anchor.offset)) saved.anchor = value.anchor;
+          }
+        } catch {
+        }
+        roles.set(owner.id, saved);
+      }
+      return saved;
+    }
+    const valid = (item) => instance === item && hooks.isChat() && hooks.world() === item.world && hooks.owner() === item.owner && item.pane.isConnected && document.getElementById("scroll-area") === item.pane;
+    const elements = (pane) => Array.from(pane.querySelectorAll("[data-msg-id],[data-meeting-id]"));
+    const elementKey = (el) => el.dataset.msgId !== void 0 ? "message:" + el.dataset.msgId : "meeting:" + el.dataset.meetingId;
+    function readAnchor(pane) {
+      const top = pane.getBoundingClientRect().top;
+      const el = elements(pane).find((el2) => el2.getBoundingClientRect().bottom > top + 1);
+      return el ? { key: elementKey(el), offset: el.getBoundingClientRect().top - top } : void 0;
+    }
+    function remember(item) {
+      item.state.anchor = readAnchor(item.pane);
+      item.state.top = item.pane.scrollTop;
+      item.state.bottom = item.pane.scrollHeight - item.pane.clientHeight - item.pane.scrollTop < 60;
+      try {
+        const key2 = storageKey(item.world, item.owner);
+        if (key2) sessionStorage.setItem(key2, JSON.stringify(item.state));
+      } catch {
+      }
+    }
+    function setTop(item, top) {
+      item.pane.scrollTop = top;
+      item.expectedTop = item.pane.scrollTop;
+      item.lastTop = item.pane.scrollTop;
+    }
+    function snapshot3(item) {
+      return { instance: item, version: item.version, anchor: readAnchor(item.pane), top: item.pane.scrollTop, bottom: item.pane.scrollHeight - item.pane.clientHeight - item.pane.scrollTop < 60 };
+    }
+    function restore(saved) {
+      const item = saved.instance;
+      if (!valid(item) || item.version !== saved.version) return;
+      if (saved.bottom) setTop(item, item.pane.scrollHeight);
+      else {
+        const el = elements(item.pane).find((el2) => elementKey(el2) === saved.anchor?.key);
+        setTop(item, el && saved.anchor ? item.pane.scrollTop + el.getBoundingClientRect().top - item.pane.getBoundingClientRect().top - saved.anchor.offset : saved.top);
+      }
+      remember(item);
+    }
+    function leave() {
+      if (!instance) return;
+      remember(instance);
+      instance.events.abort();
+      instance.pane.querySelectorAll("audio").forEach((audio) => {
+        if (!audio.paused) audio.pause();
+      });
+      instance = void 0;
+    }
+    function windowFor(owner) {
+      const current = state2(owner), result = chatWindow(meetingTimeline(owner), current.oldest);
+      current.oldest = result.oldest;
+      return result;
+    }
+    function older() {
+      const item = instance;
+      if (!item || !valid(item)) return;
+      const all = meetingTimeline(item.owner), range = chatWindow(all, item.state.oldest), first = all[Math.max(0, range.start - CHAT_PAGE_SIZE)];
+      if (!range.start || !first) return;
+      item.state.oldest = { key: timelineKey(first), at: first.at };
+      hooks.refresh();
+    }
+    function begin() {
+      if (!instance) return;
+      if (!valid(instance)) {
+        leave();
+        return;
+      }
+      instance.version++;
+      return snapshot3(instance);
+    }
+    function mount() {
+      const pane = document.querySelector(".chat-conversation"), owner = hooks.owner();
+      if (!pane || !owner || !hooks.isChat()) return;
+      if (instance && valid(instance)) return;
+      leave();
+      const item = { pane, owner, world: hooks.world(), state: state2(owner), version: 0, expectedTop: 0, lastTop: 0, events: new AbortController() };
+      instance = item;
+      const signal = item.events.signal;
+      const intent2 = () => {
+        if (valid(item)) item.version++;
+      };
+      for (const event of ["wheel", "touchstart", "pointerdown"]) pane.addEventListener(event, intent2, { passive: true, signal });
+      pane.addEventListener("keydown", (event) => {
+        if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) intent2();
+      }, { signal });
+      pane.addEventListener("scroll", () => {
+        if (!valid(item)) return;
+        const previous = item.lastTop, top = pane.scrollTop, user = Math.abs(top - item.expectedTop) > 1;
+        if (user) item.version++;
+        item.lastTop = top;
+        remember(item);
+        if (user && top <= 80 && top < previous) older();
+      }, { passive: true, signal });
+    }
+    function finish(saved) {
+      mount();
+      if (!instance) return;
+      if (saved && saved.instance === instance) restore(saved);
+      else restore({ instance, version: instance.version, anchor: instance.state.anchor, top: instance.state.top, bottom: instance.state.bottom });
+    }
+    function followEnd() {
+      if (instance && valid(instance)) {
+        instance.version++;
+        setTop(instance, instance.pane.scrollHeight);
+        remember(instance);
+      }
+    }
+    function locate(id) {
+      const item = instance;
+      if (!item || !valid(item)) return false;
+      const all = meetingTimeline(item.owner), matches = all.filter((entry2) => entry2.kind === "message" && entry2.id === id);
+      if (matches.length !== 1) return false;
+      const index = all.indexOf(matches[0]), range = chatWindow(all, item.state.oldest);
+      if (index < range.start) {
+        const start = all[Math.max(0, index - 10)];
+        item.state.oldest = { key: timelineKey(start), at: start.at };
+        hooks.refresh();
+      }
+      if (!valid(item)) return false;
+      const target = elements(item.pane).find((el) => el.dataset.msgId === id);
+      if (!target) return false;
+      item.version++;
+      setTop(item, item.pane.scrollTop + target.getBoundingClientRect().top - item.pane.getBoundingClientRect().top - 16);
+      remember(item);
+      return true;
+    }
+    return { windowFor, begin, finish, leave, older, locate, followEnd, mediaGuard(pane) {
+      const item = instance;
+      if (!item || pane !== item.pane || !valid(item)) return () => {
+      };
+      const saved = snapshot3(item);
+      return () => restore(saved);
+    } };
+  }
+
   // src/core/systemLogs.ts
   function logsForDay(logs, dateKey) {
     return logs.map((log, index) => ({ log, index })).filter((v) => Number.isFinite(v.log.at) && toLocalDateKey(v.log.at) === dateKey).sort((a, b) => b.log.at - a.log.at || b.index - a.index).map((v) => v.log);
@@ -9758,8 +9950,8 @@ ${prevLogs}` : "",
   }
 
   // src/meetingHistoryView.ts
-  function meetingCardHtml(scene) {
-    return `<details class="meeting-chat-card" data-meeting-id="${escHtml(scene.id)}"><summary>${uiIcon("profile")}<span>\u89C1\u9762\u8BB0\u5F55 \xB7 ${escHtml(logTimestamp(scene.startedAt).slice(0, 10))}<small>${escHtml(scene.where)}</small></span>${uiIcon("down")}</summary><div class="meeting-card-body"><p>\u5F00\u59CB\uFF1A${escHtml(logTimestamp(scene.startedAt))}<br>\u7ED3\u675F\uFF1A${escHtml(logTimestamp(scene.endedAt))}</p><button type="button" class="btn small secondary" data-action="viewmeeting" data-id="${escHtml(scene.id)}">\u67E5\u770B\u89C1\u9762\u8BB0\u5F55</button></div></details>`;
+  function meetingCardHtml(scene, owner) {
+    return `<button type="button" class="meeting-chat-card" data-chat-key="meeting:${escHtml(scene.id)}" data-meeting-id="${escHtml(scene.id)}" data-action="viewmeeting" data-id="${escHtml(scene.id)}" data-role-id="${escHtml(owner.id)}">${uiIcon("profile")}<span><b>\u89C1\u9762\u8BB0\u5F55 \xB7 ${escHtml(owner.name)}</b><small>${escHtml(logTimestamp(scene.startedAt))} \u2014 ${escHtml(logTimestamp(scene.endedAt))}</small><small>${escHtml(scene.where)} \xB7 \u67E5\u770B\u5DF2\u4FDD\u5B58\u7684\u5BF9\u8BDD</small></span></button>`;
   }
   function meetingRecordHtml(r, scene) {
     return `<div class="novel meeting-record" id="scroll-area" data-meeting-record="${escHtml(scene.id)}"><h2 class="scene-title">\u4E0E${escHtml(r.name)}\u7684\u89C1\u9762</h2><div class="card"><p>${escHtml(scene.where)}</p><p>\u5F00\u59CB\uFF1A${escHtml(logTimestamp(scene.startedAt))}<br>\u7ED3\u675F\uFF1A${escHtml(logTimestamp(scene.endedAt))}</p><span class="tiny muted">\u5DF2\u7ED3\u675F \xB7 \u53EA\u8BFB\u6863\u6848</span></div>${encounterHistory(r, scene.messages).map((m) => `<div class="passage ${m.speaker === "me" ? "mine" : m.speaker === "char" ? "theirs" : "note"}" data-msg-id="${escHtml(m.id)}"><span class="speaker">${m.speaker === "me" ? "\u4F60" : m.speaker === "char" ? escHtml(r.name) : "\u573A\u666F"} \xB7 ${escHtml(logTimestamp(m.at))}</span>${novelMessageHtml(m, r.id, scene.id, "meeting")}</div>`).join("") || '<p class="sub">\u6682\u65E0\u6709\u6548\u89C1\u9762\u5BF9\u8BDD\u3002</p>'}</div>`;
@@ -16417,7 +16609,7 @@ channel.onmessage=async({data:job})=>{
       if (updateComposer && role() === r) quotingMessage = null;
       queueMicrotask(() => {
         const pane = $("#scroll-area");
-        if (view === "chat" && role()?.id === r.id && pane?.dataset.roleId === r.id) pane.scrollTop = pane.scrollHeight;
+        if (view === "chat" && role()?.id === r.id && pane?.dataset.roleId === r.id) chatHistory.followEnd();
       });
       return true;
     }
@@ -17200,6 +17392,7 @@ channel.onmessage=async({data:job})=>{
     }
     const homePager = createHomePager();
     const homeTasks = createHomeTasks({ tasks: () => data.sharedTasks, save, notify, glyph });
+    const chatHistory = createChatHistory({ world: () => data, owner: () => role(), isChat: () => view === "chat", refresh: () => patchDynamicRegionsOnTick() });
     function screenHome() {
       const r = role();
       const a = activity(r, now());
@@ -17255,9 +17448,10 @@ channel.onmessage=async({data:job})=>{
     function quoteBubbleHtml(m, r) {
       if (!m.quote) return "";
       const who = m.quote.speaker === "me" ? "\u6211" : r.name;
-      return `<div class="bubble-quote"><b>\u5F15\u7528 ${esc(who)}</b>${esc(
+      const target = view === "chat" && typeof m.quote.id === "string" && m.quote.id;
+      return `<${target ? 'button type="button" data-action="jumpchatquote" data-id="' + esc(target) + '" data-quote-message="' + esc(m.id) + '" data-quote-role="' + esc(r.id) + '" data-quote-world="' + esc(data.draftWorldId || "") + '"' : "div"} class="bubble-quote"><b>\u5F15\u7528 ${esc(who)}</b>${esc(
         m.quote.text
-      )}</div>`;
+      )}</${target ? "button" : "div"}>`;
     }
     function bubbleContent(m, r) {
       const qHtml = quoteBubbleHtml(m, r);
@@ -17418,20 +17612,21 @@ channel.onmessage=async({data:job})=>{
     </div>`;
     }
     function renderChatMessagesHtml(r) {
-      const timeline = meetingTimeline(r);
+      const page = chatHistory.windowFor(r), timeline = page.items;
       return `<div class="chat-privacy">\u4F60\u4E0E ${esc(
         r.name
       )} \u7684\u79C1\u4EBA\u5BF9\u8BDD \xB7 ${esc(dateStr(now()))}</div>
     ${renderFirstMessageCard(r)}
+    ${page.start ? '<button type="button" class="chat-load-older" data-action="loadchatolder">\u52A0\u8F7D\u66F4\u65E9\u6D88\u606F</button>' : ""}
     ${timeline.map((item, i) => {
         const m = item.kind === "message" ? item.message : null;
         const dayChanged = i === 0 || new Date(timeline[i - 1].at).toDateString() !== new Date(item.at).toDateString();
-        const daymark = dayChanged ? `<div class="daymark">${dateStr(item.at)}</div>` : "";
-        if (item.kind === "meeting") return daymark + meetingCardHtml(item.scene);
+        const daymark = dayChanged ? `<div class="daymark" data-chat-key="day:${esc(item.kind + ":" + item.id)}">${dateStr(item.at)}</div>` : "";
+        if (item.kind === "meeting") return daymark + meetingCardHtml(item.scene, r);
         if (!m) return "";
         const isEditingThis = editingMessageId === m.id && editingMessageScope === "chat";
         const canEditText = !m.kind || m.kind === "chat";
-        return `${daymark}<div class="message ${m.speaker === "me" ? "mine" : "theirs"}" data-msg-id="${esc(m.id)}">${m.speaker === "char" ? `${avatarTag(r, "avatar sm")}` : ""}<div class="message-inner"><div class="bubble ${m.kind && m.kind !== "chat" ? "bubble-" + esc(m.kind) : ""}">${bubbleContent(m, r)}</div>
+        return `${daymark}<div class="message ${m.speaker === "me" ? "mine" : "theirs"}" data-chat-key="message:${esc(m.id)}" data-msg-id="${esc(m.id)}">${m.speaker === "char" ? `${avatarTag(r, "avatar sm")}` : ""}<div class="message-inner"><div class="bubble ${m.kind && m.kind !== "chat" ? "bubble-" + esc(m.kind) : ""}">${bubbleContent(m, r)}</div>
         ${isEditingThis ? `<form id="inline-edit-form" class="inline-edit-form" data-scope="chat" data-id="${esc(
           m.id
         )}">
@@ -18524,7 +18719,6 @@ channel.onmessage=async({data:job})=>{
     }
     async function hydrateMedia(rootEl = document) {
       clearMediaURLs();
-      const pinnedPanes = /* @__PURE__ */ new Map();
       rootEl.querySelectorAll(".avatar-frame[src], .frame-thumb-img[src]").forEach((imgEl) => {
         if (imgEl.dataset.fallbackBound === "1") return;
         imgEl.dataset.fallbackBound = "1";
@@ -18544,6 +18738,8 @@ channel.onmessage=async({data:job})=>{
       for (const item of all) {
         const key2 = item.dataset.mediaId;
         if (!key2) continue;
+        const keepChatLayout = chatHistory.mediaGuard(item.closest(".chat-conversation"));
+        if (item instanceof HTMLImageElement && !item.complete) item.onload = keepChatLayout;
         if (item.dataset.hydratedKey === key2 && item.getAttribute("src")) continue;
         const isAvatarImg = item.classList.contains("avatar-img");
         const isFrameImg = item.classList.contains("avatar-frame") || item.classList.contains("frame-thumb-img");
@@ -18561,21 +18757,12 @@ channel.onmessage=async({data:job})=>{
               item.remove();
             } else {
               item.replaceWith(document.createTextNode("\u9644\u4EF6\u672A\u627E\u5230\uFF08\u8BF7\u68C0\u67E5\u5907\u4EFD\uFF09"));
+              keepChatLayout();
             }
             continue;
           }
           item.dataset.hydratedKey = key2;
-          const pane = item.closest("#scroll-area");
-          if (item instanceof HTMLImageElement && pane) {
-            if (pane.scrollHeight - pane.clientHeight - pane.scrollTop < 60) pinnedPanes.set(pane, pane.scrollTop);
-            item.addEventListener("load", () => {
-              const top = pinnedPanes.get(pane);
-              if (top !== void 0 && Math.abs(pane.scrollTop - top) < 1 && pane.isConnected && view === "chat" && pane.dataset.roleId === role()?.id) {
-                pane.scrollTop = pane.scrollHeight;
-                pinnedPanes.set(pane, pane.scrollTop);
-              } else pinnedPanes.delete(pane);
-            }, { once: true });
-          }
+          if (item instanceof HTMLImageElement) item.onload = keepChatLayout;
           if (item.getAttribute("src") !== url) item.src = url;
           if (isAvatarImg) {
             item.closest(".has-avatar-img")?.classList.add("avatar-loaded");
@@ -18591,6 +18778,7 @@ channel.onmessage=async({data:job})=>{
               item.remove();
             } else {
               item.replaceWith(document.createTextNode("\u5A92\u4F53\u5B58\u50A8\u4E0D\u53EF\u7528"));
+              keepChatLayout();
             }
           }
         }
@@ -18617,12 +18805,11 @@ channel.onmessage=async({data:job})=>{
         if (!editingMessageId) {
           const sc = document.querySelector("#scroll-area");
           if (sc && sc.dataset.roleId === r.id) {
-            const wasAtBottom = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 60;
-            const readingTop = sc.scrollTop;
-            renderWithAvatars(sc, renderChatMessagesHtml(r));
+            const anchor = chatHistory.begin();
+            renderWithAvatars(sc, renderChatMessagesHtml(r), true);
+            chatHistory.finish(anchor);
             clearMediaURLs();
             hydrateMedia();
-            sc.scrollTop = wasAtBottom ? sc.scrollHeight : readingTop;
           }
         }
       } else if (view === "focus") {
@@ -18766,6 +18953,7 @@ channel.onmessage=async({data:job})=>{
         view = "landing";
       }
       if (voiceOperation && (view !== "chat" || role() !== voiceOperation.owner || !voiceOwnerCurrent(voiceOperation))) leaveVoicePanel();
+      const chatAnchor = chatHistory.begin();
       const markup = view === "landing" ? screenLanding() : view === "roleform" ? screenRoleForm() : view === "userprofile" ? screenUserProfile() : view === "deleterole" ? screenDeleteRole() : view === "home" ? screenHome() : view === "chat" ? screenChat() : view === "diary" ? screenDiary() : view === "focus" ? screenFocus() : view === "monitor" ? screenMonitor() : view === "drama" ? screenDrama() : view === "novel" ? screenNovel() : view === "intermission" ? screenIntermission() : view === "roleinfo" ? screenRoleInfo() : view === "meetingdetail" ? screenMeetingDetail() : view === "playdetail" ? screenPlayDetail() : view === "presets" ? screenPresets() : view === "terminal" ? screenTerminal() : screenHome();
       const sameView = view === lastRenderedView;
       lastRenderedView = view;
@@ -18773,7 +18961,7 @@ channel.onmessage=async({data:job})=>{
       terminalApi.detach();
       terminalAppearance.detach();
       homePager.detach();
-      renderWithAvatars(app, markup);
+      renderWithAvatars(app, markup, Boolean(chatAnchor));
       bindDrafts();
       refreshSaveAccess();
       clearMediaURLs();
@@ -18785,6 +18973,7 @@ channel.onmessage=async({data:job})=>{
       if (view === "presets") fruitManager.mount(document.getElementById("fruit-preset-root"));
       if (view === "home") homePager.mount(document.querySelector(".home-view"));
       restoreUIState(uiSnap, !scroll, document, sameView);
+      if (view === "chat") chatHistory.finish(chatAnchor);
       hydrateMedia();
       if (pendingScrollAnchorSelector) {
         const anchor = document.querySelector(pendingScrollAnchorSelector);
@@ -18793,7 +18982,7 @@ channel.onmessage=async({data:job})=>{
           vp.scrollTop = Math.max(0, anchor.offsetTop - 16);
         }
         pendingScrollAnchorSelector = "";
-      } else if (scroll) {
+      } else if (scroll && view !== "chat") {
         const sc = $("#scroll-area");
         if (sc) sc.scrollTop = sc.scrollHeight;
       }
@@ -20364,6 +20553,15 @@ channel.onmessage=async({data:job})=>{
         render(false);
         return;
       }
+      if (act === "loadchatolder") {
+        if (view === "chat") chatHistory.older();
+        return;
+      }
+      if (act === "jumpchatquote") {
+        const quote = r && phoneMessagesAt(r, now()).find((m) => m.id === b.dataset.quoteMessage)?.quote;
+        if (view !== "chat" || !r || b.dataset.quoteRole !== r.id || b.dataset.quoteWorld !== (data.draftWorldId || "") || !b.dataset.id || quote?.id !== b.dataset.id || !messageSourceIndex(r, now()).has(b.dataset.id) || !chatHistory.locate(b.dataset.id)) notify("\u539F\u6D88\u606F\u5F53\u524D\u65E0\u6CD5\u5B9A\u4F4D\uFF0C\u5F15\u7528\u539F\u6587\u4FDD\u7559\u3002");
+        return;
+      }
       if (act === "quotemsg") {
         if (!r || !b.dataset.id) return;
         const scope = b.dataset.scope || "chat";
@@ -20478,7 +20676,7 @@ channel.onmessage=async({data:job})=>{
         return;
       }
       if (act === "viewmeeting") {
-        if (r?.meetings?.some((p) => p.id === b.dataset.id && p.endedAt !== void 0)) {
+        if (view === "chat" && b.isConnected && b.dataset.roleId === r?.id && r?.meetings?.some((p) => p.id === b.dataset.id && p.endedAt !== void 0)) {
           detailId = b.dataset.id;
           go("meetingdetail");
         }

@@ -1,14 +1,15 @@
 import {SAVE_ACCESS_EVENT,normalizeStoredWorld,traceStorage,type SaveSession} from './core/storageSession';
 import {backupImpact,downloadBackup,prepareBackup,readBackupFile} from './core/backup';
 import {avatarView,renderWithAvatars} from './avatarView';
+import {createChatHistory} from './chatHistoryView';
 import {frameDraft,frameStyle,saveFrameOnly,DEFAULT_FRAME_SCALE,type FrameDraft,type AvatarFrameFields} from './core/avatarAppearance';
-import {meetingTimeline,archiveMeeting} from './core/meetingHistory';
+import {archiveMeeting} from './core/meetingHistory';
 import {meetingCardHtml,meetingRecordHtml} from './meetingHistoryView';
 import {logsForDay,logDays,logTimestamp} from './core/systemLogs';
 import {meetingPlan,createEncounter,isFarewell,encounterHistory,updateEncounterLocation,commitSceneDecision} from './core/encounter';
 import {createSceneObservation,sceneStateKey} from './core/sceneState';
 import {prepareSceneReply,splitSceneReply,sceneReplyMatches,resolveSceneReply} from './core/sceneReply';
-import {phoneMessagesAt} from './core/messageProvenance';
+import {phoneMessagesAt,messageSourceIndex} from './core/messageProvenance';
 import {identityName,identityContext,buildNativeContext,compileNativeConversation,compileNovelConversation,compileOpeningPrompt,type NativePromptOptions} from './core/prompt';
 import {ConversationCompileError,requestMessages,promptStructure,type ConversationCompilation} from './core/conversationPrompt';
 import {loadRequestPreset} from './core/fruit/library';
@@ -1812,7 +1813,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     // Accepted sends reveal the new bubble after the caller restores its draft/focus.
     queueMicrotask(()=>{
       const pane=$<HTMLElement>('#scroll-area');
-      if(view==='chat'&&role()?.id===r.id&&pane?.dataset.roleId===r.id)pane.scrollTop=pane.scrollHeight;
+      if(view==='chat'&&role()?.id===r.id&&pane?.dataset.roleId===r.id)chatHistory.followEnd();
     });
     return true;
   }
@@ -2696,6 +2697,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
 
   const homePager=createHomePager();
   const homeTasks=createHomeTasks({tasks:()=>data.sharedTasks!,save,notify,glyph});
+  const chatHistory=createChatHistory({world:()=>data,owner:()=>role(),isChat:()=>view==='chat',refresh:()=>patchDynamicRegionsOnTick()});
 
   function screenHome(): string {
     const r = role()!;
@@ -2779,9 +2781,10 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   function quoteBubbleHtml(m: ChatMessage, r: RoleData): string {
     if (!m.quote) return '';
     const who = m.quote.speaker === 'me' ? '我' : r.name;
-    return `<div class="bubble-quote"><b>引用 ${esc(who)}</b>${esc(
+    const target=view==='chat'&&typeof m.quote.id==='string'&&m.quote.id;
+    return `<${target?'button type="button" data-action="jumpchatquote" data-id="'+esc(target)+'" data-quote-message="'+esc(m.id)+'" data-quote-role="'+esc(r.id)+'" data-quote-world="'+esc(data.draftWorldId||'')+'"':'div'} class="bubble-quote"><b>引用 ${esc(who)}</b>${esc(
       m.quote.text
-    )}</div>`;
+    )}</${target?'button':'div'}>`;
   }
 
   function bubbleContent(m: ChatMessage, r: RoleData): string {
@@ -2983,17 +2986,18 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   }
 
   function renderChatMessagesHtml(r: RoleData): string {
-    const timeline=meetingTimeline(r);
+    const page=chatHistory.windowFor(r),timeline=page.items;
     return `<div class="chat-privacy">你与 ${esc(
       r.name
     )} 的私人对话 · ${esc(dateStr(now()))}</div>
     ${renderFirstMessageCard(r)}
+    ${page.start?'<button type="button" class="chat-load-older" data-action="loadchatolder">加载更早消息</button>':''}
     ${timeline
       .map((item, i) => {
         const m=item.kind==='message'?item.message:null;
         const dayChanged=i===0||new Date(timeline[i-1].at).toDateString()!==new Date(item.at).toDateString();
-        const daymark=dayChanged?`<div class="daymark">${dateStr(item.at)}</div>`:'';
-        if(item.kind==='meeting')return daymark+meetingCardHtml(item.scene);
+        const daymark=dayChanged?`<div class="daymark" data-chat-key="day:${esc(item.kind+':'+item.id)}">${dateStr(item.at)}</div>`:'';
+        if(item.kind==='meeting')return daymark+meetingCardHtml(item.scene,r);
         if(!m)return '';
         const isEditingThis =
           editingMessageId === m.id && editingMessageScope === 'chat';
@@ -3002,7 +3006,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
           daymark
         }<div class="message ${
           m.speaker === 'me' ? 'mine' : 'theirs'
-        }" data-msg-id="${esc(m.id)}">${
+        }" data-chat-key="message:${esc(m.id)}" data-msg-id="${esc(m.id)}">${
           m.speaker === 'char' ? `${avatarTag(r, 'avatar sm')}` : ''
         }<div class="message-inner"><div class="bubble ${
           m.kind && m.kind !== 'chat' ? 'bubble-' + esc(m.kind) : ''
@@ -4466,7 +4470,6 @@ export function initElsewhereApp(saveSession:SaveSession): void {
 
   async function hydrateMedia(rootEl: ParentNode = document): Promise<void> {
     clearMediaURLs();
-    const pinnedPanes=new Map<HTMLElement,number>();
     // Attach graceful fallback handlers for remote preset avatar frames & thumbnails
     rootEl
       .querySelectorAll<HTMLImageElement>('.avatar-frame[src], .frame-thumb-img[src]')
@@ -4490,6 +4493,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     for (const item of all) {
       const key = item.dataset.mediaId;
       if (!key) continue;
+      const keepChatLayout=chatHistory.mediaGuard(item.closest<HTMLElement>('.chat-conversation'));
+      if(item instanceof HTMLImageElement&&!item.complete)item.onload=keepChatLayout;
       if (item.dataset.hydratedKey === key && item.getAttribute('src')) continue;
       const isAvatarImg = item.classList.contains('avatar-img');
       const isFrameImg =
@@ -4509,21 +4514,12 @@ export function initElsewhereApp(saveSession:SaveSession): void {
             item.remove();
           } else {
             item.replaceWith(document.createTextNode('附件未找到（请检查备份）'));
+            keepChatLayout();
           }
           continue;
         }
         item.dataset.hydratedKey = key;
-        const pane=item.closest<HTMLElement>('#scroll-area');
-        if(item instanceof HTMLImageElement&&pane){
-          if(pane.scrollHeight-pane.clientHeight-pane.scrollTop<60)pinnedPanes.set(pane,pane.scrollTop);
-          item.addEventListener('load',()=>{
-            const top=pinnedPanes.get(pane);
-            // Follow image growth only while the reader has stayed pinned in this chat.
-            if(top!==undefined&&Math.abs(pane.scrollTop-top)<1&&pane.isConnected&&view==='chat'&&pane.dataset.roleId===role()?.id){
-              pane.scrollTop=pane.scrollHeight;pinnedPanes.set(pane,pane.scrollTop);
-            }else pinnedPanes.delete(pane);
-          },{once:true});
-        }
+        if(item instanceof HTMLImageElement)item.onload=keepChatLayout;
         if(item.getAttribute('src')!==url)item.src = url;
         if (isAvatarImg) {
           item.closest('.has-avatar-img')?.classList.add('avatar-loaded');
@@ -4539,6 +4535,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
             item.remove();
           } else {
             item.replaceWith(document.createTextNode('媒体存储不可用'));
+            keepChatLayout();
           }
         }
       }
@@ -4569,13 +4566,11 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if (!editingMessageId) {
         const sc = document.querySelector<HTMLElement>('#scroll-area');
         if (sc && sc.dataset.roleId===r.id) {
-          const wasAtBottom =
-            sc.scrollHeight - sc.scrollTop - sc.clientHeight < 60;
-          const readingTop=sc.scrollTop;
-          renderWithAvatars(sc,renderChatMessagesHtml(r));
+          const anchor=chatHistory.begin();
+          renderWithAvatars(sc,renderChatMessagesHtml(r),true);
+          chatHistory.finish(anchor);
           clearMediaURLs();
           hydrateMedia();
-          sc.scrollTop = wasAtBottom ? sc.scrollHeight : readingTop;
         }
       }
     } else if (view === 'focus') {
@@ -4731,6 +4726,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       view = 'landing';
     }
     if(voiceOperation&&(view!=='chat'||role()!==voiceOperation.owner||!voiceOwnerCurrent(voiceOperation)))leaveVoicePanel();
+    const chatAnchor=chatHistory.begin();
     const markup =
       view === 'landing'
         ? screenLanding()
@@ -4775,7 +4771,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     terminalApi.detach();
     terminalAppearance.detach();
     homePager.detach();
-    renderWithAvatars(app,markup);
+    renderWithAvatars(app,markup,Boolean(chatAnchor));
     bindDrafts();
     refreshSaveAccess();
     clearMediaURLs();
@@ -4784,6 +4780,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if(view==='presets')fruitManager.mount(document.getElementById('fruit-preset-root'));
     if(view==='home')homePager.mount(document.querySelector<HTMLElement>('.home-view')!);
     restoreUIState(uiSnap, !scroll, document, sameView);
+    if(view==='chat')chatHistory.finish(chatAnchor);
     hydrateMedia();
     if (pendingScrollAnchorSelector) {
       const anchor = document.querySelector<HTMLElement>(pendingScrollAnchorSelector);
@@ -4792,7 +4789,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         vp.scrollTop = Math.max(0, anchor.offsetTop - 16);
       }
       pendingScrollAnchorSelector = '';
-    } else if (scroll) {
+    } else if (scroll&&view!=='chat') {
       const sc = $('#scroll-area');
       if (sc) sc.scrollTop = sc.scrollHeight;
     }
@@ -6218,6 +6215,12 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       render(false);
       return;
     }
+    if(act==='loadchatolder'){if(view==='chat')chatHistory.older();return;}
+    if(act==='jumpchatquote'){
+      const quote=r&&phoneMessagesAt(r,now()).find(m=>m.id===b.dataset.quoteMessage)?.quote;
+      if(view!=='chat'||!r||b.dataset.quoteRole!==r.id||b.dataset.quoteWorld!==(data.draftWorldId||'')||!b.dataset.id||quote?.id!==b.dataset.id||!messageSourceIndex(r,now()).has(b.dataset.id)||!chatHistory.locate(b.dataset.id))notify('原消息当前无法定位，引用原文保留。');
+      return;
+    }
     if (act === 'quotemsg') {
       if (!r || !b.dataset.id) return;
       const scope = (b.dataset.scope as RevisionScope) || 'chat';
@@ -6328,7 +6331,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if(r&&r.id===b.dataset.roleId&&r.scene?.id===b.dataset.sceneId)editMeetingPlace();return;
     }
     if(act==='viewmeeting'){
-      if(r?.meetings?.some(p=>p.id===b.dataset.id&&p.endedAt!==undefined)){detailId=b.dataset.id!;go('meetingdetail');}return;
+      if(view==='chat'&&b.isConnected&&b.dataset.roleId===r?.id&&r?.meetings?.some(p=>p.id===b.dataset.id&&p.endedAt!==undefined)){detailId=b.dataset.id!;go('meetingdetail');}return;
     }
     if(act==='logtoday'){systemLogDate=null;refreshSystemLogs();return;}
     if (act === 'resume') {

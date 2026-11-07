@@ -15,9 +15,11 @@ export function compileChatBatchPrompt(data:AppData,r:RoleData,batch:ChatBatch,a
   return compileNativeConversation(data,copy,'chat',input,{...options,isFocused:false,nowTs:at,currentInputs:batch.sources});
 }
 export function buildChatBatchMessages(data:AppData,r:RoleData,batch:ChatBatch,at:number,options:NativePromptOptions={}):{role:string;content:string}[]{return requestMessages(compileChatBatchPrompt(data,r,batch,at,options));}
-export async function readChatResponse(response:Response):Promise<string> {
+export async function readChatResponseBody(response:Response):Promise<unknown> {
   if(!response.ok)throw new Error(`回复请求失败（HTTP ${response.status}）`);
-  let body:unknown;try{body=await response.json();}catch{throw new Error('回复不是有效 JSON');}
+  try{return await response.json();}catch{throw new Error('回复不是有效 JSON');}
+}
+export function parseChatResponse(body:unknown):string {
   if(!body||typeof body!=='object')throw new Error('回复格式无效');
   const value=body as Record<string,unknown>;
   if(value.error||!Array.isArray(value.choices)||!value.choices[0]||typeof value.choices[0]!=='object')throw new Error('接口未返回有效回复');
@@ -27,6 +29,9 @@ export async function readChatResponse(response:Response):Promise<string> {
   const message=choice.message as Record<string,unknown>;
   if(message.role!=='assistant'||message.refusal||message.function_call||(message.tool_calls&&(!Array.isArray(message.tool_calls)||message.tool_calls.length))||typeof message.content!=='string'||!message.content.trim())throw new Error('接口未返回有效聊天正文');
   return message.content.trim();
+}
+export async function readChatResponse(response:Response):Promise<string> {
+  return parseChatResponse(await readChatResponseBody(response));
 }
 export function buildPhoneRegeneration(data:AppData,r:RoleData,id:string,at:number,options:NativePromptOptions={}) {
   const copy=structuredClone(r),target=getActiveMessages(copy.chats).find(m=>m.id===id&&m.speaker==='char');

@@ -68,7 +68,10 @@ export function novelSamplingParameters(preset:FruitPreset){
  return result;
 }
 export async function readNovelResponse(response:Response,profile:FruitProfile,thirdParty:boolean){
- const extracted=splitSceneReply(await readChatResponse(response)),raw=extracted.text;
+ return parseNovelResponse(await readChatResponse(response),profile,thirdParty);
+}
+export function parseNovelResponse(text:string,profile:FruitProfile,thirdParty:boolean){
+ const extracted=splitSceneReply(text),raw=extracted.text;
  if(!raw)throw new Error('小说正文为空，原记录保留');
  if(!thirdParty)return {text:raw,sections:undefined,auxiliary:undefined,...(extracted.payload?{sceneEvent:extracted.payload}:{})};
  const parsed=parseFruitOutput(raw);

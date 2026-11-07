@@ -197,6 +197,7 @@ export interface PlayData {
   paused?: boolean;
   messages: ChatMessage[];
   intermissionMessages?: ChatMessage[];
+  intermissionAttempts?: Record<string,{id:string;revision:number;status:'unknown'|'archived'}>;
   revisions?: PlayRevision[];
 }
 
@@ -450,6 +451,7 @@ export interface FocusMoment {
   roleName?: string;
   innerThought?: string;
   isAiGenerated?: boolean;
+  aiAttempt?: {id:string;status:'unknown'|'archived'};
 }
 
 export interface FocusParticipantState {
@@ -514,6 +516,7 @@ export interface CompletedFocusSession {
   summaryRun?: {
     remainingRoleIds: string[];
     pendingRoleId?: string;
+    pendingAttemptId?: string;
   };
 }
 

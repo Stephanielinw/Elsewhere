@@ -12,11 +12,12 @@ import {identityName,identityContext,buildNativeContext,compileNativeConversatio
 import {ConversationCompileError,requestMessages,promptStructure,type ConversationCompilation} from './core/conversationPrompt';
 import {loadRequestPreset} from './core/fruit/library';
 import type {FruitPreset} from './core/fruit/types';
-import {createNovelTasks,commitNovelReply,prepareNovelRegeneration,readNovelResponse,novelSamplingParameters,type NovelKind} from './core/novelGeneration';
+import {createNovelTasks,commitNovelReply,prepareNovelRegeneration,parseNovelResponse,readNovelResponse,novelSamplingParameters,type NovelKind} from './core/novelGeneration';
 import {monitorItemsForDisplay} from './core/monitorPresentation';
 import {uiIcon,plainUiLabel} from './uiIcons';
 import {chatTiming,setChatFocused,enqueueChat,prepareChatDue,claimChatBatch,canChooseChatScene,chatSceneEntry,setChatScene,chatBatchValid,chatRevisionKey,completeChatBatch,failChatBatch,recoverChatTiming,retryChatTiming,reviseChatTiming,sourceStillValid} from './core/chatScheduler';
-import {compileChatBatchPrompt,buildPhoneRegeneration,readChatResponse} from './core/chatBatchPrompt';
+import {compileChatBatchPrompt,buildPhoneRegeneration,parseChatResponse,readChatResponse,readChatResponseBody} from './core/chatBatchPrompt';
+import {startRequestDeadline} from './core/requestDeadline';
 import {describeChatVoice,chatVoiceSummary} from './core/chatVoice';
 import {preparePersonalReply,splitPersonalReply,applyPersonalReply,personalTicketValid,collectRoleLife} from './core/roleLife';
 import {syncLifeBudget,reserveLifeAttempt} from './core/lifeBudget';
@@ -209,6 +210,11 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   let editingRoleId: string | null = null;
   let deleteRoleId: string | null = null;
   let busy = false;
+  const activeModelReads=new Map<Pick<ReturnType<typeof startRequestDeadline>,'cancel'|'check'>,boolean>();
+  let modelPageEpoch=0;
+  let modelPageHidden=false;
+  const intermissionOperations=new WeakMap<PlayData,AbortController>();
+  const intermissionRecovery=new WeakMap<PlayData,{sourceId:string;text:string}>();
   let token = readDeviceApiKey(localStorage,data.settings.endpoint);
   let apiConnectionVersion = 0;
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -317,7 +323,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   let focusTaskInputDraft = '';
   let focusHistoryDateKey = toLocalDateKey(now());
   let focusSettlementModalSessionId: string | null = null;
-  let focusSummaryWorld: AppData | null = null;
+  let focusSummaryOperation: {world:AppData} | null = null;
+  let focusLiveOperation: {world:AppData;session:ActiveFocusSession} | null = null;
 
   function buildStagedFrameFromOwner(owner?: AvatarFrameFields | null): StagedFrameState {
     return frameDraft(owner);
@@ -454,6 +461,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     data.focus = ensureFocusStateNormalized(data.focus, data.roles);
   }
   ensureFocusData();
+  // Legacy busy carried no receipt. Only newly scheduled moments are eligible for dispatch.
+  if(data.focus?.active)delete data.focus.active.liveLogBusy;
 
   const avatar = (r?: RoleData | null): string =>
     Array.from(String(r?.name || '?').trim() || '?')[0] || '?';
@@ -1402,9 +1411,17 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     notice.hidden=current;
     if(!current)notice.querySelector('span')!.textContent=saveError();
   }
-  function postModel(url:string,options:RequestInit):Promise<Response>{
+  function postModel(url:string,options:RequestInit,onDispatch?:()=>void):Promise<Response>{
     if(!saveSession.current())return Promise.reject(new Error('请求尚未发送。'+saveError()));
+    onDispatch?.();
     return fetch(url,options);
+  }
+  async function readModelBeforeDeadline<T>(read:(signal:AbortSignal)=>Promise<T>,parent?:AbortSignal,keepOnBFCache=false):Promise<T>{
+    if(modelPageHidden)throw new DOMException('页面已离开，未发送请求','AbortError');
+    const request=startRequestDeadline(read,parent);
+    activeModelReads.set(request,keepOnBFCache);
+    try{return await request.result;}
+    finally{activeModelReads.delete(request);}
   }
   function checkWriteAccess():boolean{
     if(saveSession.current())return true;
@@ -1816,77 +1833,73 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     momentId: string,
     roleId: string
   ): Promise<void> {
-    if (!canUseRealModel(data.settings)) return;
-    const f = activeFocus();
-    if (!f || f.id !== sessionId || f.status !== 'running' || f.liveLogBusy) return;
-    const roleItem = data.roles.find((r) => r.id === roleId);
-    if (!roleItem) return;
+    const world=data,f=activeFocus();
+    if(!f||f.id!==sessionId||f.status!=='running'||modelPageHidden||
+      focusLiveOperation?.session===f||!canUseRealModel(world.settings)||!saveSession.current())return;
+    const roleItem=world.roles.find(r=>r.id===roleId);
+    const moment=f.moments.find(m=>m.id===momentId&&m.roleId===roleId);
+    if(!roleItem||!moment||moment.aiAttempt||!f.participantRoleIds?.includes(roleId))return;
 
-    f.liveLogBusy = true;
+    const settings=world.settings,credential=token,connection=apiConnectionVersion,epoch=modelPageEpoch;
+    const elapsedMin=Math.max(1,Math.round(focusElapsed(f)/60000));
+    const promptText=buildFocusLiveLogAiPrompt(roleItem,f,elapsedMin);
+    const basis=()=>JSON.stringify([f.runSince,f.tasks,roleItem.name,roleItem.job,roleItem.place,roleItem.traits,moment.title,moment.detail]);
+    const source=basis();
+    const attempt={id:uid(),status:'unknown' as const};
+    moment.aiAttempt=attempt;
+    if(!save()){delete moment.aiAttempt;return;}
+
+    const operation={world,session:f};
+    focusLiveOperation=operation;
+    const current=()=>data===world&&activeFocus()===f&&f.status==='running'&&
+      focusLiveOperation===operation&&epoch===modelPageEpoch&&world.roles.includes(roleItem)&&
+      f.participantRoleIds?.includes(roleId)&&f.moments.includes(moment)&&moment.aiAttempt===attempt&&basis()===source;
     try {
-      const s = data.settings;
-      const url = s.endpoint.trim().replace(/\/+$/, '');
-      const elapsedMin = Math.max(1, Math.round(focusElapsed(f) / 60000));
-      const promptText = buildFocusLiveLogAiPrompt(roleItem, f, elapsedMin);
-      const res = await postModel(url + '/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: 'Bearer ' + token } : {}),
-        },
-        body: JSON.stringify({
-          model: s.model,
-          messages: [{ role: 'user', content: promptText }],
-          temperature: +s.temperature || 0.7,
-          ...completionLimit(s,'focus-log'),
-        }),
+      if(!current()||connection!==apiConnectionVersion||settings!==world.settings||credential!==token||!saveSession.current())return;
+      const json=await readModelBeforeDeadline(async signal=>{
+        const res=await postModel(settings.endpoint.trim().replace(/\/+$/,'')+'/chat/completions',{
+          method:'POST',signal,
+          headers:{'Content-Type':'application/json',...(credential?{Authorization:'Bearer '+credential}:{})},
+          body:JSON.stringify({model:settings.model,messages:[{role:'user',content:promptText}],temperature:+settings.temperature||0.7,...completionLimit(settings,'focus-log')}),
+        });
+        if(!res.ok)throw Error('Focus 实况请求未完成');
+        return res.json();
       });
-      if (!res.ok) return;
-      const json = await res.json();
-      const raw = String(json.choices?.[0]?.message?.content || '').trim();
-      const match = raw.match(/\{[\s\S]*\}/);
-      if (!match) return;
-      const parsed = JSON.parse(match[0]);
-
-      // Strictly bind to session.id so late API responses never pollute an ended session
-      const currentSession = activeFocus();
-      if (!currentSession || currentSession.id !== sessionId) return;
-      if(!checkWriteAccess())return;
-      const targetMoment = (currentSession.moments || []).find((m) => m.id === momentId);
-      if (targetMoment && parsed.detail) {
-        if (parsed.title) targetMoment.title = String(parsed.title).slice(0, 48);
-        targetMoment.detail = String(parsed.detail).slice(0, 220);
-        if (parsed.innerThought) {
-          targetMoment.innerThought = String(parsed.innerThought).slice(0, 120);
-        }
-        targetMoment.isAiGenerated = true;
+      const raw=String(json.choices?.[0]?.message?.content||'').trim();
+      const match=raw.match(/\{[\s\S]*\}/);
+      if(!match||!current()||!saveSession.current())return;
+      const parsed=JSON.parse(match[0]);
+      const previous={...moment};
+      const newer=f.moments.slice(f.moments.indexOf(moment)+1).some(m=>m.roleId===roleId);
+      const participant=newer?undefined:f.participants?.find(p=>p.roleId===roleId);
+      const previousParticipant=participant&&{...participant};
+      if(parsed.detail){
+        if(parsed.title)moment.title=String(parsed.title).slice(0,48);
+        moment.detail=String(parsed.detail).slice(0,220);
+        if(parsed.innerThought)moment.innerThought=String(parsed.innerThought).slice(0,120);
+        moment.isAiGenerated=true;
       }
-      if (parsed.statusText) {
-        const pState = (currentSession.participants || []).find(
-          (p) => p.roleId === roleId
-        );
-        if (pState) {
-          pState.statusText = String(parsed.statusText).slice(0, 60);
-          if (parsed.innerThought) {
-            pState.currentThought = String(parsed.innerThought).slice(0, 120);
-          }
-        }
+      if(participant&&parsed.statusText){
+        participant.statusText=String(parsed.statusText).slice(0,60);
+        if(parsed.innerThought)participant.currentThought=String(parsed.innerThought).slice(0,120);
       }
-      save();
-      if (view === 'focus') render(false);
-    } catch {
-      // Timer and grounded Live Log continue undisturbed if API fails
-    } finally {
-      const currentSession = activeFocus();
-      if (currentSession && currentSession.id === sessionId) {
-        currentSession.liveLogBusy = false;
+      moment.aiAttempt={...attempt,status:'archived'};
+      if(!save()){
+        restoreFields(moment,previous);
+        if(participant&&previousParticipant)restoreFields(participant,previousParticipant);
+        return;
       }
+      if(view==='focus')render(false);
+    }catch{
+      // Keep the grounded moment and its receipt. Only a newly scheduled moment can send again.
+    }finally{
+      if(focusLiveOperation===operation)focusLiveOperation=null;
     }
   }
 
   async function requestAiFocusSummariesForSession(sessionId: string, manualTrigger = false): Promise<void> {
-    const world = data;
-    if (focusSummaryWorld === world) return;
+    const world=data,epoch=modelPageEpoch;
+    if(focusSummaryOperation?.world===world||modelPageHidden)return;
     ensureFocusData();
     const rec = world.focus?.completed.find(item => item.id === sessionId);
     const membership = [...(rec?.participantRoleIds || [])];
@@ -1926,13 +1939,13 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       return;
     }
     const connectionCurrent = () => {
-      if (data !== world || connection.version !== apiConnectionVersion || !saveSession.current()) return false;
+      if(data!==world||epoch!==modelPageEpoch||connection.version!==apiConnectionVersion||!saveSession.current())return false;
       try {return localStorage.getItem(DEVICE_API_KEY) === storedCredential;}
       catch {return false;}
     };
     const progress: NonNullable<typeof rec.summaryRun> = {
       remainingRoleIds:pending?[pending,...remaining.filter(id=>id!==pending)]:remaining,
-      ...(pending?{pendingRoleId:pending}:{}),
+      ...(pending?{pendingRoleId:pending,pendingAttemptId:previousRun?.pendingAttemptId}:{}),
     };
     const original = {summaryRun:previousRun, summaryStatus:rec.summaryStatus, summaryError:rec.summaryError};
     rec.summaryRun = progress;
@@ -1940,8 +1953,9 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     delete rec.summaryError;
     if (!save()) {Object.assign(rec,original);return;}
 
-    focusSummaryWorld = world;
-    const currentRecord = () => data === world && focusSummaryWorld === world
+    const operation={world};
+    focusSummaryOperation=operation;
+    const currentRecord = () => data === world && focusSummaryOperation === operation
       && [...participants.values()].every(participant => world.roles.includes(participant))
       ? world.focus?.completed.find(item => item.id === sessionId && item.summaryRun === progress && item.summaryStatus === 'generating'
         && item.participantRoleIds?.length === membership.length && membership.every((id,index)=>item.participantRoleIds?.[index]===id))
@@ -1956,35 +1970,45 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         if (!connectionCurrent()) {failure = '连接或存档已变化，已停止发送剩余小结。';break;}
 
         const prompt = buildFocusSummaryAiPrompt(roleItem, current);
-        const previousPending = progress.pendingRoleId;
+        const previousPending=progress.pendingRoleId,previousAttempt=progress.pendingAttemptId;
+        const attemptId=uid();
+        const restorePending=()=>{
+          progress.pendingRoleId=previousPending;
+          progress.pendingAttemptId=previousAttempt;
+        };
         // A refresh after this commit cannot tell whether the POST left the browser.
         progress.pendingRoleId = roleId;
-        if (!save()) {progress.pendingRoleId = previousPending;return;}
+        progress.pendingAttemptId=attemptId;
+        if(!save()){restorePending();failure='小结领取未能确认保存。';break;}
         if (!connectionCurrent()) {
-          progress.pendingRoleId = previousPending;
+          restorePending();
           failure = '连接或存档已变化，已停止发送剩余小结。';
           break;
         }
-        const res = await postModel(settings.endpoint + '/chat/completions', {
-          method: 'POST',
-          redirect: 'error',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(connection.key ? {Authorization:'Bearer ' + connection.key} : {}),
-          },
-          body: JSON.stringify({
-            model:settings.model,
-            messages:[{role:'user',content:prompt}],
-            temperature:+settings.temperature || 0.7,
-            ...completionLimit(settings,'focus-summary'),
-          }),
+        const json=await readModelBeforeDeadline(async signal=>{
+          const res=await postModel(settings.endpoint + '/chat/completions', {
+            method: 'POST',
+            signal,
+            redirect: 'error',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(connection.key ? {Authorization:'Bearer ' + connection.key} : {}),
+            },
+            body: JSON.stringify({
+              model:settings.model,
+              messages:[{role:'user',content:prompt}],
+              temperature:+settings.temperature || 0.7,
+              ...completionLimit(settings,'focus-summary'),
+            }),
+          });
+          if(!res.ok){failure=`AI 小结请求未完成（HTTP ${res.status}）。`;throw Error(failure);}
+          return res.json();
         });
-        if (!res.ok) {failure = `AI 小结请求未完成（HTTP ${res.status}）。`;break;}
-        const json = await res.json();
         const text = String(json.choices?.[0]?.message?.content || '').trim();
         if (!text) {failure = '模型未返回有效小结。';break;}
         const latest = currentRecord();
-        if (!latest || !saveSession.current()) return;
+        if(!latest||epoch!==modelPageEpoch||progress.pendingAttemptId!==attemptId||
+          buildFocusSummaryAiPrompt(roleItem,latest)!==prompt||!saveSession.current())return;
 
         const previousSummaries = latest.roleSummaries, previousRemaining = progress.remainingRoleIds;
         const summaries = [...(previousSummaries || [])];
@@ -1995,6 +2019,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         latest.roleSummaries = summaries;
         progress.remainingRoleIds = previousRemaining.filter(id => id !== roleId);
         delete progress.pendingRoleId;
+        delete progress.pendingAttemptId;
         const complete = !progress.remainingRoleIds.length;
         if (complete) {
           latest.summaryStatus = 'ready';
@@ -2006,6 +2031,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
           latest.summaryRun = progress;
           progress.remainingRoleIds = previousRemaining;
           progress.pendingRoleId = roleId;
+          progress.pendingAttemptId=attemptId;
           failure = '小结写入未确认。';
           break;
         }
@@ -2014,11 +2040,11 @@ export function initElsewhereApp(saveSession:SaveSession): void {
           return;
         }
       }
-    } catch {
-      // Provider and browser errors are not copied into persisted diagnostics.
+    } catch(error) {
+      if(error instanceof Error&&error.name==='TimeoutError')failure='AI 小结响应超时。';
     } finally {
       const current = currentRecord();
-      if (current && saveSession.current()) {
+      if(current&&epoch===modelPageEpoch&&saveSession.current()){
         current.summaryStatus = 'failed';
         current.summaryError = failure + (progress.pendingRoleId
           ? '请求可能已被服务商处理。结果未确认，未自动重试。'
@@ -2026,8 +2052,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         save();
         if (manualTrigger) notify(current.summaryError);
       }
-      if (focusSummaryWorld === world) {
-        focusSummaryWorld = null;
+      if(focusSummaryOperation===operation){
+        focusSummaryOperation=null;
         if (data === world) render(false);
       }
     }
@@ -2036,9 +2062,17 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   function syncFocusMoments(): boolean {
     const f = activeFocus();
     if (!f || f.status !== 'running') return false;
+    const previous=f.moments,previousCount=previous?.length||0,previousDue=f.nextLiveLogDueAt;
+    const participants=f.participants?.map(p=>({...p}));
     const added = syncActiveFocusLiveLogs(f, data.roles, now());
     if (added.length > 0) {
-      save();
+      if(!save()){
+        f.moments=previous;
+        if(previous)previous.length=previousCount;
+        f.nextLiveLogDueAt=previousDue;
+        f.participants=participants;
+        return false;
+      }
       const latest = added[added.length - 1];
       if (latest.roleId && canUseRealModel(data.settings)) {
         void requestAiLiveLogForActiveSession(f.id, latest.id, latest.roleId);
@@ -2062,9 +2096,9 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         settled.tasks
       )}）`
     );
-    save();
+    const saved=save();
     if (
-      canUseRealModel(data.settings) &&
+      saved && canUseRealModel(data.settings) &&
       (settled.participantRoleIds || []).length > 0
     ) {
       void requestAiFocusSummariesForSession(settled.id, false);
@@ -2169,14 +2203,10 @@ export function initElsewhereApp(saveSession:SaveSession): void {
           settled.actualElapsedMs || 0
         )}`
       );
-      if (
-        canUseRealModel(data.settings) &&
-        (settled.participantRoleIds || []).length > 0
-      ) {
-        void requestAiFocusSummariesForSession(settled.id, false);
-      }
     }
-    save();
+    if(save()&&settled?.participantRoleIds?.length&&canUseRealModel(data.settings)){
+      void requestAiFocusSummariesForSession(settled.id,false);
+    }
     render(false);
   }
 
@@ -3481,9 +3511,9 @@ export function initElsewhereApp(saveSession:SaveSession): void {
                   ? `<button type="button" class="btn small ghost" data-action="retryfocussummary" data-session-id="${esc(
                       rec.id
                     )}" data-testid="retry-focus-summary-btn" ${
-                      focusSummaryWorld === data ? 'disabled' : ''
+                      focusSummaryOperation?.world === data ? 'disabled' : ''
                     }>${
-                      focusSummaryWorld === data
+                      focusSummaryOperation?.world === data
                         ? '正在生成…'
                         : rec.summaryRun || rec.summaryStatus === 'failed' || rec.summaryStatus === 'generating'
                         ? '↻ 重试生成角色小结'
@@ -3493,9 +3523,9 @@ export function initElsewhereApp(saveSession:SaveSession): void {
               }
             </div>
             ${
-              rec.summaryError
+              rec.summaryError || (rec.summaryRun?.pendingRoleId&&focusSummaryOperation?.world!==data)
                 ? `<div class="hint" style="margin-bottom:8px" data-testid="settlement-summary-error">${esc(
-                    rec.summaryError
+                    rec.summaryError||'此前小结请求的结果未确认，可能已计费。未自动重试。'
                   )}</div>`
                 : ''
             }
@@ -4092,11 +4122,17 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   function renderIntermissionPanel(r:RoleData,p:PlayData):string {
     ensureIntermission(p);
     const messages = getActiveMessages(p.intermissionMessages!);
+    const latest=messages.filter(m=>m.speaker==='me').at(-1);
+    const attempt=latest&&intermissionAttempt(p,latest.id);
+    const pending=intermissionOperations.has(p);
+    const locked=busy||pending;
     const lastTurns = getActiveMessages(p.messages).filter(
       (m) => m.speaker === 'me' || m.speaker === 'char'
     );
     return `<aside class="intermission-panel" aria-labelledby="intermission-title" data-testid="intermission-panel"><header class="intermission-panel-top"><div><small>BACKSTAGE · 演出暂停</small><h2 id="intermission-title">幕间讨论 · ${esc(r.name)}</h2></div><button type="button" class="btn small secondary" data-action="resumeplay" aria-label="关闭幕间并返回演出">回到演出 ×</button></header>
  <p class="intermission-hint">戏外本人 · 发送仅保存你的发言，点爪印才请 AI 回复。未发送的草稿不进入请求。</p>
+ ${pending?'<p class="sub" role="status">正在等待幕间回复…</p>':attempt?.status==='unknown'?'<p class="sub" role="status">幕间请求结果未确认，可能已计费。再次请求需要确认。</p>':''}
+ ${intermissionRecovery.has(p)?'<button type="button" class="btn small secondary" data-action="copy-intermission-reply">查看可复制的未保存幕间回复</button>':''}
  <div class="intermission-history" id="intermission-scroll" aria-live="polite">
  ${
    messages.length
@@ -4130,11 +4166,12 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       )}</textarea><button class="btn small full">保存修改后的演出设定</button></form><button class="btn secondary full" data-action="rollbackplay" ${
         lastTurns.length ? '' : 'disabled'
       }>回退刚才一轮戏内互动</button><p class="sub">仅回退戏内已演的最后一轮；旧版本留在幕间修订档案，戏内正式剧情不再引用它。演员仍可能记得你们试过另一种演法。</p></details>
- <form class="compose intermission-compose" id="intermission-form"><textarea id="intermission-input" data-scoped-draft placeholder="和戏外的${esc(r.name)}聊聊……" rows="1" required ${busy?'disabled':''}></textarea><button class="btn" type="submit" ${busy?'disabled':''} aria-label="发送幕间消息（不触发 AI）" title="仅发送你的消息">发送</button><button type="button" class="btn intermission-paw" data-action="intermissionreply" ${busy?'disabled':''} aria-label="让 AI 回复幕间讨论" title="仅点爪印才触发 AI 回复">${catPawSvg(true)}<span>AI 回复</span></button></form></aside>`;
+ <form class="compose intermission-compose" id="intermission-form"><textarea id="intermission-input" data-scoped-draft placeholder="和戏外的${esc(r.name)}聊聊……" rows="1" required ${locked?'disabled':''}></textarea><button class="btn" type="submit" ${locked?'disabled':''} aria-label="发送幕间消息（不触发 AI）" title="仅发送你的消息">发送</button><button type="button" class="btn intermission-paw" data-action="intermissionreply" ${locked?'disabled':''} aria-label="让 AI 回复幕间讨论" title="仅点爪印才触发 AI 回复">${catPawSvg(true)}<span>AI 回复</span></button></form></aside>`;
   }
 
   function submitIntermission(draft:DraftBinding,text:string):void {
     const p=draft.owner.play!;
+    if(intermissionOperations.has(p))return;
     ensureIntermission(p);
     const message:ChatMessage={id:uid(),speaker:'me',text:text.trim(),at:now(),status:'active'};
     p.intermissionMessages!.push(message);
@@ -4145,27 +4182,87 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     $<HTMLTextAreaElement>('#intermission-input')?.focus({preventScroll:true});
   }
 
+  function intermissionAttempt(p:PlayData,id:string) {
+    const attempts=p.intermissionAttempts;
+    return attempts&&Object.hasOwn(attempts,id)?attempts[id]:undefined;
+  }
+
   async function requestIntermissionReply(form:HTMLFormElement|null):Promise<void> {
     const draft=form&&currentDraft(form);
-    if(!draft||draft.mode!=='intermission'||busy)return;
-    const r=draft.owner,p=r.play!;
+    if(!draft||draft.mode!=='intermission'||busy||modelPageHidden)return;
+    const world=data,r=draft.owner,p=r.play!,epoch=modelPageEpoch;
+    if(intermissionOperations.has(p))return;
     if(draft.input.value.trim()){notify('这段文字尚未发送，请先点发送，再点爪印。');return;}
-    const latest=getActiveMessages(p.intermissionMessages||[]).filter(m=>m.speaker==='me').at(-1);
+    const messages=getActiveMessages(p.intermissionMessages);
+    const latest=messages.filter(m=>m.speaker==='me').at(-1);
     if(!latest){notify('先发送一条幕间消息，再点爪印请 AI 回复。');return;}
-    if(!canUseRealModel(data.settings)){notify('请先在终端连接 API；当前发言已保存在本地。');return;}
+    if(!token.trim()||!canUseRealModel(data.settings)){notify('请先在终端连接 API；当前发言已保存在本地。');return;}
     if(!checkWriteAccess())return;
-    busy=true;render(false);
+    const previous=intermissionAttempt(p,latest.id),revision=latest.revisionCount||0;
+    if(previous?.status==='archived'&&previous.revision===revision||
+      !previous&&messages.some(m=>m.speaker==='char'&&m.replyTo===latest.id&&m.at>=(latest.editedAt||latest.at))){
+      notify('这条幕间发言已有回复。');return;
+    }
+    if(previous?.status==='unknown'&&!window.confirm('上次幕间请求可能已被服务商处理。再次生成可能再次计费，确定继续？'))return;
+    const operation=new AbortController(),connection=apiConnectionVersion;
+    const context=()=>JSON.stringify([p.title,p.world,p.user,p.char,p.messages,p.revisions,getActiveMessages(p.intermissionMessages)]);
+    const basis=context(),visible=()=>data===world&&role()===r&&r.play===p&&view==='intermission';
+    const current=()=>data===world&&epoch===modelPageEpoch&&world.roles.includes(r)&&r.play===p&&p.paused===true&&!p.endedAt&&
+      intermissionOperations.get(p)===operation&&!operation.signal.aborted&&context()===basis;
+    intermissionOperations.set(p,operation);
+    render(false);
+    let sent=false;
+    let claimed:PlayData['intermissionAttempts'];
+    const oldAttempts=p.intermissionAttempts;
     try {
-      const reply=await apiReply(r,'intermission',latest.text);
-      if(r.play!==p||!p.paused||!getActiveMessages(p.intermissionMessages||[]).some(m=>m.id===latest.id))return;
-      const previous=p.intermissionMessages!.length;
-      for(const text of splitChatBubbles(reply,r))p.intermissionMessages!.push({id:uid(),speaker:'char',text,at:now(),status:'active',replyTo:latest.id});
-      if(!saveLogged('intermission','用户通过爪印触发戏外 AI 回复',{source:p.id})){
-        p.intermissionMessages!.length=previous;
-        offerUnstoredReply(reply);
+      const valid=()=>current()&&apiConnectionVersion===connection&&saveSession.current();
+      let compileSource:(()=>ConversationCompilation)|undefined;
+      const prompt=await compileRequest(r,'intermission',options=>{
+        const snapshot={...options,isFocused:isFocused(r),nowTs:now()};
+        compileSource=()=>compileNativeConversation(world,r,'intermission',latest.text,snapshot);
+        return compileSource();
+      },valid);
+      if(!valid())throw Error('幕间任务或连接已变化');
+      const attempt:NonNullable<PlayData['intermissionAttempts']>[string]={id:uid(),revision,status:'unknown'};
+      p.intermissionAttempts={...oldAttempts,[latest.id]:attempt};
+      if(!save()){p.intermissionAttempts=oldAttempts;throw Error('幕间领取未确认');}
+      claimed=p.intermissionAttempts;
+      const body=await readModelBeforeDeadline(async signal=>{
+        const response=requestSceneCompletion(prompt,'intermission',{},signal,{roleId:r.id,onDispatch:()=>{sent=true;}});
+        return readChatResponseBody(await response);
+      },operation.signal);
+      const reply=parseChatResponse(body);
+      if(!current()||intermissionAttempt(p,latest.id)!==attempt)return;
+      if(!compileSource||JSON.stringify(requestMessages(compileSource()))!==JSON.stringify(prompt))return;
+      if(!saveSession.current()){
+        intermissionRecovery.set(p,{sourceId:latest.id,text:reply});
+        if(visible())notify('幕间正文已返回，存档已变化。可以复制这次回复。');
+        return;
       }
-    }catch(e){notify('幕间回复失败：'+(e instanceof Error?e.message:String(e))+'；你的发言已保留。');}
-    finally{busy=false;render(false);const area=$('#intermission-scroll');if(area)area.scrollTop=area.scrollHeight;}
+      const count=p.intermissionMessages!.length;
+      p.intermissionAttempts[latest.id]={...attempt,status:'archived'};
+      for(const text of splitChatBubbles(reply,r))p.intermissionMessages!.push({id:uid(),speaker:'char',text,at:now(),status:'active',replyTo:latest.id});
+      if(!saveLogged('intermission','用户通过爪印触发戏外 AI 回复',{source:p.id,roleId:r.id})){
+        p.intermissionMessages!.length=count;
+        p.intermissionAttempts[latest.id]=attempt;
+        intermissionRecovery.set(p,{sourceId:latest.id,text:reply});
+        if(visible())notify('幕间正文已返回，保存未确认。可以复制这次回复。');
+      }else if(intermissionRecovery.get(p)?.sourceId===latest.id)intermissionRecovery.delete(p);
+    }catch(error){
+      if(!sent&&claimed&&current()&&p.intermissionAttempts===claimed&&saveSession.current()){
+        p.intermissionAttempts=oldAttempts;
+        if(!save())p.intermissionAttempts=claimed;
+      }
+      if(visible()&&epoch===modelPageEpoch){
+        const reason=error instanceof Error&&error.name==='TimeoutError'?'幕间请求超时。':'幕间请求未完成。';
+        notify(reason+(sent?'结果未确认，可能已计费。':'本次请求未发送。')+'你的发言已保留。');
+      }
+    }finally{
+      if(intermissionOperations.get(p)===operation){
+        intermissionOperations.delete(p);
+        if(visible()){render(false);const area=$('#intermission-scroll');if(area)area.scrollTop=area.scrollHeight;}
+      }
+    }
   }
 
   function rollBackPlay(): void {
@@ -4760,20 +4857,11 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if(v==='diary'&&diaryOwner)void inspectDiaryRecovery(diaryOwner);
   }
 
-  async function requestSceneCompletion(messages:{role:string;content:string}[],kind:'scene'|'play'|'intermission',sampling:Record<string,number>={},signal?:AbortSignal):Promise<Response> {
+  async function requestSceneCompletion(messages:{role:string;content:string}[],kind:'scene'|'play'|'intermission',sampling:Record<string,number>={},signal?:AbortSignal,owner?:{roleId:string;onDispatch:()=>void}):Promise<Response> {
     const settings={...data.settings},requestToken=token,url=settings.endpoint.trim().replace(/\/+$/,'');
     if(!/^https?:\/\//.test(url)||!settings.model.trim()||!requestToken.trim())throw new Error('请先在终端连接 API、选择模型并保存 Key；原消息保留');
-    syslog('api',`请求 ${kind}`,{messages:messages.length});
-    return postModel(url+'/chat/completions',{method:'POST',signal,headers:{'Content-Type':'application/json',Authorization:'Bearer '+requestToken},body:JSON.stringify({model:settings.model,messages,stream:false,temperature:+settings.temperature,...sampling,...completionLimit(settings,kind)})});
-  }
-
-  async function apiReply(r:RoleData,kind:'intermission',input:string):Promise<string> {
-    const p=r.play,revision=JSON.stringify(getActiveMessages(p?.intermissionMessages));
-    const valid=()=>data.roles.includes(r)&&r.play===p&&revision===JSON.stringify(getActiveMessages(p?.intermissionMessages));
-    const prompt=await compileRequest(r,kind,options=>compileNativeConversation(data,r,kind,input,{...options,isFocused:isFocused(r),nowTs:now()}),valid);
-    const reply=await readChatResponse(await requestSceneCompletion(prompt,kind));
-    if(!valid())throw new Error('幕间来源已变化，回复未写入');
-    return reply;
+    syslog('api',`请求 ${kind}`,{messages:messages.length,...(owner?{roleId:owner.roleId}:{})});
+    return postModel(url+'/chat/completions',{method:'POST',signal,headers:{'Content-Type':'application/json',Authorization:'Bearer '+requestToken},body:JSON.stringify({model:settings.model,messages,stream:false,temperature:+settings.temperature,...sampling,...completionLimit(settings,kind)})},owner?.onDispatch);
   }
 
   async function generateNovelReply(r:RoleData,kind:NovelKind,input:string,regenerateId?:string,opening?:{scene:SceneData;batch?:ChatBatch}):Promise<void> {
@@ -4781,11 +4869,13 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     const before=batch?sceneStateKey(r):null;
     const draft=batch?{...r,scene:scene!,events:r.events.slice()}:r;
     if(batch)entry(draft,'scene','你选择进入面对面',`地点：${scene!.where}`,scene!.startedAt,{source:scene!.id,knownBy:['user',r.id]});
-    let attached=!batch,dispatched=false,timer:ReturnType<typeof setTimeout>|undefined;
+    const epoch=modelPageEpoch;
+    let attached=!batch,dispatched=false;
+    let openingClaim:SceneData['opening'];
     const task=novelTasks.begin(draft,kind),userRevision=JSON.stringify([data.user,data.sharedTasks]);
     const valid=()=>data===world&&world.roles.includes(r)&&userRevision===JSON.stringify([world.user,world.sharedTasks])
       && (attached?novelTasks.valid(task,r,data.selected):view==='chat'&&!document.hidden&&chatBatchValid(r,batch!)&&sceneStateKey(r)===before&&novelTasks.valid(task,draft,data.selected))
-      && (!opening||dispatched||(saveSession.current()&&connection===apiConnectionVersion&&credential===token&&!!credential.trim()&&canUseRealModel(world.settings)))
+      && (!opening||epoch===modelPageEpoch&&!modelPageHidden&&(dispatched||(saveSession.current()&&connection===apiConnectionVersion&&credential===token&&!!credential.trim()&&canUseRealModel(world.settings))))
       && (!scene||openingSourcesValid(attached?r:draft,scene));
     try{
       const regeneration=regenerateId?prepareNovelRegeneration(r,kind,regenerateId):undefined;
@@ -4816,15 +4906,18 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       }
       if(scene?.opening){
         if(!valid())throw Error('连接或场景已变化，本次请求尚未发送');
-        const prior=scene.opening.status;
-        scene.opening.status='unknown';
-        if(!save()){scene.opening.status=prior;throw Error(saveError());}
+        const prior=scene.opening;
+        openingClaim={...prior,status:'unknown'};
+        scene.opening=openingClaim;
+        if(!save()){scene.opening=prior;throw Error(saveError());}
         // A crash after this receipt and before fetch is indistinguishable from an interrupted request.
         dispatched=true;
-        timer=setTimeout(()=>task.controller.abort(),90000);
       }
-      const result=await readNovelResponse(await requestSceneCompletion(prepared?.messages||messages,kind,sampling,task.controller.signal),options.profile,thirdParty);
-      if(!valid()){
+      const wire=prepared?.messages||messages;
+      const result=scene?.opening
+        ?parseNovelResponse(parseChatResponse(await readModelBeforeDeadline(async signal=>readChatResponseBody(await requestSceneCompletion(wire,kind,sampling,signal)),task.controller.signal)),options.profile,thirdParty)
+        :await readNovelResponse(await requestSceneCompletion(wire,kind,sampling,task.controller.signal),options.profile,thirdParty);
+      if(!valid()||openingClaim&&scene?.opening!==openingClaim){
         if(scene&&data===world&&role()===r)offerUnstoredReply(result.text);
         throw new Error('场景或消息已变化，迟到回复未写入');
       }
@@ -4843,7 +4936,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if(item.sceneReply)await applySavedSceneReply(r,item);
       syslog('api',`小说回复已保存 ${kind}`,{presetId:options.presetId});
       if(regenerateId)notify('已重新生成；原版本及修订记录保留');
-    }finally{clearTimeout(timer);novelTasks.finish(task);}
+    }finally{novelTasks.finish(task);}
   }
 
   function openingSourcesValid(r:RoleData,scene:SceneData):boolean {
@@ -4864,8 +4957,10 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         if(role()===r)notify(reason+(scene.opening?.status==='unknown'?'。请求结果未确认，可能已计费。':'。本次请求尚未发送。'));
       }
     }finally{
-      busy=novelTasks.has(data.selected||'');
-      if(data===world&&role()===r&&(view==='chat'||view==='novel'))render(false);
+      if(data===world&&role()===r){
+        busy=novelTasks.has(r.id);
+        if(view==='chat'||view==='novel')render(false);
+      }
     }
   }
 
@@ -4954,9 +5049,9 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     r:RoleData,dateKey:string,action:'auto'|'recover'|'replace'|'inspect'='auto'
   ):Promise<boolean> {
     const manualTrigger=action==='recover'||action==='replace';
-    const world=data;
+    const world=data,epoch=modelPageEpoch;
     const owned=()=>data===world&&world.roles.includes(r)&&world.roles.filter(item=>item.id===r.id).length===1;
-    const valid=()=>owned()&&saveSession.current()&&!hasCharacterDiaryForDate(r,dateKey);
+    const valid=()=>owned()&&!modelPageHidden&&saveSession.current()&&!hasCharacterDiaryForDate(r,dateKey);
     if(!owned()||!saveSession.current()){if(manualTrigger)notify('请求尚未发送。'+saveError());return false;}
     if(!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)||toLocalDateKey(getLocalDayBounds(dateKey).startMs)!==dateKey||dateKey>=toLocalDateKey(now())){if(manualTrigger)notify('这一天尚未结束，跨日后再归档。');return false;}
     if(hasCharacterDiaryForDate(r,dateKey)){if(manualTrigger)notify('这一天已有归档日记，原文保留。');return true;}
@@ -5013,7 +5108,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       const snapshot=JSON.stringify([world.user,facts]);
       const sourcesMatch=()=>snapshot===JSON.stringify([world.user,collectDailyDiaryFacts(r,dateKey,true)])&&personalTicketValid(r,personal);
       const sourceHash=await diarySourceHash(JSON.stringify([snapshot,{...personal,id:''}]));
-      if(!valid()||!recovering&&!sourcesMatch())return false;
+      if(!valid()||!recovering&&(epoch!==modelPageEpoch||!sourcesMatch()))return false;
       if(!recovering){
         const claim:DiaryReceipt={attempt:crypto.randomUUID(),state:'claimed',priorDispatch:feeRisk};
         await replaceDiaryReceipt(key,receipt,claim);
@@ -5027,31 +5122,37 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         const sent:DiaryReceipt={...claim,state:'sent'};
         await replaceDiaryReceipt(key,claim,sent);
         // This marker is durable before fetch. A crash in the remaining gap is treated as potentially billed.
-        if(!valid()||!sourcesMatch()||world.settings!==settings||token!==credential){
+        if(!valid()||epoch!==modelPageEpoch||!sourcesMatch()||world.settings!==settings||token!==credential){
           await replaceDiaryReceipt(key,sent,claim);
           return false;
         }
-        const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),90000);
         let text:string,payload:string|undefined;
         task.status='generating';
         syslog('diary',`请求生成角色每日日记 · ${r.name} · ${dateKey}`,{model:settings.model,dateKey,chatCount:facts.summary.chatCount,sceneCount:facts.summary.sceneCount});
         try{
-          const pending=postModel(settings.endpoint.trim().replace(/\/+$/,'')+'/chat/completions',{
-            method:'POST',signal:controller.signal,
+          const pending=readModelBeforeDeadline(async signal=>readChatResponseBody(await postModel(settings.endpoint.trim().replace(/\/+$/,'')+'/chat/completions',{
+            method:'POST',signal,
             headers:{'Content-Type':'application/json',...(credential?{Authorization:'Bearer '+credential}:{})},
             body:JSON.stringify({model:settings.model,messages,temperature:+settings.temperature||0.8,...completionLimit(settings,'diary')}),
-          });
+          })),undefined,true);
           safeRenderWhenNotTyping();
-          const res=await pending;
-          const result=splitPersonalReply(await readChatResponse(res));
+          const result=splitPersonalReply(parseChatResponse(await pending));
           text=cleanGeneratedDiaryText(result.text);payload=result.payload;
           if(!text)throw Error('empty diary');
-        }catch{
-          await replaceDiaryReceipt(key,sent,{...sent,state:'failed'});
-          status('uncertain','请求结果未确认，可能已计费。再次生成需手动确认。');
+        }catch(error){
+          // An unloading document must leave the dispatched receipt intact for the next writer.
+          if(!(modelPageHidden&&error instanceof Error&&error.name==='AbortError')){
+            await replaceDiaryReceipt(key,sent,{...sent,state:'failed'});
+          }
+          const message='请求结果未确认，可能已计费。再次生成需手动确认。';
+          if(!status('uncertain',message)&&owned()&&r.diaryTasks?.includes(task)&&
+            task.requestAttempt===sent.attempt&&task.status==='generating'){
+            // The receipt is durable even if pagehide released the main-store writer.
+            task.status='uncertain';task.lastError=message;
+          }
           if(manualTrigger&&owned())notify('日记请求结果未确认，可能已计费。');
           return false;
-        }finally{clearTimeout(timer);}
+        }
         wireResult=text;
         receipt={...sent,state:'ready',result:{text,payload,sourceHash,requestId:personal.id}};
         await replaceDiaryReceipt(key,sent,receipt);
@@ -5062,6 +5163,10 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         Boolean(recovering?task.requestAttempt&&task.requestAttempt!==receipt.attempt:task.requestAttempt!==receipt.attempt);
       if(!valid()||sourcesChanged){
         if(sourcesChanged)status('stale','正文基于已变化的来源或任务，仅供复制，不能归档。');
+        if(wireResult&&owned()&&r.diaryTasks?.includes(task)&&task.requestAttempt===receipt.attempt&&task.status==='generating'){
+          task.status=sourcesChanged?'stale':'ready';
+          task.lastError=sourcesChanged?'正文基于已变化的来源，仅供复制。':'正文已保留，可以保存已有结果。';
+        }
         if(manualTrigger||wireResult)copyResult(result.text,sourcesChanged);
         if(owned())notify('日记正文已保留，存档或资料已变化，未归档。');
         return false;
@@ -5113,7 +5218,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   }
 
   async function processDiaryQueue(): Promise<void> {
-    if (diaryQueueBusy || lifeBusy || !saveSession.current()) return;
+    if(diaryQueueBusy||lifeBusy||modelPageHidden||!saveSession.current())return;
+    const epoch=modelPageEpoch;
     for (const roleItem of data.roles) {
       syncRoleDiaryTasks(roleItem, data.settings, now());
     }
@@ -5130,7 +5236,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       let guard = 0;
       while (guard < 25) {
         guard++;
-        if (!canUseRealModel(data.settings)||!saveSession.current()) break;
+        if(epoch!==modelPageEpoch||!canUseRealModel(data.settings)||!saveSession.current())break;
         const orderedRoles = [
           ...(role() ? [role()!] : []),
           ...data.roles.filter((x) => x.id !== role()?.id),
@@ -5672,6 +5778,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         return;
       }
       const performance=draftScope(r,'play',p),backstage=draftScope(r,'intermission',p);
+      intermissionOperations.get(p)?.abort();
+      intermissionRecovery.delete(p);
       clearDrafts(scope=>scope===performance||scope===backstage);
     } else if (kind==='scene'&&r.scene) {
       try{archiveScene(r);}catch(error){notify(error instanceof Error?error.message:'见面未能归档，现场已保留');return;}
@@ -5726,6 +5834,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         if((next.customFonts?.length||0)<fontCount||(next.bubblePresets?.length||0)<bubbleCount)throw Error('备份中的外观记录无法完整恢复。');
         try {next.focus = ensureFocusStateNormalized(next.focus,next.roles);}
         catch {throw new Error('专注备份结构无效');}
+        if(next.focus.active)delete next.focus.active.liveLogBusy;
         next.selected = null;
         delete next.draftWorldId;
         await stageBackupMedia(next,attachments);
@@ -5733,6 +5842,10 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         if(!save(next))throw Error(saveError());
         clearDrafts(()=>true);
         suspendVoiceOperations(false);
+        modelPageEpoch++;
+        for(const owner of previous.roles){
+          if(novelTasks.cancel(owner.id))busy=false;
+        }
         data = next;
         mediaSources.clear();
         document.querySelectorAll<HTMLElement>('[data-hydrated-key]').forEach(el=>delete el.dataset.hydratedKey);
@@ -5784,7 +5897,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if(!r||busy||diaryQueueBusy||lifeBusy){notify('请等待当前请求结束后再清档。');return;}
       if(!window.confirm(`仅清理当前奈恩的互动：${r.chats.length} 条聊天、${r.diaries.length} 篇日记、${r.events.length} 条事件，以及见面／戏剧／足迹状态。若有真实记录请取消。角色资料与其他角色保留；先创建恢复副本。本操作仅执行一次，确认继续？`))return;
       const result=resetNainStart(data,r.id,saveSession.storage,now());
-      if(data!==result.data)suspendVoiceOperations(false);
+      if(data!==result.data){suspendVoiceOperations(false);modelPageEpoch++;}
       data=result.data;
       if(result.cleaned){clearRoleDrafts(r);render(false);notify('奈恩已恢复到等待 API 首条消息的起点，恢复副本已保存。');}
       else notify(result.error||'当前角色已经清理过，未重复执行。');
@@ -5815,6 +5928,11 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       void generateNovelReply(current,kind,latest.text).catch(error=>notify('生成未完成：'+(error instanceof Error?error.message:'连接异常'))).finally(()=>{busy=novelTasks.has(data.selected||'');if(view==='novel'&&role()===current)render(false);});return;
     }
     if(act==='intermissionreply'){void requestIntermissionReply(b.closest('form'));return;}
+    if(act==='copy-intermission-reply'){
+      const p=r?.play,text=p&&intermissionRecovery.get(p)?.text;
+      if(view==='intermission'&&p?.paused&&text)offerUnstoredReply(text);
+      return;
+    }
     if (act === 'chatpanel') {
       setChatPanel(chatPanel===b.dataset.panel?'':b.dataset.panel||'');
       render(false);
@@ -6220,6 +6338,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       const previous=r.play.paused;
       r.play.paused = false;
       if(!saveLogged('intermission','返回戏内演出',{source:r.play.id})){r.play.paused=previous;return;}
+      intermissionOperations.get(r.play)?.abort();
       go('novel','play',false);
       return;
     }
@@ -6798,6 +6917,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       data.logs = (data.logs || []).filter((x) => x.roleId !== target.id);
       data.selected = null;
       if(!saveLogged('role',`已删除角色及其存档：${target.name}`)){Object.assign(data,previous);return;}
+      if(novelTasks.cancel(target.id))busy=false;
+      if(target.play)intermissionOperations.get(target.play)?.abort();
       clearRoleDrafts(target);
       editingRoleId = null;
       deleteRoleId = null;
@@ -7181,12 +7302,20 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if(canUseRealModel(data.settings))void processDiaryQueue();
   }
   window.addEventListener('storage',event=>{if(event.key===STORAGE_KEY||event.key===null)refreshSaveAccess();});
-  window.addEventListener('pagehide',()=>{
+  window.addEventListener('pagehide',event=>{
+    modelPageHidden=true;
+    modelPageEpoch++;
+    // A dispatched diary can still store its existing F05 receipt on BFCache return.
+    for(const [request,keepOnBFCache] of activeModelReads){
+      if(!event.persisted||!keepOnBFCache)request.cancel();
+    }
     captureDrafts();
     voicePageHidden=true;
     suspendVoiceOperations(true);
   });
   window.addEventListener('pageshow',event=>{
+    modelPageHidden=false;
+    for(const request of activeModelReads.keys())request.check();
     if(!event.persisted)return;
     voicePageHidden=false;
     if(view==='chat'&&chatPanel==='voice')render(false);
@@ -7195,7 +7324,10 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if(document.hidden&&(voiceOperation?.phase==='waiting'||voiceOperation?.phase==='recording'))leaveVoicePanel();
     else if(!document.hidden&&!voicePageHidden&&view==='chat'&&chatPanel==='voice')render(false);
     if(document.hidden)captureDrafts();
-    if(!document.hidden){refreshSaveAccess();if(view==='home')homeTasks.refresh();}
+    if(!document.hidden){
+      for(const request of activeModelReads.keys())request.check();
+      refreshSaveAccess();if(view==='home')homeTasks.refresh();
+    }
   });
   window.addEventListener(SAVE_ACCESS_EVENT,refreshSaveAccess);
   queueMicrotask(()=>{if(saveSession.current()){pumpChatSchedules();pumpProactive();pumpRoleLife();}});

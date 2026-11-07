@@ -10806,14 +10806,15 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
     const input = batch.sources.map((m) => m.text).join("\n");
     return compileNativeConversation(data, copy, "chat", input, { ...options, isFocused: false, nowTs: at, currentInputs: batch.sources });
   }
-  async function readChatResponse(response) {
+  async function readChatResponseBody(response) {
     if (!response.ok) throw new Error(`\u56DE\u590D\u8BF7\u6C42\u5931\u8D25\uFF08HTTP ${response.status}\uFF09`);
-    let body;
     try {
-      body = await response.json();
+      return await response.json();
     } catch {
       throw new Error("\u56DE\u590D\u4E0D\u662F\u6709\u6548 JSON");
     }
+  }
+  function parseChatResponse(body) {
     if (!body || typeof body !== "object") throw new Error("\u56DE\u590D\u683C\u5F0F\u65E0\u6548");
     const value = body;
     if (value.error || !Array.isArray(value.choices) || !value.choices[0] || typeof value.choices[0] !== "object") throw new Error("\u63A5\u53E3\u672A\u8FD4\u56DE\u6709\u6548\u56DE\u590D");
@@ -10823,6 +10824,9 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
     const message = choice.message;
     if (message.role !== "assistant" || message.refusal || message.function_call || message.tool_calls && (!Array.isArray(message.tool_calls) || message.tool_calls.length) || typeof message.content !== "string" || !message.content.trim()) throw new Error("\u63A5\u53E3\u672A\u8FD4\u56DE\u6709\u6548\u804A\u5929\u6B63\u6587");
     return message.content.trim();
+  }
+  async function readChatResponse(response) {
+    return parseChatResponse(await readChatResponseBody(response));
   }
   function buildPhoneRegeneration(data, r, id, at, options = {}) {
     const copy = structuredClone(r), target = getActiveMessages(copy.chats).find((m) => m.id === id && m.speaker === "char");
@@ -10941,7 +10945,10 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
     return result;
   }
   async function readNovelResponse(response, profile2, thirdParty) {
-    const extracted = splitSceneReply(await readChatResponse(response)), raw = extracted.text;
+    return parseNovelResponse(await readChatResponse(response), profile2, thirdParty);
+  }
+  function parseNovelResponse(text2, profile2, thirdParty) {
+    const extracted = splitSceneReply(text2), raw = extracted.text;
     if (!raw) throw new Error("\u5C0F\u8BF4\u6B63\u6587\u4E3A\u7A7A\uFF0C\u539F\u8BB0\u5F55\u4FDD\u7559");
     if (!thirdParty) return { text: raw, sections: void 0, auxiliary: void 0, ...extracted.payload ? { sceneEvent: extracted.payload } : {} };
     const parsed = parseFruitOutput(raw);
@@ -10992,6 +10999,61 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
       } else return [];
       return [{ ...item, summary, where, confirmed: true, sourceMessageCount: item.sourceMessageIds.length, sourceEventCount: item.sourceEventIds.length, innerThought: void 0, artifact: void 0 }];
     }));
+  }
+
+  // src/core/requestDeadline.ts
+  var MODEL_READ_TIMEOUT = 9e4;
+  function startRequestDeadline(read, parent) {
+    const controller = new AbortController();
+    const deadline = Date.now() + MODEL_READ_TIMEOUT;
+    let settled = false;
+    let timer;
+    let rejectResult;
+    const finish = () => {
+      settled = true;
+      clearTimeout(timer);
+      parent?.removeEventListener("abort", cancel);
+    };
+    const stop = (error) => {
+      if (settled) return;
+      finish();
+      rejectResult(error);
+      controller.abort(error);
+    };
+    const cancel = () => stop(new DOMException("\u8BF7\u6C42\u5DF2\u4E2D\u65AD", "AbortError"));
+    const check = () => {
+      if (!settled && Date.now() >= deadline) stop(new DOMException("\u7B49\u5F85\u6A21\u578B\u54CD\u5E94\u8D85\u65F6", "TimeoutError"));
+    };
+    const tick = () => {
+      check();
+      if (!settled) timer = setTimeout(tick, deadline - Date.now());
+    };
+    const result = new Promise((resolve, reject) => {
+      rejectResult = reject;
+      if (parent?.aborted) {
+        cancel();
+        return;
+      }
+      parent?.addEventListener("abort", cancel, { once: true });
+      timer = setTimeout(tick, MODEL_READ_TIMEOUT);
+      void (async () => {
+        try {
+          const body = await read(controller.signal);
+          check();
+          if (!settled) {
+            finish();
+            resolve(body);
+          }
+        } catch (error) {
+          check();
+          if (!settled) {
+            finish();
+            reject(error);
+          }
+        }
+      })();
+    });
+    return { result, cancel, check };
   }
 
   // src/core/autonomousLife.ts
@@ -14787,6 +14849,11 @@ ${prevLogs}` : "",
     let editingRoleId = null;
     let deleteRoleId = null;
     let busy = false;
+    const activeModelReads = /* @__PURE__ */ new Map();
+    let modelPageEpoch = 0;
+    let modelPageHidden = false;
+    const intermissionOperations = /* @__PURE__ */ new WeakMap();
+    const intermissionRecovery = /* @__PURE__ */ new WeakMap();
     let token = readDeviceApiKey(localStorage, data.settings.endpoint);
     let apiConnectionVersion = 0;
     let toastTimer = null;
@@ -14880,7 +14947,8 @@ ${prevLogs}` : "",
     let focusTaskInputDraft = "";
     let focusHistoryDateKey = toLocalDateKey(now());
     let focusSettlementModalSessionId = null;
-    let focusSummaryWorld = null;
+    let focusSummaryOperation = null;
+    let focusLiveOperation = null;
     function buildStagedFrameFromOwner(owner) {
       return frameDraft(owner);
     }
@@ -14976,6 +15044,7 @@ ${prevLogs}` : "",
       data.focus = ensureFocusStateNormalized(data.focus, data.roles);
     }
     ensureFocusData();
+    if (data.focus?.active) delete data.focus.active.liveLogBusy;
     const avatar = (r) => Array.from(String(r?.name || "?").trim() || "?")[0] || "?";
     const userAvatarChar = (u) => Array.from(String(u?.name || "\u6211").trim() || "\u6211")[0] || "\u6211";
     function installBubbleCSS() {
@@ -15679,9 +15748,20 @@ ${prevLogs}` : "",
       notice.hidden = current;
       if (!current) notice.querySelector("span").textContent = saveError();
     }
-    function postModel(url, options) {
+    function postModel(url, options, onDispatch) {
       if (!saveSession.current()) return Promise.reject(new Error("\u8BF7\u6C42\u5C1A\u672A\u53D1\u9001\u3002" + saveError()));
+      onDispatch?.();
       return fetch(url, options);
+    }
+    async function readModelBeforeDeadline(read, parent, keepOnBFCache = false) {
+      if (modelPageHidden) throw new DOMException("\u9875\u9762\u5DF2\u79BB\u5F00\uFF0C\u672A\u53D1\u9001\u8BF7\u6C42", "AbortError");
+      const request = startRequestDeadline(read, parent);
+      activeModelReads.set(request, keepOnBFCache);
+      try {
+        return await request.result;
+      } finally {
+        activeModelReads.delete(request);
+      }
     }
     function checkWriteAccess() {
       if (saveSession.current()) return true;
@@ -16212,72 +16292,70 @@ ${prevLogs}` : "",
       reviseChatTiming(r, now(), editedOrWithdrawnId);
     }
     async function requestAiLiveLogForActiveSession(sessionId, momentId, roleId) {
-      if (!canUseRealModel(data.settings)) return;
-      const f = activeFocus();
-      if (!f || f.id !== sessionId || f.status !== "running" || f.liveLogBusy) return;
-      const roleItem = data.roles.find((r) => r.id === roleId);
-      if (!roleItem) return;
-      f.liveLogBusy = true;
+      const world = data, f = activeFocus();
+      if (!f || f.id !== sessionId || f.status !== "running" || modelPageHidden || focusLiveOperation?.session === f || !canUseRealModel(world.settings) || !saveSession.current()) return;
+      const roleItem = world.roles.find((r) => r.id === roleId);
+      const moment = f.moments.find((m) => m.id === momentId && m.roleId === roleId);
+      if (!roleItem || !moment || moment.aiAttempt || !f.participantRoleIds?.includes(roleId)) return;
+      const settings = world.settings, credential = token, connection = apiConnectionVersion, epoch = modelPageEpoch;
+      const elapsedMin = Math.max(1, Math.round(focusElapsed(f) / 6e4));
+      const promptText = buildFocusLiveLogAiPrompt(roleItem, f, elapsedMin);
+      const basis = () => JSON.stringify([f.runSince, f.tasks, roleItem.name, roleItem.job, roleItem.place, roleItem.traits, moment.title, moment.detail]);
+      const source = basis();
+      const attempt = { id: uid(), status: "unknown" };
+      moment.aiAttempt = attempt;
+      if (!save()) {
+        delete moment.aiAttempt;
+        return;
+      }
+      const operation = { world, session: f };
+      focusLiveOperation = operation;
+      const current = () => data === world && activeFocus() === f && f.status === "running" && focusLiveOperation === operation && epoch === modelPageEpoch && world.roles.includes(roleItem) && f.participantRoleIds?.includes(roleId) && f.moments.includes(moment) && moment.aiAttempt === attempt && basis() === source;
       try {
-        const s = data.settings;
-        const url = s.endpoint.trim().replace(/\/+$/, "");
-        const elapsedMin = Math.max(1, Math.round(focusElapsed(f) / 6e4));
-        const promptText = buildFocusLiveLogAiPrompt(roleItem, f, elapsedMin);
-        const res = await postModel(url + "/chat/completions", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...token ? { Authorization: "Bearer " + token } : {}
-          },
-          body: JSON.stringify({
-            model: s.model,
-            messages: [{ role: "user", content: promptText }],
-            temperature: +s.temperature || 0.7,
-            ...completionLimit(s, "focus-log")
-          })
+        if (!current() || connection !== apiConnectionVersion || settings !== world.settings || credential !== token || !saveSession.current()) return;
+        const json = await readModelBeforeDeadline(async (signal) => {
+          const res = await postModel(settings.endpoint.trim().replace(/\/+$/, "") + "/chat/completions", {
+            method: "POST",
+            signal,
+            headers: { "Content-Type": "application/json", ...credential ? { Authorization: "Bearer " + credential } : {} },
+            body: JSON.stringify({ model: settings.model, messages: [{ role: "user", content: promptText }], temperature: +settings.temperature || 0.7, ...completionLimit(settings, "focus-log") })
+          });
+          if (!res.ok) throw Error("Focus \u5B9E\u51B5\u8BF7\u6C42\u672A\u5B8C\u6210");
+          return res.json();
         });
-        if (!res.ok) return;
-        const json = await res.json();
         const raw = String(json.choices?.[0]?.message?.content || "").trim();
         const match = raw.match(/\{[\s\S]*\}/);
-        if (!match) return;
+        if (!match || !current() || !saveSession.current()) return;
         const parsed = JSON.parse(match[0]);
-        const currentSession = activeFocus();
-        if (!currentSession || currentSession.id !== sessionId) return;
-        if (!checkWriteAccess()) return;
-        const targetMoment = (currentSession.moments || []).find((m) => m.id === momentId);
-        if (targetMoment && parsed.detail) {
-          if (parsed.title) targetMoment.title = String(parsed.title).slice(0, 48);
-          targetMoment.detail = String(parsed.detail).slice(0, 220);
-          if (parsed.innerThought) {
-            targetMoment.innerThought = String(parsed.innerThought).slice(0, 120);
-          }
-          targetMoment.isAiGenerated = true;
+        const previous = { ...moment };
+        const newer = f.moments.slice(f.moments.indexOf(moment) + 1).some((m) => m.roleId === roleId);
+        const participant = newer ? void 0 : f.participants?.find((p) => p.roleId === roleId);
+        const previousParticipant = participant && { ...participant };
+        if (parsed.detail) {
+          if (parsed.title) moment.title = String(parsed.title).slice(0, 48);
+          moment.detail = String(parsed.detail).slice(0, 220);
+          if (parsed.innerThought) moment.innerThought = String(parsed.innerThought).slice(0, 120);
+          moment.isAiGenerated = true;
         }
-        if (parsed.statusText) {
-          const pState = (currentSession.participants || []).find(
-            (p) => p.roleId === roleId
-          );
-          if (pState) {
-            pState.statusText = String(parsed.statusText).slice(0, 60);
-            if (parsed.innerThought) {
-              pState.currentThought = String(parsed.innerThought).slice(0, 120);
-            }
-          }
+        if (participant && parsed.statusText) {
+          participant.statusText = String(parsed.statusText).slice(0, 60);
+          if (parsed.innerThought) participant.currentThought = String(parsed.innerThought).slice(0, 120);
         }
-        save();
+        moment.aiAttempt = { ...attempt, status: "archived" };
+        if (!save()) {
+          restoreFields(moment, previous);
+          if (participant && previousParticipant) restoreFields(participant, previousParticipant);
+          return;
+        }
         if (view === "focus") render(false);
       } catch {
       } finally {
-        const currentSession = activeFocus();
-        if (currentSession && currentSession.id === sessionId) {
-          currentSession.liveLogBusy = false;
-        }
+        if (focusLiveOperation === operation) focusLiveOperation = null;
       }
     }
     async function requestAiFocusSummariesForSession(sessionId, manualTrigger = false) {
-      const world = data;
-      if (focusSummaryWorld === world) return;
+      const world = data, epoch = modelPageEpoch;
+      if (focusSummaryOperation?.world === world || modelPageHidden) return;
       ensureFocusData();
       const rec = world.focus?.completed.find((item) => item.id === sessionId);
       const membership = [...rec?.participantRoleIds || []];
@@ -16317,7 +16395,7 @@ ${prevLogs}` : "",
         return;
       }
       const connectionCurrent = () => {
-        if (data !== world || connection.version !== apiConnectionVersion || !saveSession.current()) return false;
+        if (data !== world || epoch !== modelPageEpoch || connection.version !== apiConnectionVersion || !saveSession.current()) return false;
         try {
           return localStorage.getItem(DEVICE_API_KEY) === storedCredential;
         } catch {
@@ -16326,7 +16404,7 @@ ${prevLogs}` : "",
       };
       const progress = {
         remainingRoleIds: pending ? [pending, ...remaining.filter((id) => id !== pending)] : remaining,
-        ...pending ? { pendingRoleId: pending } : {}
+        ...pending ? { pendingRoleId: pending, pendingAttemptId: previousRun?.pendingAttemptId } : {}
       };
       const original = { summaryRun: previousRun, summaryStatus: rec.summaryStatus, summaryError: rec.summaryError };
       rec.summaryRun = progress;
@@ -16336,8 +16414,9 @@ ${prevLogs}` : "",
         Object.assign(rec, original);
         return;
       }
-      focusSummaryWorld = world;
-      const currentRecord = () => data === world && focusSummaryWorld === world && [...participants.values()].every((participant) => world.roles.includes(participant)) ? world.focus?.completed.find((item) => item.id === sessionId && item.summaryRun === progress && item.summaryStatus === "generating" && item.participantRoleIds?.length === membership.length && membership.every((id, index) => item.participantRoleIds?.[index] === id)) : void 0;
+      const operation = { world };
+      focusSummaryOperation = operation;
+      const currentRecord = () => data === world && focusSummaryOperation === operation && [...participants.values()].every((participant) => world.roles.includes(participant)) ? world.focus?.completed.find((item) => item.id === sessionId && item.summaryRun === progress && item.summaryStatus === "generating" && item.participantRoleIds?.length === membership.length && membership.every((id, index) => item.participantRoleIds?.[index] === id)) : void 0;
       let failure = "AI \u5C0F\u7ED3\u8BF7\u6C42\u672A\u5B8C\u6210\u3002";
       try {
         render(false);
@@ -16350,43 +16429,53 @@ ${prevLogs}` : "",
             break;
           }
           const prompt = buildFocusSummaryAiPrompt(roleItem, current);
-          const previousPending = progress.pendingRoleId;
-          progress.pendingRoleId = roleId;
-          if (!save()) {
+          const previousPending = progress.pendingRoleId, previousAttempt = progress.pendingAttemptId;
+          const attemptId = uid();
+          const restorePending = () => {
             progress.pendingRoleId = previousPending;
-            return;
+            progress.pendingAttemptId = previousAttempt;
+          };
+          progress.pendingRoleId = roleId;
+          progress.pendingAttemptId = attemptId;
+          if (!save()) {
+            restorePending();
+            failure = "\u5C0F\u7ED3\u9886\u53D6\u672A\u80FD\u786E\u8BA4\u4FDD\u5B58\u3002";
+            break;
           }
           if (!connectionCurrent()) {
-            progress.pendingRoleId = previousPending;
+            restorePending();
             failure = "\u8FDE\u63A5\u6216\u5B58\u6863\u5DF2\u53D8\u5316\uFF0C\u5DF2\u505C\u6B62\u53D1\u9001\u5269\u4F59\u5C0F\u7ED3\u3002";
             break;
           }
-          const res = await postModel(settings.endpoint + "/chat/completions", {
-            method: "POST",
-            redirect: "error",
-            headers: {
-              "Content-Type": "application/json",
-              ...connection.key ? { Authorization: "Bearer " + connection.key } : {}
-            },
-            body: JSON.stringify({
-              model: settings.model,
-              messages: [{ role: "user", content: prompt }],
-              temperature: +settings.temperature || 0.7,
-              ...completionLimit(settings, "focus-summary")
-            })
+          const json = await readModelBeforeDeadline(async (signal) => {
+            const res = await postModel(settings.endpoint + "/chat/completions", {
+              method: "POST",
+              signal,
+              redirect: "error",
+              headers: {
+                "Content-Type": "application/json",
+                ...connection.key ? { Authorization: "Bearer " + connection.key } : {}
+              },
+              body: JSON.stringify({
+                model: settings.model,
+                messages: [{ role: "user", content: prompt }],
+                temperature: +settings.temperature || 0.7,
+                ...completionLimit(settings, "focus-summary")
+              })
+            });
+            if (!res.ok) {
+              failure = `AI \u5C0F\u7ED3\u8BF7\u6C42\u672A\u5B8C\u6210\uFF08HTTP ${res.status}\uFF09\u3002`;
+              throw Error(failure);
+            }
+            return res.json();
           });
-          if (!res.ok) {
-            failure = `AI \u5C0F\u7ED3\u8BF7\u6C42\u672A\u5B8C\u6210\uFF08HTTP ${res.status}\uFF09\u3002`;
-            break;
-          }
-          const json = await res.json();
           const text2 = String(json.choices?.[0]?.message?.content || "").trim();
           if (!text2) {
             failure = "\u6A21\u578B\u672A\u8FD4\u56DE\u6709\u6548\u5C0F\u7ED3\u3002";
             break;
           }
           const latest = currentRecord();
-          if (!latest || !saveSession.current()) return;
+          if (!latest || epoch !== modelPageEpoch || progress.pendingAttemptId !== attemptId || buildFocusSummaryAiPrompt(roleItem, latest) !== prompt || !saveSession.current()) return;
           const previousSummaries = latest.roleSummaries, previousRemaining = progress.remainingRoleIds;
           const summaries = [...previousSummaries || []];
           const index = summaries.findIndex((item) => item.roleId === roleId);
@@ -16396,6 +16485,7 @@ ${prevLogs}` : "",
           latest.roleSummaries = summaries;
           progress.remainingRoleIds = previousRemaining.filter((id) => id !== roleId);
           delete progress.pendingRoleId;
+          delete progress.pendingAttemptId;
           const complete = !progress.remainingRoleIds.length;
           if (complete) {
             latest.summaryStatus = "ready";
@@ -16407,6 +16497,7 @@ ${prevLogs}` : "",
             latest.summaryRun = progress;
             progress.remainingRoleIds = previousRemaining;
             progress.pendingRoleId = roleId;
+            progress.pendingAttemptId = attemptId;
             failure = "\u5C0F\u7ED3\u5199\u5165\u672A\u786E\u8BA4\u3002";
             break;
           }
@@ -16415,17 +16506,18 @@ ${prevLogs}` : "",
             return;
           }
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof Error && error.name === "TimeoutError") failure = "AI \u5C0F\u7ED3\u54CD\u5E94\u8D85\u65F6\u3002";
       } finally {
         const current = currentRecord();
-        if (current && saveSession.current()) {
+        if (current && epoch === modelPageEpoch && saveSession.current()) {
           current.summaryStatus = "failed";
           current.summaryError = failure + (progress.pendingRoleId ? "\u8BF7\u6C42\u53EF\u80FD\u5DF2\u88AB\u670D\u52A1\u5546\u5904\u7406\u3002\u7ED3\u679C\u672A\u786E\u8BA4\uFF0C\u672A\u81EA\u52A8\u91CD\u8BD5\u3002" : "\u5DF2\u4FDD\u5B58\u7684\u5C0F\u7ED3\u4FDD\u7559\uFF0C\u5269\u4F59\u8BF7\u6C42\u5C1A\u672A\u53D1\u9001\u3002");
           save();
           if (manualTrigger) notify(current.summaryError);
         }
-        if (focusSummaryWorld === world) {
-          focusSummaryWorld = null;
+        if (focusSummaryOperation === operation) {
+          focusSummaryOperation = null;
           if (data === world) render(false);
         }
       }
@@ -16433,9 +16525,17 @@ ${prevLogs}` : "",
     function syncFocusMoments() {
       const f = activeFocus();
       if (!f || f.status !== "running") return false;
+      const previous = f.moments, previousCount = previous?.length || 0, previousDue = f.nextLiveLogDueAt;
+      const participants = f.participants?.map((p) => ({ ...p }));
       const added = syncActiveFocusLiveLogs(f, data.roles, now());
       if (added.length > 0) {
-        save();
+        if (!save()) {
+          f.moments = previous;
+          if (previous) previous.length = previousCount;
+          f.nextLiveLogDueAt = previousDue;
+          f.participants = participants;
+          return false;
+        }
         const latest = added[added.length - 1];
         if (latest.roleId && canUseRealModel(data.settings)) {
           void requestAiLiveLogForActiveSession(f.id, latest.id, latest.roleId);
@@ -16458,8 +16558,8 @@ ${prevLogs}` : "",
           settled.tasks
         )}\uFF09`
       );
-      save();
-      if (canUseRealModel(data.settings) && (settled.participantRoleIds || []).length > 0) {
+      const saved = save();
+      if (saved && canUseRealModel(data.settings) && (settled.participantRoleIds || []).length > 0) {
         void requestAiFocusSummariesForSession(settled.id, false);
       }
       return true;
@@ -16550,11 +16650,10 @@ ${prevLogs}` : "",
             settled.actualElapsedMs || 0
           )}`
         );
-        if (canUseRealModel(data.settings) && (settled.participantRoleIds || []).length > 0) {
-          void requestAiFocusSummariesForSession(settled.id, false);
-        }
       }
-      save();
+      if (save() && settled?.participantRoleIds?.length && canUseRealModel(data.settings)) {
+        void requestAiFocusSummariesForSession(settled.id, false);
+      }
       render(false);
     }
     function renderFocusMomentsHtml(f) {
@@ -17527,10 +17626,10 @@ ${prevLogs}` : "",
               <h4 style="margin:0;font-size:13px">${participantRoles.length > 0 ? "\u89D2\u8272\u4E13\u6CE8\u5C0F\u7ED3" : "\u4E13\u6CE8\u5B8C\u6210\u62A5\u544A"}</h4>
               ${participantRoles.length > 0 ? `<button type="button" class="btn small ghost" data-action="retryfocussummary" data-session-id="${esc(
         rec.id
-      )}" data-testid="retry-focus-summary-btn" ${focusSummaryWorld === data ? "disabled" : ""}>${focusSummaryWorld === data ? "\u6B63\u5728\u751F\u6210\u2026" : rec.summaryRun || rec.summaryStatus === "failed" || rec.summaryStatus === "generating" ? "\u21BB \u91CD\u8BD5\u751F\u6210\u89D2\u8272\u5C0F\u7ED3" : "\u21BB \u91CD\u65B0\u751F\u6210\u5C0F\u7ED3"}</button>` : ""}
+      )}" data-testid="retry-focus-summary-btn" ${focusSummaryOperation?.world === data ? "disabled" : ""}>${focusSummaryOperation?.world === data ? "\u6B63\u5728\u751F\u6210\u2026" : rec.summaryRun || rec.summaryStatus === "failed" || rec.summaryStatus === "generating" ? "\u21BB \u91CD\u8BD5\u751F\u6210\u89D2\u8272\u5C0F\u7ED3" : "\u21BB \u91CD\u65B0\u751F\u6210\u5C0F\u7ED3"}</button>` : ""}
             </div>
-            ${rec.summaryError ? `<div class="hint" style="margin-bottom:8px" data-testid="settlement-summary-error">${esc(
-        rec.summaryError
+            ${rec.summaryError || rec.summaryRun?.pendingRoleId && focusSummaryOperation?.world !== data ? `<div class="hint" style="margin-bottom:8px" data-testid="settlement-summary-error">${esc(
+        rec.summaryError || "\u6B64\u524D\u5C0F\u7ED3\u8BF7\u6C42\u7684\u7ED3\u679C\u672A\u786E\u8BA4\uFF0C\u53EF\u80FD\u5DF2\u8BA1\u8D39\u3002\u672A\u81EA\u52A8\u91CD\u8BD5\u3002"
       )}</div>` : ""}
             ${participantRoles.length > 0 ? `<div class="focus-role-summary-list" data-testid="settlement-role-summaries">
                     ${participantRoles.map((pRole) => {
@@ -17947,11 +18046,17 @@ ${prevLogs}` : "",
     function renderIntermissionPanel(r, p) {
       ensureIntermission(p);
       const messages = getActiveMessages(p.intermissionMessages);
+      const latest = messages.filter((m) => m.speaker === "me").at(-1);
+      const attempt = latest && intermissionAttempt(p, latest.id);
+      const pending = intermissionOperations.has(p);
+      const locked = busy || pending;
       const lastTurns = getActiveMessages(p.messages).filter(
         (m) => m.speaker === "me" || m.speaker === "char"
       );
       return `<aside class="intermission-panel" aria-labelledby="intermission-title" data-testid="intermission-panel"><header class="intermission-panel-top"><div><small>BACKSTAGE \xB7 \u6F14\u51FA\u6682\u505C</small><h2 id="intermission-title">\u5E55\u95F4\u8BA8\u8BBA \xB7 ${esc(r.name)}</h2></div><button type="button" class="btn small secondary" data-action="resumeplay" aria-label="\u5173\u95ED\u5E55\u95F4\u5E76\u8FD4\u56DE\u6F14\u51FA">\u56DE\u5230\u6F14\u51FA \xD7</button></header>
  <p class="intermission-hint">\u620F\u5916\u672C\u4EBA \xB7 \u53D1\u9001\u4EC5\u4FDD\u5B58\u4F60\u7684\u53D1\u8A00\uFF0C\u70B9\u722A\u5370\u624D\u8BF7 AI \u56DE\u590D\u3002\u672A\u53D1\u9001\u7684\u8349\u7A3F\u4E0D\u8FDB\u5165\u8BF7\u6C42\u3002</p>
+ ${pending ? '<p class="sub" role="status">\u6B63\u5728\u7B49\u5F85\u5E55\u95F4\u56DE\u590D\u2026</p>' : attempt?.status === "unknown" ? '<p class="sub" role="status">\u5E55\u95F4\u8BF7\u6C42\u7ED3\u679C\u672A\u786E\u8BA4\uFF0C\u53EF\u80FD\u5DF2\u8BA1\u8D39\u3002\u518D\u6B21\u8BF7\u6C42\u9700\u8981\u786E\u8BA4\u3002</p>' : ""}
+ ${intermissionRecovery.has(p) ? '<button type="button" class="btn small secondary" data-action="copy-intermission-reply">\u67E5\u770B\u53EF\u590D\u5236\u7684\u672A\u4FDD\u5B58\u5E55\u95F4\u56DE\u590D</button>' : ""}
  <div class="intermission-history" id="intermission-scroll" aria-live="polite">
  ${messages.length ? messages.map(
         (m) => `<div class="offstage-message ${m.speaker === "me" ? "offstage-me" : "offstage-actor"}"><div class="offstage-name">${m.speaker === "me" ? "\u6211" : m.speaker === "note" ? "\u4FEE\u8BA2\u8BB0\u5F55" : esc(r.name)}</div><div class="offstage-bubble">${esc(
@@ -17968,10 +18073,11 @@ ${prevLogs}` : "",
       )}\u7684\u620F\u5185\u89D2\u8272</label><textarea name="char" class="field">${esc(
         p.char || ""
       )}</textarea><button class="btn small full">\u4FDD\u5B58\u4FEE\u6539\u540E\u7684\u6F14\u51FA\u8BBE\u5B9A</button></form><button class="btn secondary full" data-action="rollbackplay" ${lastTurns.length ? "" : "disabled"}>\u56DE\u9000\u521A\u624D\u4E00\u8F6E\u620F\u5185\u4E92\u52A8</button><p class="sub">\u4EC5\u56DE\u9000\u620F\u5185\u5DF2\u6F14\u7684\u6700\u540E\u4E00\u8F6E\uFF1B\u65E7\u7248\u672C\u7559\u5728\u5E55\u95F4\u4FEE\u8BA2\u6863\u6848\uFF0C\u620F\u5185\u6B63\u5F0F\u5267\u60C5\u4E0D\u518D\u5F15\u7528\u5B83\u3002\u6F14\u5458\u4ECD\u53EF\u80FD\u8BB0\u5F97\u4F60\u4EEC\u8BD5\u8FC7\u53E6\u4E00\u79CD\u6F14\u6CD5\u3002</p></details>
- <form class="compose intermission-compose" id="intermission-form"><textarea id="intermission-input" data-scoped-draft placeholder="\u548C\u620F\u5916\u7684${esc(r.name)}\u804A\u804A\u2026\u2026" rows="1" required ${busy ? "disabled" : ""}></textarea><button class="btn" type="submit" ${busy ? "disabled" : ""} aria-label="\u53D1\u9001\u5E55\u95F4\u6D88\u606F\uFF08\u4E0D\u89E6\u53D1 AI\uFF09" title="\u4EC5\u53D1\u9001\u4F60\u7684\u6D88\u606F">\u53D1\u9001</button><button type="button" class="btn intermission-paw" data-action="intermissionreply" ${busy ? "disabled" : ""} aria-label="\u8BA9 AI \u56DE\u590D\u5E55\u95F4\u8BA8\u8BBA" title="\u4EC5\u70B9\u722A\u5370\u624D\u89E6\u53D1 AI \u56DE\u590D">${catPawSvg(true)}<span>AI \u56DE\u590D</span></button></form></aside>`;
+ <form class="compose intermission-compose" id="intermission-form"><textarea id="intermission-input" data-scoped-draft placeholder="\u548C\u620F\u5916\u7684${esc(r.name)}\u804A\u804A\u2026\u2026" rows="1" required ${locked ? "disabled" : ""}></textarea><button class="btn" type="submit" ${locked ? "disabled" : ""} aria-label="\u53D1\u9001\u5E55\u95F4\u6D88\u606F\uFF08\u4E0D\u89E6\u53D1 AI\uFF09" title="\u4EC5\u53D1\u9001\u4F60\u7684\u6D88\u606F">\u53D1\u9001</button><button type="button" class="btn intermission-paw" data-action="intermissionreply" ${locked ? "disabled" : ""} aria-label="\u8BA9 AI \u56DE\u590D\u5E55\u95F4\u8BA8\u8BBA" title="\u4EC5\u70B9\u722A\u5370\u624D\u89E6\u53D1 AI \u56DE\u590D">${catPawSvg(true)}<span>AI \u56DE\u590D</span></button></form></aside>`;
     }
     function submitIntermission(draft, text2) {
       const p = draft.owner.play;
+      if (intermissionOperations.has(p)) return;
       ensureIntermission(p);
       const message = { id: uid(), speaker: "me", text: text2.trim(), at: now(), status: "active" };
       p.intermissionMessages.push(message);
@@ -17986,42 +18092,102 @@ ${prevLogs}` : "",
       if (area) area.scrollTop = area.scrollHeight;
       $("#intermission-input")?.focus({ preventScroll: true });
     }
+    function intermissionAttempt(p, id) {
+      const attempts = p.intermissionAttempts;
+      return attempts && Object.hasOwn(attempts, id) ? attempts[id] : void 0;
+    }
     async function requestIntermissionReply(form) {
       const draft = form && currentDraft(form);
-      if (!draft || draft.mode !== "intermission" || busy) return;
-      const r = draft.owner, p = r.play;
+      if (!draft || draft.mode !== "intermission" || busy || modelPageHidden) return;
+      const world = data, r = draft.owner, p = r.play, epoch = modelPageEpoch;
+      if (intermissionOperations.has(p)) return;
       if (draft.input.value.trim()) {
         notify("\u8FD9\u6BB5\u6587\u5B57\u5C1A\u672A\u53D1\u9001\uFF0C\u8BF7\u5148\u70B9\u53D1\u9001\uFF0C\u518D\u70B9\u722A\u5370\u3002");
         return;
       }
-      const latest = getActiveMessages(p.intermissionMessages || []).filter((m) => m.speaker === "me").at(-1);
+      const messages = getActiveMessages(p.intermissionMessages);
+      const latest = messages.filter((m) => m.speaker === "me").at(-1);
       if (!latest) {
         notify("\u5148\u53D1\u9001\u4E00\u6761\u5E55\u95F4\u6D88\u606F\uFF0C\u518D\u70B9\u722A\u5370\u8BF7 AI \u56DE\u590D\u3002");
         return;
       }
-      if (!canUseRealModel(data.settings)) {
+      if (!token.trim() || !canUseRealModel(data.settings)) {
         notify("\u8BF7\u5148\u5728\u7EC8\u7AEF\u8FDE\u63A5 API\uFF1B\u5F53\u524D\u53D1\u8A00\u5DF2\u4FDD\u5B58\u5728\u672C\u5730\u3002");
         return;
       }
       if (!checkWriteAccess()) return;
-      busy = true;
+      const previous = intermissionAttempt(p, latest.id), revision2 = latest.revisionCount || 0;
+      if (previous?.status === "archived" && previous.revision === revision2 || !previous && messages.some((m) => m.speaker === "char" && m.replyTo === latest.id && m.at >= (latest.editedAt || latest.at))) {
+        notify("\u8FD9\u6761\u5E55\u95F4\u53D1\u8A00\u5DF2\u6709\u56DE\u590D\u3002");
+        return;
+      }
+      if (previous?.status === "unknown" && !window.confirm("\u4E0A\u6B21\u5E55\u95F4\u8BF7\u6C42\u53EF\u80FD\u5DF2\u88AB\u670D\u52A1\u5546\u5904\u7406\u3002\u518D\u6B21\u751F\u6210\u53EF\u80FD\u518D\u6B21\u8BA1\u8D39\uFF0C\u786E\u5B9A\u7EE7\u7EED\uFF1F")) return;
+      const operation = new AbortController(), connection = apiConnectionVersion;
+      const context = () => JSON.stringify([p.title, p.world, p.user, p.char, p.messages, p.revisions, getActiveMessages(p.intermissionMessages)]);
+      const basis = context(), visible = () => data === world && role() === r && r.play === p && view === "intermission";
+      const current = () => data === world && epoch === modelPageEpoch && world.roles.includes(r) && r.play === p && p.paused === true && !p.endedAt && intermissionOperations.get(p) === operation && !operation.signal.aborted && context() === basis;
+      intermissionOperations.set(p, operation);
       render(false);
+      let sent = false;
+      let claimed;
+      const oldAttempts = p.intermissionAttempts;
       try {
-        const reply = await apiReply(r, "intermission", latest.text);
-        if (r.play !== p || !p.paused || !getActiveMessages(p.intermissionMessages || []).some((m) => m.id === latest.id)) return;
-        const previous = p.intermissionMessages.length;
-        for (const text2 of splitChatBubbles(reply, r)) p.intermissionMessages.push({ id: uid(), speaker: "char", text: text2, at: now(), status: "active", replyTo: latest.id });
-        if (!saveLogged("intermission", "\u7528\u6237\u901A\u8FC7\u722A\u5370\u89E6\u53D1\u620F\u5916 AI \u56DE\u590D", { source: p.id })) {
-          p.intermissionMessages.length = previous;
-          offerUnstoredReply(reply);
+        const valid = () => current() && apiConnectionVersion === connection && saveSession.current();
+        let compileSource;
+        const prompt = await compileRequest(r, "intermission", (options) => {
+          const snapshot3 = { ...options, isFocused: isFocused(r), nowTs: now() };
+          compileSource = () => compileNativeConversation(world, r, "intermission", latest.text, snapshot3);
+          return compileSource();
+        }, valid);
+        if (!valid()) throw Error("\u5E55\u95F4\u4EFB\u52A1\u6216\u8FDE\u63A5\u5DF2\u53D8\u5316");
+        const attempt = { id: uid(), revision: revision2, status: "unknown" };
+        p.intermissionAttempts = { ...oldAttempts, [latest.id]: attempt };
+        if (!save()) {
+          p.intermissionAttempts = oldAttempts;
+          throw Error("\u5E55\u95F4\u9886\u53D6\u672A\u786E\u8BA4");
         }
-      } catch (e) {
-        notify("\u5E55\u95F4\u56DE\u590D\u5931\u8D25\uFF1A" + (e instanceof Error ? e.message : String(e)) + "\uFF1B\u4F60\u7684\u53D1\u8A00\u5DF2\u4FDD\u7559\u3002");
+        claimed = p.intermissionAttempts;
+        const body = await readModelBeforeDeadline(async (signal) => {
+          const response = requestSceneCompletion(prompt, "intermission", {}, signal, { roleId: r.id, onDispatch: () => {
+            sent = true;
+          } });
+          return readChatResponseBody(await response);
+        }, operation.signal);
+        const reply = parseChatResponse(body);
+        if (!current() || intermissionAttempt(p, latest.id) !== attempt) return;
+        if (!compileSource || JSON.stringify(requestMessages(compileSource())) !== JSON.stringify(prompt)) return;
+        if (!saveSession.current()) {
+          intermissionRecovery.set(p, { sourceId: latest.id, text: reply });
+          if (visible()) notify("\u5E55\u95F4\u6B63\u6587\u5DF2\u8FD4\u56DE\uFF0C\u5B58\u6863\u5DF2\u53D8\u5316\u3002\u53EF\u4EE5\u590D\u5236\u8FD9\u6B21\u56DE\u590D\u3002");
+          return;
+        }
+        const count = p.intermissionMessages.length;
+        p.intermissionAttempts[latest.id] = { ...attempt, status: "archived" };
+        for (const text2 of splitChatBubbles(reply, r)) p.intermissionMessages.push({ id: uid(), speaker: "char", text: text2, at: now(), status: "active", replyTo: latest.id });
+        if (!saveLogged("intermission", "\u7528\u6237\u901A\u8FC7\u722A\u5370\u89E6\u53D1\u620F\u5916 AI \u56DE\u590D", { source: p.id, roleId: r.id })) {
+          p.intermissionMessages.length = count;
+          p.intermissionAttempts[latest.id] = attempt;
+          intermissionRecovery.set(p, { sourceId: latest.id, text: reply });
+          if (visible()) notify("\u5E55\u95F4\u6B63\u6587\u5DF2\u8FD4\u56DE\uFF0C\u4FDD\u5B58\u672A\u786E\u8BA4\u3002\u53EF\u4EE5\u590D\u5236\u8FD9\u6B21\u56DE\u590D\u3002");
+        } else if (intermissionRecovery.get(p)?.sourceId === latest.id) intermissionRecovery.delete(p);
+      } catch (error) {
+        if (!sent && claimed && current() && p.intermissionAttempts === claimed && saveSession.current()) {
+          p.intermissionAttempts = oldAttempts;
+          if (!save()) p.intermissionAttempts = claimed;
+        }
+        if (visible() && epoch === modelPageEpoch) {
+          const reason = error instanceof Error && error.name === "TimeoutError" ? "\u5E55\u95F4\u8BF7\u6C42\u8D85\u65F6\u3002" : "\u5E55\u95F4\u8BF7\u6C42\u672A\u5B8C\u6210\u3002";
+          notify(reason + (sent ? "\u7ED3\u679C\u672A\u786E\u8BA4\uFF0C\u53EF\u80FD\u5DF2\u8BA1\u8D39\u3002" : "\u672C\u6B21\u8BF7\u6C42\u672A\u53D1\u9001\u3002") + "\u4F60\u7684\u53D1\u8A00\u5DF2\u4FDD\u7559\u3002");
+        }
       } finally {
-        busy = false;
-        render(false);
-        const area = $("#intermission-scroll");
-        if (area) area.scrollTop = area.scrollHeight;
+        if (intermissionOperations.get(p) === operation) {
+          intermissionOperations.delete(p);
+          if (visible()) {
+            render(false);
+            const area = $("#intermission-scroll");
+            if (area) area.scrollTop = area.scrollHeight;
+          }
+        }
       }
     }
     function rollBackPlay() {
@@ -18559,28 +18725,22 @@ ${prevLogs}` : "",
       const diaryOwner = role();
       if (v === "diary" && diaryOwner) void inspectDiaryRecovery(diaryOwner);
     }
-    async function requestSceneCompletion(messages, kind, sampling = {}, signal) {
+    async function requestSceneCompletion(messages, kind, sampling = {}, signal, owner) {
       const settings = { ...data.settings }, requestToken = token, url = settings.endpoint.trim().replace(/\/+$/, "");
       if (!/^https?:\/\//.test(url) || !settings.model.trim() || !requestToken.trim()) throw new Error("\u8BF7\u5148\u5728\u7EC8\u7AEF\u8FDE\u63A5 API\u3001\u9009\u62E9\u6A21\u578B\u5E76\u4FDD\u5B58 Key\uFF1B\u539F\u6D88\u606F\u4FDD\u7559");
-      syslog("api", `\u8BF7\u6C42 ${kind}`, { messages: messages.length });
-      return postModel(url + "/chat/completions", { method: "POST", signal, headers: { "Content-Type": "application/json", Authorization: "Bearer " + requestToken }, body: JSON.stringify({ model: settings.model, messages, stream: false, temperature: +settings.temperature, ...sampling, ...completionLimit(settings, kind) }) });
-    }
-    async function apiReply(r, kind, input) {
-      const p = r.play, revision2 = JSON.stringify(getActiveMessages(p?.intermissionMessages));
-      const valid = () => data.roles.includes(r) && r.play === p && revision2 === JSON.stringify(getActiveMessages(p?.intermissionMessages));
-      const prompt = await compileRequest(r, kind, (options) => compileNativeConversation(data, r, kind, input, { ...options, isFocused: isFocused(r), nowTs: now() }), valid);
-      const reply = await readChatResponse(await requestSceneCompletion(prompt, kind));
-      if (!valid()) throw new Error("\u5E55\u95F4\u6765\u6E90\u5DF2\u53D8\u5316\uFF0C\u56DE\u590D\u672A\u5199\u5165");
-      return reply;
+      syslog("api", `\u8BF7\u6C42 ${kind}`, { messages: messages.length, ...owner ? { roleId: owner.roleId } : {} });
+      return postModel(url + "/chat/completions", { method: "POST", signal, headers: { "Content-Type": "application/json", Authorization: "Bearer " + requestToken }, body: JSON.stringify({ model: settings.model, messages, stream: false, temperature: +settings.temperature, ...sampling, ...completionLimit(settings, kind) }) }, owner?.onDispatch);
     }
     async function generateNovelReply(r, kind, input, regenerateId, opening) {
       const world = data, connection = apiConnectionVersion, credential = token, batch = opening?.batch, scene = opening?.scene;
       const before = batch ? sceneStateKey(r) : null;
       const draft = batch ? { ...r, scene, events: r.events.slice() } : r;
       if (batch) entry2(draft, "scene", "\u4F60\u9009\u62E9\u8FDB\u5165\u9762\u5BF9\u9762", `\u5730\u70B9\uFF1A${scene.where}`, scene.startedAt, { source: scene.id, knownBy: ["user", r.id] });
-      let attached = !batch, dispatched = false, timer;
+      const epoch = modelPageEpoch;
+      let attached = !batch, dispatched = false;
+      let openingClaim;
       const task = novelTasks.begin(draft, kind), userRevision = JSON.stringify([data.user, data.sharedTasks]);
-      const valid = () => data === world && world.roles.includes(r) && userRevision === JSON.stringify([world.user, world.sharedTasks]) && (attached ? novelTasks.valid(task, r, data.selected) : view === "chat" && !document.hidden && chatBatchValid(r, batch) && sceneStateKey(r) === before && novelTasks.valid(task, draft, data.selected)) && (!opening || dispatched || saveSession.current() && connection === apiConnectionVersion && credential === token && !!credential.trim() && canUseRealModel(world.settings)) && (!scene || openingSourcesValid(attached ? r : draft, scene));
+      const valid = () => data === world && world.roles.includes(r) && userRevision === JSON.stringify([world.user, world.sharedTasks]) && (attached ? novelTasks.valid(task, r, data.selected) : view === "chat" && !document.hidden && chatBatchValid(r, batch) && sceneStateKey(r) === before && novelTasks.valid(task, draft, data.selected)) && (!opening || epoch === modelPageEpoch && !modelPageHidden && (dispatched || saveSession.current() && connection === apiConnectionVersion && credential === token && !!credential.trim() && canUseRealModel(world.settings))) && (!scene || openingSourcesValid(attached ? r : draft, scene));
       try {
         const regeneration = regenerateId ? prepareNovelRegeneration(r, kind, regenerateId) : void 0;
         if (regenerateId && !regeneration) throw new Error("\u539F\u56DE\u590D\u4E0D\u53EF\u91CD\u62BD\uFF0C\u8BB0\u5F55\u5DF2\u4FDD\u7559");
@@ -18627,17 +18787,18 @@ ${prevLogs}` : "",
         }
         if (scene?.opening) {
           if (!valid()) throw Error("\u8FDE\u63A5\u6216\u573A\u666F\u5DF2\u53D8\u5316\uFF0C\u672C\u6B21\u8BF7\u6C42\u5C1A\u672A\u53D1\u9001");
-          const prior = scene.opening.status;
-          scene.opening.status = "unknown";
+          const prior = scene.opening;
+          openingClaim = { ...prior, status: "unknown" };
+          scene.opening = openingClaim;
           if (!save()) {
-            scene.opening.status = prior;
+            scene.opening = prior;
             throw Error(saveError());
           }
           dispatched = true;
-          timer = setTimeout(() => task.controller.abort(), 9e4);
         }
-        const result = await readNovelResponse(await requestSceneCompletion(prepared?.messages || messages, kind, sampling, task.controller.signal), options.profile, thirdParty);
-        if (!valid()) {
+        const wire = prepared?.messages || messages;
+        const result = scene?.opening ? parseNovelResponse(parseChatResponse(await readModelBeforeDeadline(async (signal) => readChatResponseBody(await requestSceneCompletion(wire, kind, sampling, signal)), task.controller.signal)), options.profile, thirdParty) : await readNovelResponse(await requestSceneCompletion(wire, kind, sampling, task.controller.signal), options.profile, thirdParty);
+        if (!valid() || openingClaim && scene?.opening !== openingClaim) {
           if (scene && data === world && role() === r) offerUnstoredReply(result.text);
           throw new Error("\u573A\u666F\u6216\u6D88\u606F\u5DF2\u53D8\u5316\uFF0C\u8FDF\u5230\u56DE\u590D\u672A\u5199\u5165");
         }
@@ -18665,7 +18826,6 @@ ${prevLogs}` : "",
         syslog("api", `\u5C0F\u8BF4\u56DE\u590D\u5DF2\u4FDD\u5B58 ${kind}`, { presetId: options.presetId });
         if (regenerateId) notify("\u5DF2\u91CD\u65B0\u751F\u6210\uFF1B\u539F\u7248\u672C\u53CA\u4FEE\u8BA2\u8BB0\u5F55\u4FDD\u7559");
       } finally {
-        clearTimeout(timer);
         novelTasks.finish(task);
       }
     }
@@ -18689,8 +18849,10 @@ ${prevLogs}` : "",
           if (role() === r) notify(reason + (scene.opening?.status === "unknown" ? "\u3002\u8BF7\u6C42\u7ED3\u679C\u672A\u786E\u8BA4\uFF0C\u53EF\u80FD\u5DF2\u8BA1\u8D39\u3002" : "\u3002\u672C\u6B21\u8BF7\u6C42\u5C1A\u672A\u53D1\u9001\u3002"));
         }
       } finally {
-        busy = novelTasks.has(data.selected || "");
-        if (data === world && role() === r && (view === "chat" || view === "novel")) render(false);
+        if (data === world && role() === r) {
+          busy = novelTasks.has(r.id);
+          if (view === "chat" || view === "novel") render(false);
+        }
       }
     }
     function runMeetingRound(r, batch) {
@@ -18788,9 +18950,9 @@ ${prevLogs}` : "",
     }
     async function generateCharacterDiaryForDate(r, dateKey, action = "auto") {
       const manualTrigger = action === "recover" || action === "replace";
-      const world = data;
+      const world = data, epoch = modelPageEpoch;
       const owned2 = () => data === world && world.roles.includes(r) && world.roles.filter((item) => item.id === r.id).length === 1;
-      const valid = () => owned2() && saveSession.current() && !hasCharacterDiaryForDate(r, dateKey);
+      const valid = () => owned2() && !modelPageHidden && saveSession.current() && !hasCharacterDiaryForDate(r, dateKey);
       if (!owned2() || !saveSession.current()) {
         if (manualTrigger) notify("\u8BF7\u6C42\u5C1A\u672A\u53D1\u9001\u3002" + saveError());
         return false;
@@ -18863,7 +19025,7 @@ ${prevLogs}` : "",
         const snapshot3 = JSON.stringify([world.user, facts]);
         const sourcesMatch = () => snapshot3 === JSON.stringify([world.user, collectDailyDiaryFacts(r, dateKey, true)]) && personalTicketValid(r, personal);
         const sourceHash = await diarySourceHash(JSON.stringify([snapshot3, { ...personal, id: "" }]));
-        if (!valid() || !recovering && !sourcesMatch()) return false;
+        if (!valid() || !recovering && (epoch !== modelPageEpoch || !sourcesMatch())) return false;
         if (!recovering) {
           const claim = { attempt: crypto.randomUUID(), state: "claimed", priorDispatch: feeRisk };
           await replaceDiaryReceipt(key2, receipt, claim);
@@ -18882,34 +19044,36 @@ ${prevLogs}` : "",
           const settings = world.settings, credential = token;
           const sent = { ...claim, state: "sent" };
           await replaceDiaryReceipt(key2, claim, sent);
-          if (!valid() || !sourcesMatch() || world.settings !== settings || token !== credential) {
+          if (!valid() || epoch !== modelPageEpoch || !sourcesMatch() || world.settings !== settings || token !== credential) {
             await replaceDiaryReceipt(key2, sent, claim);
             return false;
           }
-          const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 9e4);
           let text2, payload;
           task.status = "generating";
           syslog("diary", `\u8BF7\u6C42\u751F\u6210\u89D2\u8272\u6BCF\u65E5\u65E5\u8BB0 \xB7 ${r.name} \xB7 ${dateKey}`, { model: settings.model, dateKey, chatCount: facts.summary.chatCount, sceneCount: facts.summary.sceneCount });
           try {
-            const pending = postModel(settings.endpoint.trim().replace(/\/+$/, "") + "/chat/completions", {
+            const pending = readModelBeforeDeadline(async (signal) => readChatResponseBody(await postModel(settings.endpoint.trim().replace(/\/+$/, "") + "/chat/completions", {
               method: "POST",
-              signal: controller.signal,
+              signal,
               headers: { "Content-Type": "application/json", ...credential ? { Authorization: "Bearer " + credential } : {} },
               body: JSON.stringify({ model: settings.model, messages, temperature: +settings.temperature || 0.8, ...completionLimit(settings, "diary") })
-            });
+            })), void 0, true);
             safeRenderWhenNotTyping();
-            const res = await pending;
-            const result2 = splitPersonalReply(await readChatResponse(res));
+            const result2 = splitPersonalReply(parseChatResponse(await pending));
             text2 = cleanGeneratedDiaryText(result2.text);
             payload = result2.payload;
             if (!text2) throw Error("empty diary");
-          } catch {
-            await replaceDiaryReceipt(key2, sent, { ...sent, state: "failed" });
-            status("uncertain", "\u8BF7\u6C42\u7ED3\u679C\u672A\u786E\u8BA4\uFF0C\u53EF\u80FD\u5DF2\u8BA1\u8D39\u3002\u518D\u6B21\u751F\u6210\u9700\u624B\u52A8\u786E\u8BA4\u3002");
+          } catch (error) {
+            if (!(modelPageHidden && error instanceof Error && error.name === "AbortError")) {
+              await replaceDiaryReceipt(key2, sent, { ...sent, state: "failed" });
+            }
+            const message = "\u8BF7\u6C42\u7ED3\u679C\u672A\u786E\u8BA4\uFF0C\u53EF\u80FD\u5DF2\u8BA1\u8D39\u3002\u518D\u6B21\u751F\u6210\u9700\u624B\u52A8\u786E\u8BA4\u3002";
+            if (!status("uncertain", message) && owned2() && r.diaryTasks?.includes(task) && task.requestAttempt === sent.attempt && task.status === "generating") {
+              task.status = "uncertain";
+              task.lastError = message;
+            }
             if (manualTrigger && owned2()) notify("\u65E5\u8BB0\u8BF7\u6C42\u7ED3\u679C\u672A\u786E\u8BA4\uFF0C\u53EF\u80FD\u5DF2\u8BA1\u8D39\u3002");
             return false;
-          } finally {
-            clearTimeout(timer);
           }
           wireResult = text2;
           receipt = { ...sent, state: "ready", result: { text: text2, payload, sourceHash, requestId: personal.id } };
@@ -18920,6 +19084,10 @@ ${prevLogs}` : "",
         const sourcesChanged = !sourcesMatch() || result.sourceHash !== sourceHash || Boolean(recovering ? task.requestAttempt && task.requestAttempt !== receipt.attempt : task.requestAttempt !== receipt.attempt);
         if (!valid() || sourcesChanged) {
           if (sourcesChanged) status("stale", "\u6B63\u6587\u57FA\u4E8E\u5DF2\u53D8\u5316\u7684\u6765\u6E90\u6216\u4EFB\u52A1\uFF0C\u4EC5\u4F9B\u590D\u5236\uFF0C\u4E0D\u80FD\u5F52\u6863\u3002");
+          if (wireResult && owned2() && r.diaryTasks?.includes(task) && task.requestAttempt === receipt.attempt && task.status === "generating") {
+            task.status = sourcesChanged ? "stale" : "ready";
+            task.lastError = sourcesChanged ? "\u6B63\u6587\u57FA\u4E8E\u5DF2\u53D8\u5316\u7684\u6765\u6E90\uFF0C\u4EC5\u4F9B\u590D\u5236\u3002" : "\u6B63\u6587\u5DF2\u4FDD\u7559\uFF0C\u53EF\u4EE5\u4FDD\u5B58\u5DF2\u6709\u7ED3\u679C\u3002";
+          }
           if (manualTrigger || wireResult) copyResult(result.text, sourcesChanged);
           if (owned2()) notify("\u65E5\u8BB0\u6B63\u6587\u5DF2\u4FDD\u7559\uFF0C\u5B58\u6863\u6216\u8D44\u6599\u5DF2\u53D8\u5316\uFF0C\u672A\u5F52\u6863\u3002");
           return false;
@@ -18975,7 +19143,8 @@ ${prevLogs}` : "",
       return changed;
     }
     async function processDiaryQueue() {
-      if (diaryQueueBusy || lifeBusy || !saveSession.current()) return;
+      if (diaryQueueBusy || lifeBusy || modelPageHidden || !saveSession.current()) return;
+      const epoch = modelPageEpoch;
       for (const roleItem of data.roles) {
         syncRoleDiaryTasks(roleItem, data.settings, now());
       }
@@ -18991,7 +19160,7 @@ ${prevLogs}` : "",
         let guard = 0;
         while (guard < 25) {
           guard++;
-          if (!canUseRealModel(data.settings) || !saveSession.current()) break;
+          if (epoch !== modelPageEpoch || !canUseRealModel(data.settings) || !saveSession.current()) break;
           const orderedRoles = [
             ...role() ? [role()] : [],
             ...data.roles.filter((x) => x.id !== role()?.id)
@@ -19566,6 +19735,8 @@ ${prevLogs}` : "",
           return;
         }
         const performance = draftScope(r, "play", p), backstage = draftScope(r, "intermission", p);
+        intermissionOperations.get(p)?.abort();
+        intermissionRecovery.delete(p);
         clearDrafts((scope) => scope === performance || scope === backstage);
       } else if (kind === "scene" && r.scene) {
         try {
@@ -19630,6 +19801,7 @@ ${prevLogs}` : "",
           } catch {
             throw new Error("\u4E13\u6CE8\u5907\u4EFD\u7ED3\u6784\u65E0\u6548");
           }
+          if (next.focus.active) delete next.focus.active.liveLogBusy;
           next.selected = null;
           delete next.draftWorldId;
           await stageBackupMedia(next, attachments);
@@ -19637,6 +19809,10 @@ ${prevLogs}` : "",
           if (!save(next)) throw Error(saveError());
           clearDrafts(() => true);
           suspendVoiceOperations(false);
+          modelPageEpoch++;
+          for (const owner of previous.roles) {
+            if (novelTasks.cancel(owner.id)) busy = false;
+          }
           data = next;
           mediaSources.clear();
           document.querySelectorAll("[data-hydrated-key]").forEach((el) => delete el.dataset.hydratedKey);
@@ -19688,7 +19864,10 @@ ${prevLogs}` : "",
         }
         if (!window.confirm(`\u4EC5\u6E05\u7406\u5F53\u524D\u5948\u6069\u7684\u4E92\u52A8\uFF1A${r.chats.length} \u6761\u804A\u5929\u3001${r.diaries.length} \u7BC7\u65E5\u8BB0\u3001${r.events.length} \u6761\u4E8B\u4EF6\uFF0C\u4EE5\u53CA\u89C1\u9762\uFF0F\u620F\u5267\uFF0F\u8DB3\u8FF9\u72B6\u6001\u3002\u82E5\u6709\u771F\u5B9E\u8BB0\u5F55\u8BF7\u53D6\u6D88\u3002\u89D2\u8272\u8D44\u6599\u4E0E\u5176\u4ED6\u89D2\u8272\u4FDD\u7559\uFF1B\u5148\u521B\u5EFA\u6062\u590D\u526F\u672C\u3002\u672C\u64CD\u4F5C\u4EC5\u6267\u884C\u4E00\u6B21\uFF0C\u786E\u8BA4\u7EE7\u7EED\uFF1F`)) return;
         const result = resetNainStart(data, r.id, saveSession.storage, now());
-        if (data !== result.data) suspendVoiceOperations(false);
+        if (data !== result.data) {
+          suspendVoiceOperations(false);
+          modelPageEpoch++;
+        }
         data = result.data;
         if (result.cleaned) {
           clearRoleDrafts(r);
@@ -19747,6 +19926,11 @@ ${prevLogs}` : "",
       }
       if (act === "intermissionreply") {
         void requestIntermissionReply(b.closest("form"));
+        return;
+      }
+      if (act === "copy-intermission-reply") {
+        const p = r?.play, text2 = p && intermissionRecovery.get(p)?.text;
+        if (view === "intermission" && p?.paused && text2) offerUnstoredReply(text2);
         return;
       }
       if (act === "chatpanel") {
@@ -20166,6 +20350,7 @@ ${prevLogs}` : "",
           r.play.paused = previous;
           return;
         }
+        intermissionOperations.get(r.play)?.abort();
         go("novel", "play", false);
         return;
       }
@@ -20779,6 +20964,8 @@ ${prevLogs}` : "",
           Object.assign(data, previous);
           return;
         }
+        if (novelTasks.cancel(target.id)) busy = false;
+        if (target.play) intermissionOperations.get(target.play)?.abort();
         clearRoleDrafts(target);
         editingRoleId = null;
         deleteRoleId = null;
@@ -21175,12 +21362,19 @@ ${prevLogs}` : "",
     window.addEventListener("storage", (event) => {
       if (event.key === STORAGE_KEY || event.key === null) refreshSaveAccess();
     });
-    window.addEventListener("pagehide", () => {
+    window.addEventListener("pagehide", (event) => {
+      modelPageHidden = true;
+      modelPageEpoch++;
+      for (const [request, keepOnBFCache] of activeModelReads) {
+        if (!event.persisted || !keepOnBFCache) request.cancel();
+      }
       captureDrafts();
       voicePageHidden = true;
       suspendVoiceOperations(true);
     });
     window.addEventListener("pageshow", (event) => {
+      modelPageHidden = false;
+      for (const request of activeModelReads.keys()) request.check();
       if (!event.persisted) return;
       voicePageHidden = false;
       if (view === "chat" && chatPanel === "voice") render(false);
@@ -21190,6 +21384,7 @@ ${prevLogs}` : "",
       else if (!document.hidden && !voicePageHidden && view === "chat" && chatPanel === "voice") render(false);
       if (document.hidden) captureDrafts();
       if (!document.hidden) {
+        for (const request of activeModelReads.keys()) request.check();
         refreshSaveAccess();
         if (view === "home") homeTasks.refresh();
       }

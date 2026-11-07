@@ -52,6 +52,7 @@ const SCROLL_CONTAINER_CLASSES = [
   'landing-roles-scroll',
   'landing-profile-scroll',
   'mini-list',
+  'home-task-list',
   'log-list',
   'frame-grid',
   'frame-modal-body',

@@ -12346,25 +12346,38 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
   // src/homeTasksView.ts
   var label = (kind) => kind === "ddl" ? "DDL" : "To-do";
   var completedTime = (task) => Number.isFinite(task.completedAt) ? new Date(task.completedAt).toLocaleString("zh-CN") : "\u5B8C\u6210\u65F6\u95F4\u672A\u8BB0\u5F55";
+  var controlKey = (kind, control, id = "") => "home-task-" + kind + "-" + control + "-" + Array.from(id, (char) => char.codePointAt(0).toString(16)).join("-");
   function createHomeTasks(hooks) {
     let dialog = null;
+    let previousTemplate = "", normalizedTemplate = "";
+    function restoreControl(host, key2, kind) {
+      if (!host.isConnected || document.getElementById("home-task-cards") !== host || document.activeElement !== document.body || document.querySelector("dialog[open]")) return;
+      const target = Array.from(host.querySelectorAll("[data-testid]")).find((el) => el.dataset.testid === key2) || (kind === "ddl" || kind === "todo" ? host.querySelector(`[data-action=hometaskadd][data-kind="${kind}"]`) : null);
+      target?.focus({ preventScroll: true });
+    }
     function renderCards() {
       return ["ddl", "todo"].map((kind) => {
         const all = hooks.tasks()[kind], { current, completed } = splitTaskLists(kind, all, Date.now());
-        return `<section class="home-task-card" data-home-task-card="${kind}" aria-label="${label(kind)}"><div class="home-task-heading"><h2>${hooks.glyph(kind === "ddl" ? "deadline" : "tasks")}${label(kind)}<span class="home-task-count" aria-label="${all.filter((t) => !t.done).length} \u9879\u672A\u5B8C\u6210">${all.filter((t) => !t.done).length}</span></h2><button type="button" class="home-task-add" data-action="hometaskadd" data-kind="${kind}" aria-label="\u6DFB\u52A0 ${label(kind)}">${uiIcon("plus")}</button></div><div class="home-task-list">${current.map((task) => `<div class="home-task-row ${task.done ? "is-completed" : ""}" data-task-id="${escHtml(task.id)}"><button type="button" class="home-task-name" data-action="hometaskdetail" data-kind="${kind}" data-id="${escHtml(task.id)}"><span>${escHtml(task.text)}</span>${task.done ? "<small>\u5DF2\u5B8C\u6210 \xB7 24 \u5C0F\u65F6\u540E\u5F52\u6863</small>" : ""}</button>${kind === "ddl" ? `<button type="button" class="home-task-due" data-action="hometaskdetail" data-kind="ddl" data-id="${escHtml(task.id)}">${ddlCountdown(task.due, Date.now())}</button>` : `<button type="button" class="home-task-check" role="checkbox" aria-checked="${task.done}" aria-label="${task.done ? "\u64A4\u9500\u5B8C\u6210" : "\u5B8C\u6210"} ${escHtml(task.text)}" data-action="hometasktoggle" data-kind="todo" data-id="${escHtml(task.id)}">${task.done ? uiIcon("check") : ""}</button>`}</div>`).join("") || `<p class="home-task-empty">${kind === "ddl" ? "\u6682\u65E0\u5F85\u5B8C\u6210\u7684 DDL" : "\u6682\u65E0\u5F85\u529E"}</p>`}</div><button type="button" class="home-task-archive" data-action="hometaskarchive" data-kind="${kind}">\u67E5\u770B\u5DF2\u5B8C\u6210 <span>${completed.length}</span><span aria-hidden="true">\u203A</span></button></section>`;
+        return `<section class="home-task-card" data-home-task-card="${kind}" aria-label="${label(kind)}"><div class="home-task-heading"><h2>${hooks.glyph(kind === "ddl" ? "deadline" : "tasks")}${label(kind)}<span class="home-task-count" aria-label="${all.filter((t) => !t.done).length} \u9879\u672A\u5B8C\u6210">${all.filter((t) => !t.done).length}</span></h2><button type="button" class="home-task-add" data-testid="${controlKey(kind, "add")}" data-action="hometaskadd" data-kind="${kind}" aria-label="\u6DFB\u52A0 ${label(kind)}">${uiIcon("plus")}</button></div><div class="home-task-list">${current.map((task) => `<div class="home-task-row ${task.done ? "is-completed" : ""}" data-task-id="${escHtml(task.id)}"><button type="button" class="home-task-name" data-testid="${controlKey(kind, "name", task.id)}" data-action="hometaskdetail" data-kind="${kind}" data-id="${escHtml(task.id)}"><span>${escHtml(task.text)}</span>${task.done ? "<small>\u5DF2\u5B8C\u6210 \xB7 24 \u5C0F\u65F6\u540E\u5F52\u6863</small>" : ""}</button>${kind === "ddl" ? `<button type="button" class="home-task-due" data-testid="${controlKey(kind, "due", task.id)}" data-action="hometaskdetail" data-kind="ddl" data-id="${escHtml(task.id)}">${ddlCountdown(task.due, Date.now())}</button>` : `<button type="button" class="home-task-check" data-testid="${controlKey(kind, "toggle", task.id)}" role="checkbox" aria-checked="${task.done}" aria-label="${task.done ? "\u64A4\u9500\u5B8C\u6210" : "\u5B8C\u6210"} ${escHtml(task.text)}" data-action="hometasktoggle" data-kind="todo" data-id="${escHtml(task.id)}">${task.done ? uiIcon("check") : ""}</button>`}</div>`).join("") || `<p class="home-task-empty">${kind === "ddl" ? "\u6682\u65E0\u5F85\u5B8C\u6210\u7684 DDL" : "\u6682\u65E0\u5F85\u529E"}</p>`}</div><button type="button" class="home-task-archive" data-testid="${controlKey(kind, "archive")}" data-action="hometaskarchive" data-kind="${kind}">\u67E5\u770B\u5DF2\u5B8C\u6210 <span>${completed.length}</span><span aria-hidden="true">\u203A</span></button></section>`;
       }).join("");
     }
     function refresh() {
       const host = document.getElementById("home-task-cards");
       if (!host) return;
       const html = renderCards();
-      if (host.innerHTML === html) return;
-      const focus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      const id = focus?.dataset.id, action = focus?.dataset.action;
+      if (html !== previousTemplate) {
+        const template = document.createElement("template");
+        template.innerHTML = html;
+        previousTemplate = html;
+        normalizedTemplate = template.innerHTML;
+      }
+      if (host.innerHTML === normalizedTemplate) return;
+      const focus = document.activeElement instanceof HTMLElement && host.contains(document.activeElement) ? document.activeElement : null;
+      const key2 = focus?.dataset.testid, kind = focus?.dataset.kind;
       const scrolls = Array.from(host.querySelectorAll(".home-task-list")).map((el) => el.scrollTop);
       host.innerHTML = html;
       host.querySelectorAll(".home-task-list").forEach((el, i) => el.scrollTop = scrolls[i] || 0);
-      if (id && action) Array.from(host.querySelectorAll("[data-action]")).find((el) => el.dataset.id === id && el.dataset.action === action)?.focus({ preventScroll: true });
+      if (focus && !focus.isConnected) restoreControl(host, key2, kind);
     }
     function close2() {
       dialog?.close();
@@ -12382,7 +12395,7 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
       refresh();
       return true;
     }
-    function open2(kind, id, archive = false) {
+    function open2(kind, id, archive = false, opener) {
       close2();
       const task = id ? hooks.tasks()[kind].find((t) => t.id === id) : void 0;
       if (id && !task) return;
@@ -12391,10 +12404,13 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
       dialog = el;
       el.className = "home-task-dialog";
       el.setAttribute("aria-labelledby", "home-task-dialog-title");
+      const host = opener?.closest("#home-task-cards"), key2 = opener?.dataset.testid;
       el.innerHTML = `<div class="home-task-dialog-head"><h2 id="home-task-dialog-title">${title}</h2><button type="button" data-task-close aria-label="\u5173\u95ED">\xD7</button></div>${archive ? `<div class="home-task-archive-list">${splitTaskLists(kind, hooks.tasks()[kind], Date.now()).completed.map((t) => `<article><strong>${escHtml(t.text)}</strong>${kind === "ddl" ? `<p>\u539F\u622A\u6B62\u65E5\uFF1A${escHtml(t.due || "\u672A\u8BBE\u7F6E")}</p>` : ""}<p>${Number.isFinite(t.completedAt) ? "\u5B8C\u6210\u4E8E\uFF1A" : ""}${escHtml(completedTime(t))}</p></article>`).join("") || '<p class="home-task-empty">\u8FD8\u6CA1\u6709\u5DF2\u5B8C\u6210\u9879\u76EE</p>'}</div><div class="home-task-dialog-actions"><button type="button" class="btn secondary" data-task-close>\u5173\u95ED</button></div>` : `<form id="home-task-form"><label>${kind === "ddl" ? "DDL \u540D\u79F0" : "\u5F85\u529E\u540D\u79F0"}<input class="field" name="text" maxlength="140" required value="${escHtml(task?.text || "")}" autocomplete="off"></label>${kind === "ddl" ? `<label>\u622A\u6B62\u65E5\u671F<input class="field" name="due" type="date" required value="${escHtml(task?.due || "")}"></label>` : ""}${task?.done ? `<p class="sub">\u5DF2\u5B8C\u6210 \xB7 ${escHtml(completedTime(task))}</p>` : ""}<p class="home-task-error" data-task-error role="alert"></p><div class="home-task-dialog-actions">${task ? `<button class="btn secondary" type="button" data-task-complete>${task.done ? "\u64A4\u9500\u5B8C\u6210" : "\u6807\u8BB0\u5B8C\u6210"}</button>` : ""}<button type="button" class="btn secondary" data-task-close>\u53D6\u6D88</button><button class="btn" type="submit">${task ? "\u4FDD\u5B58" : "\u6DFB\u52A0"}</button></div></form>`}`;
       el.addEventListener("close", () => {
+        const current = dialog === el;
         el.remove();
-        if (dialog === el) dialog = null;
+        if (current) dialog = null;
+        if (current && opener && !opener.isConnected && host) restoreControl(host, key2, kind);
       });
       el.addEventListener("click", (event) => {
         const target = event.target.closest("button");
@@ -12426,9 +12442,9 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
     function handle(action, button) {
       const kind = button.dataset.kind;
       if (kind !== "ddl" && kind !== "todo") return;
-      if (action === "hometaskadd") open2(kind);
-      if (action === "hometaskdetail") open2(kind, button.dataset.id);
-      if (action === "hometaskarchive") open2(kind, void 0, true);
+      if (action === "hometaskadd") open2(kind, void 0, false, button);
+      if (action === "hometaskdetail") open2(kind, button.dataset.id, false, button);
+      if (action === "hometaskarchive") open2(kind, void 0, true, button);
       if (action === "hometasktoggle") persist(kind, (items) => items.map((t) => t.id === button.dataset.id ? setTaskCompletion(t, !t.done, Date.now()) : t));
     }
     return { renderCards, refresh, handle, close: close2, isOpen: () => Boolean(dialog?.open) };
@@ -14755,6 +14771,7 @@ channel.onmessage=async({data:job})=>{
     "landing-roles-scroll",
     "landing-profile-scroll",
     "mini-list",
+    "home-task-list",
     "log-list",
     "frame-grid",
     "frame-modal-body",

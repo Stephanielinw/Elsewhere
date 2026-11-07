@@ -14,21 +14,112 @@ const uncertain=/如果|假如|假设|要是|也许|可能|大概|是不是|是�
 function assertedText(text:string):string {
  return text.replace(/```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)/g,'').replace(/“[^”]*”|「[^」]*」|『[^』]*』|"[^"\n]*"|^\s*>[^\n]*(?:\n|$)/gm,'');
 }
-function derive(r:RoleData,at:number):MemoryRecord[] {
+type AssertionClause={text:string;start:number;end:number;allowed:boolean;denyOnly?:boolean};
+function assertionProjection(raw:string,local:boolean){
+ let text=raw,positions=Array.from({length:raw.length},(_,i)=>i);
+ const remove=(pattern:RegExp)=>{
+  const parts:string[]=[],next:number[]=[];let cursor=0;
+  for(const match of text.matchAll(pattern)){
+   parts.push(text.slice(cursor,match.index));for(let i=cursor;i<match.index;i++)next.push(positions[i]);
+   if(local){parts.push(match[0].replace(/[^\r\n]/g,'\0'));for(let i=match.index;i<match.index+match[0].length;i++)next.push(positions[i]);}
+   cursor=match.index+match[0].length;
+  }
+  parts.push(text.slice(cursor));for(let i=cursor;i<text.length;i++)next.push(positions[i]);text=parts.join('');positions=next;
+ };
+ remove(/```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)/g);
+ remove(local?/“[^”]*(?:”|$)|「[^」]*(?:」|$)|『[^』]*(?:』|$)|‘[^’]*(?:’|$)|"[^"\n]*(?:"|$)|(?<![\p{L}\p{N}])'[^'\n]*(?:'|$)|`[^`\n]*(?:`|$)|^\s*>[^\n]*(?:\n|$)/gmu:/“[^”]*”|「[^」]*」|『[^』]*』|"[^"\n]*"|^\s*>[^\n]*(?:\n|$)/gm);
+ const clause=(value:string,index:number):AssertionClause=>{const trimmed=value.trim(),start=index+value.length-value.trimStart().length;return {text:trimmed,start:positions[start]??raw.length,end:positions[start+trimmed.length-1]+1||raw.length,allowed:true};};
+ return {text,clause};
+}
+// shortcut: Implicit cross-message paraphrases are not resolved; extend only with source/ID regressions.
+const localUncertain=/也许|可能|大概|是不是|是否|难道|莫非|不(?:是很|太)?确定|不(?:太)?肯定|(?:吗|吧)$|\b(?:maybe|perhaps|probably|possibly|might|may|guess|suppose|unsure|seems?|not sure|i think|i believe)\b/i;
+const conditional=/如果|假如|假设|要是|举例|比如|或者|或是|\b(?:if|unless|suppose|supposing|hypothetically|or)\b/i;
+const nonliteral=/开玩笑|玩笑话|反话|讽刺|对对对|行了吧|才怪|假装|扮演|台词|梦见|梦到|转述|(?:他|她|他们|别人|朋友)(?:说|告诉我|表示)|\b(?:pretend|role.?play|jok(?:e|ing)|kidding|sarcasm|sarcastic|dream(?:t|ed)?|(?:he|she|they) (?:said|told)|in (?:a|the) (?:movie|film|play))\b/i;
+const connective=/^(?:(?:但是|不过|然而|而且|并且|可是|但|而)\s*|(?:but|however|and|yet)\b\s*)+/i;
+const pureHedge=/^(?:也许(?:不是)?|可能(?:不是)?|大概|我猜|我想|我不(?:是很|太)?确定|我可能说错了|其实不是|其实不对|并非如此|对吧|是吧|maybe(?: not)?|perhaps|probably|possibly|i guess|i think|i suppose|not sure|i (?:might|may|could) be (?:wrong|mistaken)|aren't i|am i|isn't it|right)[吧啊呀\s]*$/i;
+const roleplayEnter=/^(?:我们(?:来|开始)(?:角色)?扮演|let['’]s (?:role.?play|pretend)\b)/i;
+const roleplayExit=/^(?:回到现实|结束(?:角色)?扮演|不演了|out of character|stop roleplaying|back to reality)(?:\s|$)/i;
+const frameChanges=(text:string)=>[...text.matchAll(/[^，,。.!！?？；;\n]+/g)].flatMap(m=>{const clause=m[0].trim().replace(connective,'');return roleplayExit.test(clause)?[{index:m.index,value:false}]:roleplayEnter.test(clause)?[{index:m.index,value:true}]:[];});
+function roleplayStates(r:RoleData,messages:ChatMessage[],at:number){
+ const events:{at:number;order:number;value?:boolean;message?:ChatMessage}[]=[],states=new Map<ChatMessage,boolean>();
+ const indices=new Map(r.chats.map((m,i)=>[m?.id,i])),activeIds=new Set(messages.map(m=>m.id)),historical=new Set<string>();
+ const framing=(text:string)=>assertionProjection(text,true).text;
+ for(const v of Array.isArray(r.messageRevisions)?r.messageRevisions:[]){
+  if(!v||typeof v.targetMessageId!=='string')continue;
+  const source=r.chats[indices.get(v.targetMessageId)??-1];
+  if(source?.speaker==='me'&&v.scope==='chat'&&v.speaker==='me'&&['edit','retract'].includes(v.action)&&Number.isFinite(v.at)&&v.at>=source.at&&typeof v.previousText==='string'&&frameChanges(framing(v.previousText)).some(m=>m.value))historical.add(source.id);
+ }
+ for(const m of messages.filter(m=>m.speaker==='me')){
+  const order=indices.get(m.id)!*3,time=m.editedAt??m.at,text=framing(m.text);
+  events.push({at:time,order,message:m});
+  const markers=frameChanges(text);
+  if(markers.length)events.push({at:time,order:order+1,value:markers.at(-1)!.value});
+ }
+ // Lost framing is an ambiguity guard, never evidence of a current identity or a historical exit.
+ for(const [i,m]of r.chats.entries())if(m?.speaker==='me'&&(!m.kind||m.kind==='chat')&&Number.isFinite(m.at)&&m.at<=at){
+  if(historical.has(m.id)||!activeIds.has(m.id)&&frameChanges(framing(m.text)).some(m=>m.value))events.push({at:m.at,order:i*3-1,value:true});
+ }
+ let pretending=false;
+ for(const event of events.sort((a,b)=>a.at-b.at||a.order-b.order))if(event.message)states.set(event.message,pretending);else pretending=event.value!;
+ return states;
+}
+function localAssertions(raw:string,pretending:boolean):{text:string;clauses:AssertionClause[];pretending:boolean}{
+ const projection=assertionProjection(raw,true),clauses:AssertionClause[]=[];
+ for(const statement of projection.text.matchAll(/([^。.!！?？；;\n]+)([。.!！?？；;\n]|$)/g)){
+  const text=statement[1];
+  const conditionAt=text.search(conditional),alternative=/或者|或是|\bor\b/i.test(text);
+  const pastJoke=/^(?:我)?(?:刚才|刚刚|之前|先前)[^，,]{0,16}(?:开玩笑|说反话)|^i was (?:just )?joking (?:earlier|before)\b/i.test(text.trim());
+  const parts:{text:string;index:number}[]=[];let start=0;
+  for(const separator of text.matchAll(/[，,]|\s+(?=(?:but|however|and|yet)\s+(?:I|my|we)\b)|(?=(?:但是|不过|然而|但)(?:我|我们|如果|假如|要是))/gi)){
+   if(separator.index>start)parts.push({text:text.slice(start,separator.index),index:start});start=separator.index+separator[0].length;
+  }
+  if(start<text.length)parts.push({text:text.slice(start),index:start});
+  const framed=nonliteral.test(parts.filter(p=>!roleplayExit.test(p.text.trim().replace(connective,''))).map(p=>p.text).join(','));
+  for(const [i,part]of parts.entries()){
+   const c=projection.clause(part.text,statement.index+part.index);c.text=c.text.replace(connective,'').replace(/^(?:更正[：:]?|纠正[：:]?|实际上|其实|说真的|actually\b|correction[:：]?)\s*/i,'');
+   if(roleplayExit.test(c.text))pretending=false;else if(roleplayEnter.test(c.text))pretending=true;
+   const neighborHedge=[parts[i-1],parts[i+1]].some(p=>p&&pureHedge.test(p.text.trim().replace(connective,'')));
+   c.denyOnly=framed&&pastJoke&&i>0;
+   const condition=alternative||conditionAt>=0&&part.index+part.text.length>conditionAt;
+   c.allowed=Boolean(c.text)&&!c.text.includes('\0')&&!pretending&&!condition&&(!framed||c.denyOnly)&&!localUncertain.test(c.text)&&!neighborHedge&&!(i===parts.length-1&&/[?？]/.test(statement[2]));
+   clauses.push(c);
+  }
+ }
+ return {text:projection.text,clauses,pretending};
+}
+function deriveRecords(r:RoleData,at:number,local:boolean,legacyIds=new Map<string,string>()) {
  const messages=phoneMessagesAt(r,at).filter(m=>(!m.kind||m.kind==='chat')).sort((a,b)=>a.at-b.at);
- const records:MemoryRecord[]=[];
+ const records:MemoryRecord[]=[],keys=new Map<string,string>(),frames=local?roleplayStates(r,messages,at):new Map<ChatMessage,boolean>();
+ const reserved=r.memory?.version===1&&Array.isArray(r.memory.records)?r.memory.records:[];
+ const sameSource=(a:MemoryRecord['source']|undefined,b:MemoryRecord['source']|undefined)=>a&&b?a.id===b.id&&a.at===b.at&&a.text===b.text&&(a.revisionCount||0)===(b.revisionCount||0):a===b;
+ const retainId=(record:MemoryRecord,fallback:string)=>{
+  if(!local)return;
+  const compatible=(old:MemoryRecord)=>old.roleId===record.roleId&&old.scope===record.scope&&old.attribute===record.attribute&&old.value===record.value&&old.polarity===record.polarity&&!!old.mutual===!!record.mutual&&sameSource(old.source,record.source)&&sameSource(old.contextSource,record.contextSource);
+  let suffix=0;
+  while(reserved.some(old=>old?.id===record.id&&!compatible(old))){record.id=fallback+(suffix?':'+suffix:'');suffix++;}
+ };
  for(const [index,m]of messages.entries()){
-  if(m.speaker!=='me'||uncertain.test(m.text))continue;
-  const text=assertedText(m.text),correction=/不是|不对|更正|纠正|说过|改为|actually|correction/i.test(text);
-  const clauses=[...text.matchAll(/([^，,。.!！?？；;\n]+)([，,。.!！?？；;\n]|$)/g)].filter(m=>!/[?？]/.test(m[2])).map(m=>m[1].trim()).filter(Boolean);
+  if(m.speaker!=='me'||!local&&uncertain.test(m.text))continue;
+  const projection=local?undefined:assertionProjection(m.text,false);
+  const parsed=local?localAssertions(m.text,frames.get(m)||false):undefined;
+  const text=parsed?.text??projection!.text,correction=/不是|不对|更正|纠正|说过|改为|actually|correction/i.test(text);
+  const clauses=parsed?.clauses??[...text.matchAll(/([^，,。.!！?？；;\n]+)([，,。.!！?？；;\n]|$)/g)].filter(m=>!/[?？]/.test(m[2])).map(m=>projection!.clause(m[1],m.index)).filter(c=>c.text);
+  let current:AssertionClause={text:'',start:0,end:0,allowed:true},part=0,anchor='context';
   const add=(attribute:string,value:string,polarity:'affirm'|'deny',contextSource?:ChatMessage)=>{
+   const slot=part++;
    value=value.trim();if(!value||value.length>60||/[<>\[\]{}]|(?:吗|吧)$/.test(value)||attribute==='self'&&/^(?:觉得|认为|说|想|说过)/.test(value))return;
+   if(local&&(!current.allowed||current.denyOnly&&polarity!=='deny'))return;
    const layer=attribute==='relationship'?'relationship':'identity';
-   const record:MemoryRecord={id:`memory:${encodeURIComponent(m.id)}:${m.revisionCount||0}:${records.filter(f=>f.source.id===m.id).length}`,roleId:r.id,scope:'real:'+r.id,layer,attribute,value,polarity,correction,at:m.at,knownBy:[r.id],origin:'explicit-user',source:snapshot(m),supersedes:[],...(contextSource?{contextSource:snapshot(contextSource)}:{})};
+   const key=JSON.stringify([snapshot(m),anchor,slot,attribute,value,polarity,contextSource?snapshot(contextSource):null]);
+   const prefix=`memory:${encodeURIComponent(m.id)}:${m.revisionCount||0}:`;
+   const id=local?(legacyIds.get(key)||prefix+`local:${anchor}:${slot}`):prefix+records.filter(f=>f.source.id===m.id).length;
+   const record:MemoryRecord={id,roleId:r.id,scope:'real:'+r.id,layer,attribute,value,polarity,correction,at:m.at,knownBy:[r.id],origin:'explicit-user',source:snapshot(m),supersedes:[],...(contextSource?{contextSource:snapshot(contextSource)}:{})};
+   retainId(record,prefix+`local:${anchor}:${slot}`);
    record.supersedes=records.filter(old=>polarity==='deny'?old.polarity==='affirm'&&normalize(old.value)===normalize(value):old.polarity==='deny'&&normalize(old.value)===normalize(value)||old.polarity==='affirm'&&attribute!=='self'&&old.attribute===attribute&&!old.mutual).map(old=>old.id);
-   records.push(record);
+   records.push(record);keys.set(key,record.id);return record;
   };
-  for(const clause of clauses){
+  for(const c of clauses){
+   current=c;part=0;anchor=c.start+':'+c.end;const clause=c.text;
    let match:RegExpMatchArray|null;
    if((match=clause.match(/^我的([^不是:：]{1,12})不是(.+?)而是(.+)$/))){add('attribute:'+match[1],match[2],'deny');add('attribute:'+match[1],match[3],'affirm');continue;}
    if((match=clause.match(/^我不是(.+?)而是(.+)$/))){add('self',match[1],'deny');add('self',match[2],'affirm');continue;}
@@ -36,22 +127,30 @@ function derive(r:RoleData,at:number):MemoryRecord[] {
    if((match=clause.match(/^(?:其实|更正[：:]?\s*)?(?:我的([^不是:：]{1,12})(不是|是|[：:])(.+))$/))){add('attribute:'+match[1],match[3],match[2]==='不是'?'deny':'affirm');continue;}
    if((match=clause.match(/^(?:其实)?我(不是|是|叫)(.+)$/))){add(match[1]==='叫'?'name':'self',match[2],match[1]==='不是'?'deny':'affirm');continue;}
    if((match=clause.match(/^我们(?:现在|已经)?是(.+)$/))){
-    add('relationship',match[1],'affirm');const parent=records.at(-1),next=messages[index+1];
+    const added=add('relationship',match[1],'affirm'),parent=local?added:records.at(-1),next=messages[index+1];
     const consent=next?.speaker==='char'&&!uncertain.test(next.text)?assertedText(next.text).trim().match(/^(?:(?:是的|好|嗯)[，,]\s*)?我们(?:现在|已经)?是([^。.!！?？]+)[。.!！]?$/):null;
-    if(parent?.source.id===m.id&&consent&&normalize(consent[1])===normalize(parent.value))records.push({...parent,id:parent.id+':confirmed:'+encodeURIComponent(next.id)+':'+(next.revisionCount||0),at:next.at,mutual:true,contextSource:snapshot(next),supersedes:[parent.id,...records.filter(old=>old.layer==='relationship'&&old.mutual).map(old=>old.id)]});
+    if(parent?.source.id===m.id&&consent&&normalize(consent[1])===normalize(parent.value)){
+     const confirmation:MemoryRecord={...parent,id:parent.id+':confirmed:'+encodeURIComponent(next.id)+':'+(next.revisionCount||0),at:next.at,mutual:true,contextSource:snapshot(next),supersedes:[parent.id,...records.filter(old=>old.layer==='relationship'&&old.mutual).map(old=>old.id)]};
+     retainId(confirmation,confirmation.id+':local');records.push(confirmation);
+    }
     continue;
    }
    if((match=clause.match(/^I (am not|am|work as|live in) (.+)$/i))){add(/live/i.test(match[1])?'attribute:residence':'self',match[2],/not/i.test(match[1])?'deny':'affirm');}
   }
   // A plain denial can refer to the immediately preceding direct question, not arbitrary old text.
   const previous=messages[index-1];
+  current={text:'',start:0,end:0,allowed:true};part=0;anchor='context';
   if(correction&&/^不是[，,。\s]/.test(text)&&previous?.speaker==='char'){
    const question=previous.text.trim().match(/^(?:你是不是(.+?)[？?。]?|你是(.+?)(?:吧|吗)[？?。]?|(?:Are you|You are) (.+?)(?:\?|,? right\?))$/i);
    const value=question&&(question[1]||question[2]||question[3]);
    if(value&&!uncertain.test(value)&&records.some(f=>f.source.id===m.id&&f.polarity==='affirm'))add('self',value,'deny',previous);
   }
  }
- return records;
+ return {records,keys};
+}
+function derive(r:RoleData,at:number):MemoryRecord[] {
+ // Legacy matching reserves IDs only; local source validation alone decides which assertions are facts.
+ return deriveRecords(r,at,true,deriveRecords(r,at,false).keys).records;
 }
 function sourceValid(r:RoleData,s:MemoryRecord['source'],at:number,user=false):boolean {
  const m=phoneMessagesAt(r,at).find(m=>m.id===s.id&&(!m.kind||m.kind==='chat'));

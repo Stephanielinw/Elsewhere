@@ -36,6 +36,7 @@ async function main(){
  const {defaults,createRole}=await import('../src/core/defaults.ts');
  const {editMessage,retractMessage}=await import('../src/core/revisions.ts');
  const browser=await chromium.launch({ignoreDefaultArgs:['--disable-back-forward-cache'],...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})});
+ const requestCounts=[];
  async function fixture(options,check){
   const ctx=await browser.newContext({ignoreHTTPSErrors:true,serviceWorkers:'block',viewport:{width:390,height:844},timezoneId:options.tz||'America/Los_Angeles'});
   const posts=[],errors=[];
@@ -118,6 +119,7 @@ async function main(){
    await p.reload();await ready(p);
    await check({p,ctx,posts,release,day,at,r});
    assert.deepEqual(errors,[],'no uncaught browser errors');
+   requestCounts.push(posts.length);
   }finally{release();await ctx.close();}
  }
  async function enterConversation(p){
@@ -259,5 +261,6 @@ async function main(){
    });
   }
  }finally{await browser.close();}
+ console.log(JSON.stringify({passed:requestCounts.length,posts:requestCounts.reduce((n,count)=>n+count,0)}));
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});

@@ -9737,7 +9737,7 @@ ${prevLogs}` : "",
       r.scene = null;
       r.lifeAt = at;
       r.meetingPlan = meetingPlan(r, at);
-      r.events.push({ id: makeUid("ev"), kind: "scene", title: "\u8FD9\u6B21\u89C1\u9762\u7ED3\u675F", detail: `\u5728${scene.where}\u544A\u522B\uFF1B\u5F00\u59CB\u4E8E${new Date(scene.startedAt).toISOString()}\uFF0C\u7ED3\u675F\u4E8E${new Date(at).toISOString()}\u3002\u89C1\u9762\u539F\u59CB\u5BF9\u767D\u72EC\u7ACB\u4FDD\u5B58\u3002`, at, source: scene.id, status: "active", knownBy: ["user", r.id] });
+      r.events.push({ id: makeUid("ev"), kind: "scene", title: "\u8FD9\u6B21\u89C1\u9762\u7ED3\u675F", detail: `\u9762\u5BF9\u9762\u4EA4\u4E92\u7ED3\u675F\uFF0C\u6700\u540E\u8BB0\u5F55\u5730\u70B9\u4E3A${scene.where}\uFF1B\u4E0D\u63A8\u65AD\u53CC\u65B9\u662F\u5426\u544A\u522B\u6216\u8C01\u79BB\u5F00\u3002\u5F00\u59CB\u4E8E${new Date(scene.startedAt).toISOString()}\uFF0C\u7ED3\u675F\u4E8E${new Date(at).toISOString()}\u3002\u89C1\u9762\u539F\u59CB\u5BF9\u767D\u72EC\u7ACB\u4FDD\u5B58\u3002`, at, source: scene.id, status: "active", knownBy: ["user", r.id] });
       if (!persist()) throw new Error("\u89C1\u9762\u6863\u6848\u4FDD\u5B58\u5931\u8D25\uFF0C\u539F\u73B0\u573A\u5DF2\u4FDD\u7559\uFF0C\u53EF\u91CD\u8BD5");
       return scene;
     } catch (error) {
@@ -11034,6 +11034,45 @@ ${JSON.stringify(control)}`;
     return { choice: info.choice, rules: info.rules.map(({ id, source, enabled, order }) => ({ id, source, enabled, order })), legacySource: skipLegacyOnce ? "none" : info.legacySource, legacyCount: skipLegacyOnce ? 0 : info.legacy.length, legacySkippedOnce: skipLegacyOnce };
   }
 
+  // src/core/meetingContinuity.ts
+  var MEETING_CONTINUITY_TOKENS = 1e3;
+  function meetingContinuity(r, query, at, rejected) {
+    const index = messageSourceIndex(r, at), counts = /* @__PURE__ */ new Map();
+    const withheld = new Set(r.events.filter((e) => e.messageId && e.status !== "retracted" && e.status !== "superseded" && (e.sourceRevision === void 0 || e.sourceRevision === (index.get(e.messageId)?.revisionCount || 0)) && e.knownBy?.length && !e.knownBy.includes(r.id)).map((e) => e.messageId));
+    const messageIds = new Set((r.meetings || []).flatMap((s) => Array.isArray(s.messages) ? s.messages.filter(Boolean).map((m) => m.id) : []));
+    for (const scene of r.meetings || []) counts.set(scene.id, (counts.get(scene.id) || 0) + 1);
+    const candidates = (r.meetings || []).filter((s) => counts.get(s.id) === 1 && Number.isFinite(s.startedAt) && Number.isFinite(s.endedAt) && s.startedAt <= s.endedAt && s.endedAt <= at).sort((a, b) => b.endedAt - a.endedAt).slice(0, 12).map((scene) => {
+      const messages = sceneMessagesAt(r, scene.messages, at).filter((m) => m.at >= scene.startedAt && m.at <= scene.endedAt && m.kind !== "play" && m.novelOutput?.mode !== "theatre" && index.has(m.id) && !withheld.has(m.id) && !rejected.has(m.id) && !rejected.has(m.sourceMessageId || "") && // Unstructured user scene input can contain unspoken thoughts; only a verified phone bridge is public here.
+      (m.speaker === "char" || m.speaker === "me" && !!m.sourceMessageId));
+      return { scene, messages, score: messages.reduce((score, m) => Math.max(score, memoryRelevance(m.text, query)), 0) };
+    });
+    const selected = candidates.filter((c) => c.score > 0 || at - c.scene.endedAt <= 864e5).sort((a, b) => b.score - a.score || b.scene.endedAt - a.scene.endedAt).slice(0, 2);
+    const facts = [];
+    let used = 0;
+    for (const { scene, messages } of selected) {
+      const ranked = messages.map((m, i) => ({ m, i, score: memoryRelevance(m.text, query) })).sort((a, b) => b.score - a.score || b.i - a.i);
+      const positions = /* @__PURE__ */ new Set([0, 1, messages.length - 2, messages.length - 1]);
+      for (const { i } of ranked.slice(0, 2)) for (const n of [i - 1, i, i + 1]) positions.add(n);
+      const chosen = ranked.filter(({ i }) => positions.has(i)).slice(0, 8), lines = [];
+      const heading = `[\u89C1\u9762\u539F\u6587 \xB7 Scene=${scene.id} \xB7 ${new Date(scene.startedAt).toISOString()} \u81F3 ${new Date(scene.endedAt).toISOString()}]
+`;
+      let cost = estimateTextTokens(heading);
+      for (const { m, i } of chosen) {
+        const text2 = `[\u6D88\u606F=${m.id}; \u4FEE\u8BA2=${m.revisionCount || 0}; \u539F\u53D1\u4E8E=${new Date(m.at).toISOString()}${m.editedAt !== void 0 ? "; \u4FEE\u8BA2\u751F\u6548\u4E8E=" + new Date(m.editedAt).toISOString() + "\uFF08\u5F53\u524D\u7248\u672C\uFF0C\u4E0D\u8BC1\u660E\u539F\u53D1\u65F6\u5DF2\u77E5\uFF09" : ""}; ${m.speaker === "char" ? "\u89D2\u8272\u539F\u6587\uFF08\u5BF9\u8BDD/\u53D9\u8FF0\uFF0C\u4E3B\u5F20\u4E0D\u7B49\u4E8E\u5916\u90E8\u8BC1\u5B9E\uFF09" : "\u7528\u6237\u5DF2\u516C\u5F00\u7684\u624B\u673A\u539F\u8BDD"}] ${memoryExcerpt(m.text, query, 120)}`;
+        const size = estimateTextTokens(text2 + "\n");
+        if (used + cost + size > MEETING_CONTINUITY_TOKENS) continue;
+        cost += size;
+        lines.push({ i, id: m.id, text: text2 });
+      }
+      if (lines.length) {
+        lines.sort((a, b) => a.i - b.i);
+        facts.push({ id: "meeting:" + scene.id, text: heading + lines.map((l) => l.text).join("\n"), at: scene.endedAt, sourceIds: lines.map((l) => l.id) });
+        used += cost;
+      }
+    }
+    return { facts, messageIds };
+  }
+
   // src/core/prompt.ts
   var dt = (t) => new Date(t).toLocaleString("zh-CN", {
     month: "numeric",
@@ -11109,6 +11148,7 @@ ${JSON.stringify(control)}`;
     const memory = kind === "chat" ? compactRoleMemory(memoryRole, nowTs) : projectRoleMemory(kind === "play" ? { ...r, chats: [], memory: void 0 } : memoryRole, nowTs);
     const past = kind === "chat" && asksPastExperience(input), ownContext = kind === "chat" ? personalContext(memoryRole, nowTs, { query: input }) : "";
     const userIdentity = identityContext(data, memoryRole, nowTs, memory);
+    const continuity = kind === "chat" ? meetingContinuity(memoryRole, input, nowTs, memory.supersededSources) : { facts: [], messageIds: /* @__PURE__ */ new Set() };
     let base = "";
     let facts = "";
     let recalled = [];
@@ -11136,6 +11176,7 @@ ${JSON.stringify(control)}`;
       const candidates = getRoleKnownEvents(r).filter((e) => {
         const message = e.messageId ? shownPhoneSources.get(e.messageId) : void 0;
         const duplicate = e.kind === "chat" && message && e.detail === message.text && e.at === message.at && (!e.speaker || e.speaker === message.speaker) && (!e.source || e.source === "chat");
+        if (kind === "chat" && e.kind === "scene" && (continuity.messageIds.has(e.messageId || "") || !e.messageId && e.title === "\u8FD9\u6B21\u89C1\u9762\u7ED3\u675F")) return false;
         if (kind === "chat" && e.kind === "life") return false;
         return eventSourceValid(memoryRole, e, nowTs, messageIndex, memory.supersededSources) && !duplicate && e.kind !== "drama" && (e.kind !== "life" || trustedLife.has(e.id)) && e.at <= nowTs && (!e.messageId || !bridgedIds.has(e.messageId));
       });
@@ -11171,7 +11212,10 @@ ${sharedDiaries}`;
 
 \u53EF\u68C0\u7D22\u7684\u5267\u5916\u7ECF\u5386\uFF08\u5E76\u975E\u4FDD\u8BC1\u5B8C\u6574\uFF0C\u5267\u5185\u865A\u6784\u5267\u60C5\u4E0D\u7B49\u4E8E\u73B0\u5B9E\u5386\u53F2\uFF09\uFF1A
 ${facts || "\u6682\u65E0"}`;
-      if (kind === "chat") base += "\n\n" + ownContext;
+      if (kind === "chat") {
+        base += "\n\n" + ownContext;
+        if (continuity.facts.length) base += "\n\n\u6700\u8FD1\u7ED3\u675F\u7684\u771F\u5B9E\u89C1\u9762\u539F\u6587\u8282\u9009\uFF08\u4E0D\u662F\u620F\u4E2D\u620F\uFF0C\u4E5F\u4E0D\u662F\u65B0\u7684\u5BA2\u89C2\u603B\u7ED3\uFF09\uFF1A\u7ED3\u675F\u4EA4\u4E92\u4E0D\u8BC1\u660E\u53CC\u65B9\u544A\u522B\u6216\u79BB\u5F00\uFF1B\u6309\u539F\u6587\u5206\u6E05\u884C\u52A8\u4E3B\u4F53\u3002\u89D2\u8272\u53EF\u4EE5\u8FA9\u89E3\u3001\u9690\u7792\u6216\u6492\u8C0E\uFF0C\u4F46\u4E0D\u8981\u628A\u7F3A\u5931\u5386\u53F2\u6216\u4E2A\u4EBA\u4E3B\u5F20\u5F53\u6210\u8BC1\u636E\uFF1B\u7528\u6237\u672A\u8868\u8FBE\u7684\u5185\u5FC3\u4E0E\u672A\u7ECF\u786E\u8BA4\u7684\u884C\u52A8\u4E0D\u662F\u89D2\u8272\u77E5\u8BC6\u3002\n" + continuity.facts.map((f) => f.text).join("\n");
+      }
     }
     const memoryFragments = {};
     if (kind !== "play") {
@@ -11206,19 +11250,21 @@ ${facts || "\u6682\u65E0"}`;
       { id: "relationship:" + r.id, text: kind === "play" ? "\u5267\u5185\u89D2\u8272\u4E4B\u95F4\u7684\u5173\u7CFB\u4EC5\u4EE5\u5267\u672C\u53CA\u672C\u573A\u5BF9\u767D\u4E3A\u51C6\u3002" : relationshipContext(memoryRole, nowTs, memory), layer: "relationship", at: nowTs, scope, knownBy: [r.id], active: true, revisionValid: true },
       { id: "state:" + r.id, text: kind === "play" ? r.play.world : dt(nowTs), layer: "currentState", at: nowTs, scope, knownBy: [r.id], active: true, revisionValid: true },
       ...kind !== "play" ? [{ id: "user-profile:" + r.id, text: userIdentity, layer: "identity", at: nowTs, scope, knownBy: [r.id], active: true, revisionValid: true }, ...memory.facts.map((f) => ({ id: f.id, text: memoryFactText(f, kind === "chat"), layer: f.layer, at: f.at, scope, knownBy: [r.id], active: true, revisionValid: true })), ...kind === "chat" ? [{ id: "personal-state:" + r.id, text: ownContext, layer: "currentState", at: nowTs, scope, knownBy: [r.id], active: true, revisionValid: true }] : []] : [],
+      ...continuity.facts.map((f) => ({ id: f.id, text: f.text, layer: "episodic", at: f.at, scope, knownBy: [r.id], active: true, revisionValid: true })),
       ...recalled.map((e) => ({ id: e.id, text: e.detail, layer: "episodic", at: e.at, scope, knownBy: e.knownBy?.length ? e.knownBy : [r.id], active: true, revisionValid: true })),
       ...episodeCandidates.filter((e) => !recalled.some((shown) => shown.id === e.id)).map((e) => ({ id: e.id, text: e.detail, layer: "episodic", at: e.at, scope, knownBy: e.knownBy?.length ? e.knownBy : [r.id], active: true, revisionValid: true }))
     ];
     const inputIds = new Set((options.currentInputs || []).map((m) => m.id));
     const currentInputs = phoneMessagesAt(memoryRole, nowTs).filter((m) => inputIds.has(m.id)).map((m) => ({ id: m.id, role: "user", text: `[\u6D88\u606F ID=${m.id}; createdAt=${new Date(m.at).toISOString()}; \u672C\u5730\u53D1\u9001\u65F6\u95F4=${new Date(m.at).toLocaleString("zh-CN", { hour12: false })}]
 ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me" && !["retracted", "superseded", "deleted"].includes(String(m.status)), revisionValid: true }));
-    const factFragments = Object.fromEntries(factsForContext.filter((f) => Boolean(f.text) && (f.layer !== "episodic" || recalled.some((e) => e.id === f.id)) && base.includes(memoryFragments[f.id] || f.text)).map((f) => [f.id, memoryFragments[f.id] || f.text]));
-    const memoryTrace = [...memory.trace, ...projectedUserFields(data.user, memoryRole, nowTs, memory).filter((f) => f.conflicts.length).map((f) => ({ id: "user-profile:" + f.key, layer: "identity", sourceIds: f.conflicts, reason: "profile-field-corrected" }))];
+    const factFragments = Object.fromEntries(factsForContext.filter((f) => Boolean(f.text) && (f.layer !== "episodic" || recalled.some((e) => e.id === f.id) || continuity.facts.some((c) => c.id === f.id)) && base.includes(memoryFragments[f.id] || f.text)).map((f) => [f.id, memoryFragments[f.id] || f.text]));
+    const memoryTrace = [...memory.trace, ...continuity.facts.map((f) => ({ id: f.id, layer: "episodic", sourceIds: f.sourceIds, reason: "ended-meeting-original-excerpts" })), ...projectedUserFields(data.user, memoryRole, nowTs, memory).filter((f) => f.conflicts.length).map((f) => ({ id: "user-profile:" + f.key, layer: "identity", sourceIds: f.conflicts, reason: "profile-field-corrected" }))];
     for (const e of r.events) {
       const m = e.messageId ? shownPhoneSources.get(e.messageId) : void 0;
       let reason = "outside-retrieval-budget";
       if (e.messageId && memory.supersededSources.has(e.messageId)) reason = "explicitly-corrected-source";
       else if (!eventSourceValid(memoryRole, e, nowTs, messageIndex, memory.supersededSources)) reason = "source-or-permission-invalid";
+      else if (kind === "chat" && e.kind === "scene" && (continuity.messageIds.has(e.messageId || "") || !e.messageId && e.title === "\u8FD9\u6B21\u89C1\u9762\u7ED3\u675F")) reason = "separate-meeting-original-projection";
       else if (e.kind === "drama") reason = "world-excluded";
       else if (m && e.kind === "chat" && e.detail === m.text && e.at === m.at) reason = "already-in-recent-history";
       else if (recalled.some((f) => f.id === e.id)) reason = "selected";

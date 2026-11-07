@@ -20,7 +20,7 @@ export function archiveMeeting(r:RoleData,at:number,persist:()=>boolean):SceneDa
  const before={meetings:r.meetings,lifeAt:r.lifeAt,meetingPlan:r.meetingPlan,events:r.events.length};
  try{
   scene.endedAt=at;r.meetings=[...(r.meetings||[]),scene];r.scene=null;r.lifeAt=at;r.meetingPlan=meetingPlan(r,at);
-  r.events.push({id:makeUid('ev'),kind:'scene',title:'这次见面结束',detail:`在${scene.where}告别；开始于${new Date(scene.startedAt).toISOString()}，结束于${new Date(at).toISOString()}。见面原始对白独立保存。`,at,source:scene.id,status:'active',knownBy:['user',r.id]});
+  r.events.push({id:makeUid('ev'),kind:'scene',title:'这次见面结束',detail:`面对面交互结束，最后记录地点为${scene.where}；不推断双方是否告别或谁离开。开始于${new Date(scene.startedAt).toISOString()}，结束于${new Date(at).toISOString()}。见面原始对白独立保存。`,at,source:scene.id,status:'active',knownBy:['user',r.id]});
   if(!persist())throw new Error('见面档案保存失败，原现场已保留，可重试');
   return scene;
  }catch(error){delete scene.endedAt;r.scene=scene;r.meetings=before.meetings;r.lifeAt=before.lifeAt;r.meetingPlan=before.meetingPlan;r.events.length=before.events;throw error;}

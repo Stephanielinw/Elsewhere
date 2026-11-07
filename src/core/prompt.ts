@@ -5,6 +5,7 @@ import {nativePreset,isNativePreset} from './fruit/nativePreset';
 import {nativeBubbleRule,projectChatVoiceProfile,chatVoiceChoice} from './chatVoice';
 import {personalContext,collectRoleLife,personalDiaries} from './roleLife';
 import {projectRoleMemory,projectedUserFields,memoryFactText,eventSourceValid,relationshipContext,memoryMessageIndex,memoryRuleConflicts,compactRoleMemory} from './memory';
+import {meetingContinuity} from './meetingContinuity';
 import {asksPastExperience,memoryRelevance,memoryExcerpt,selectMemoryItems} from './contextBudget';
 import {createLiveNovelContext} from './novelContext';
 import {createFruitState} from './fruit/preset';
@@ -141,6 +142,7 @@ export function buildNativeContext(
   const memory=kind==='chat'?compactRoleMemory(memoryRole,nowTs):projectRoleMemory(kind==='play'?{...r,chats:[],memory:undefined}:memoryRole,nowTs);
   const past=kind==='chat'&&asksPastExperience(input),ownContext=kind==='chat'?personalContext(memoryRole,nowTs,{query:input}):'';
   const userIdentity=identityContext(data,memoryRole,nowTs,memory);
+  const continuity=kind==='chat'?meetingContinuity(memoryRole,input,nowTs,memory.supersededSources):{facts:[],messageIds:new Set<string>()};
   let base = '';
   let facts = '';
   let recalled:EventRecord[]=[];
@@ -178,6 +180,7 @@ export function buildNativeContext(
       const message=e.messageId?shownPhoneSources.get(e.messageId):undefined;
       // Only omit a verbatim record of the same visible source; summaries and facts remain candidates.
       const duplicate=e.kind==='chat'&&message&&e.detail===message.text&&e.at===message.at&&(!e.speaker||e.speaker===message.speaker)&&(!e.source||e.source==='chat');
+      if(kind==='chat'&&e.kind==='scene'&&(continuity.messageIds.has(e.messageId||'')||!e.messageId&&e.title==='这次见面结束'))return false;
       if(kind==='chat'&&e.kind==='life')return false; // Read trusted life once through the shared private projection.
       return eventSourceValid(memoryRole,e,nowTs,messageIndex,memory.supersededSources)&&!duplicate&&e.kind!=='drama'&&(e.kind!=='life'||trustedLife.has(e.id))&&e.at<=nowTs&&(!e.messageId||!bridgedIds.has(e.messageId));
     });
@@ -210,7 +213,10 @@ export function buildNativeContext(
       base += `\n\n用户曾主动分享给你的个人日记（未在此列出的私人日记你不知情）：\n${sharedDiaries}`;
     }
     base += `\n\n可检索的剧外经历（并非保证完整，剧内虚构剧情不等于现实历史）：\n${facts || '暂无'}`;
-    if(kind==='chat')base+='\n\n'+ownContext;
+    if(kind==='chat'){
+      base+='\n\n'+ownContext;
+      if(continuity.facts.length)base+='\n\n最近结束的真实见面原文节选（不是戏中戏，也不是新的客观总结）：结束交互不证明双方告别或离开；按原文分清行动主体。角色可以辩解、隐瞒或撒谎，但不要把缺失历史或个人主张当成证据；用户未表达的内心与未经确认的行动不是角色知识。\n'+continuity.facts.map(f=>f.text).join('\n');
+    }
   }
 
   const memoryFragments:Record<string,string>={};
@@ -235,18 +241,20 @@ export function buildNativeContext(
     {id:'relationship:'+r.id,text:kind==='play'?'剧内角色之间的关系仅以剧本及本场对白为准。':relationshipContext(memoryRole,nowTs,memory),layer:'relationship',at:nowTs,scope,knownBy:[r.id],active:true,revisionValid:true},
     {id:'state:'+r.id,text:kind==='play'?r.play!.world:dt(nowTs),layer:'currentState',at:nowTs,scope,knownBy:[r.id],active:true,revisionValid:true},
     ...(kind!=='play'?[{id:'user-profile:'+r.id,text:userIdentity,layer:'identity' as const,at:nowTs,scope,knownBy:[r.id],active:true,revisionValid:true},...memory.facts.map(f=>({id:f.id,text:memoryFactText(f,kind==='chat'),layer:f.layer,at:f.at,scope,knownBy:[r.id],active:true,revisionValid:true})),...(kind==='chat'?[{id:'personal-state:'+r.id,text:ownContext,layer:'currentState' as const,at:nowTs,scope,knownBy:[r.id],active:true,revisionValid:true}]:[])]:[]),
+    ...continuity.facts.map(f=>({id:f.id,text:f.text,layer:'episodic' as const,at:f.at,scope,knownBy:[r.id],active:true,revisionValid:true})),
     ...recalled.map(e=>({id:e.id,text:e.detail,layer:'episodic' as const,at:e.at,scope,knownBy:e.knownBy?.length?e.knownBy:[r.id],active:true,revisionValid:true})),
     ...episodeCandidates.filter(e=>!recalled.some(shown=>shown.id===e.id)).map(e=>({id:e.id,text:e.detail,layer:'episodic' as const,at:e.at,scope,knownBy:e.knownBy?.length?e.knownBy:[r.id],active:true,revisionValid:true})),
   ];
   const inputIds=new Set((options.currentInputs||[]).map(m=>m.id));
   const currentInputs=phoneMessagesAt(memoryRole,nowTs).filter(m=>inputIds.has(m.id)).map(m=>({id:m.id,role:'user' as const,text:`[消息 ID=${m.id}; createdAt=${new Date(m.at).toISOString()}; 本地发送时间=${new Date(m.at).toLocaleString('zh-CN',{hour12:false})}]\n${safeContent(m)}`,knownBy:[r.id],at:m.at,scope,active:m.speaker==='me'&&!['retracted','superseded','deleted'].includes(String(m.status)),revisionValid:true}));
-  const factFragments=Object.fromEntries(factsForContext.filter(f=>Boolean(f.text)&&(f.layer!=='episodic'||recalled.some(e=>e.id===f.id))&&base.includes(memoryFragments[f.id]||f.text)).map(f=>[f.id,memoryFragments[f.id]||f.text]));
-  const memoryTrace=[...memory.trace,...projectedUserFields(data.user,memoryRole,nowTs,memory).filter(f=>f.conflicts.length).map(f=>({id:'user-profile:'+f.key,layer:'identity',sourceIds:f.conflicts,reason:'profile-field-corrected'}))];
+  const factFragments=Object.fromEntries(factsForContext.filter(f=>Boolean(f.text)&&(f.layer!=='episodic'||recalled.some(e=>e.id===f.id)||continuity.facts.some(c=>c.id===f.id))&&base.includes(memoryFragments[f.id]||f.text)).map(f=>[f.id,memoryFragments[f.id]||f.text]));
+  const memoryTrace=[...memory.trace,...continuity.facts.map(f=>({id:f.id,layer:'episodic' as const,sourceIds:f.sourceIds,reason:'ended-meeting-original-excerpts'})),...projectedUserFields(data.user,memoryRole,nowTs,memory).filter(f=>f.conflicts.length).map(f=>({id:'user-profile:'+f.key,layer:'identity',sourceIds:f.conflicts,reason:'profile-field-corrected'}))];
   for(const e of r.events){
     const m=e.messageId?shownPhoneSources.get(e.messageId):undefined;
     let reason='outside-retrieval-budget';
     if(e.messageId&&memory.supersededSources.has(e.messageId))reason='explicitly-corrected-source';
     else if(!eventSourceValid(memoryRole,e,nowTs,messageIndex,memory.supersededSources))reason='source-or-permission-invalid';
+    else if(kind==='chat'&&e.kind==='scene'&&(continuity.messageIds.has(e.messageId||'')||!e.messageId&&e.title==='这次见面结束'))reason='separate-meeting-original-projection';
     else if(e.kind==='drama')reason='world-excluded';
     else if(m&&e.kind==='chat'&&e.detail===m.text&&e.at===m.at)reason='already-in-recent-history';
     else if(recalled.some(f=>f.id===e.id))reason='selected';

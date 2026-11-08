@@ -26,6 +26,7 @@ import {preparePersonalReply,splitPersonalReply,applyPersonalReply,personalTicke
 import {syncLifeBudget,reserveLifeAttempt} from './core/lifeBudget';
 import {diaryRequestKey,diarySourceHash,readDiaryReceipt,replaceDiaryReceipt,type DiaryReceipt} from './core/diaryRequests';
 import {claimLifeTask,prepareLifeTask,commitLifeTask,readLifeJournal,writeLifeJournal,lifeTaskState,LIFE_MAX_OUTPUT,type LifeTask} from './core/autonomousLife';
+import {roleMemoryText} from './core/roleMemoryView';
 import {syncRoleMemory} from './core/memory';
 import {claimProactive,proactiveTaskValid,finishProactive,recordProactiveDelivery,recoverProactive,proactiveInstruction,parseProactiveReply,type ProactiveTask} from './core/proactiveChat';
 import {createChatVoiceDialog} from './chatVoiceView';
@@ -1429,7 +1430,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     return false;
   }
   const save = (world=data): boolean => {
-    const originalId=world.draftWorldId;
+    const originalId=world.draftWorldId,memories=world.roles.map(r=>[r,r.memory] as const);
     let assigned=false,confirmed=false;
     try {
       if(!draftNamespace(world)&&saveSession.hasWriter()){
@@ -1439,6 +1440,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         world.draftWorldId=candidate;
         assigned=true;
       }
+      for(const r of world.roles)syncRoleMemory(r,now());
       if(!saveSession.write(JSON.stringify(world))){notify(saveError());refreshSaveAccess();return false;}
       confirmed=true;
       if(assigned&&world===data){
@@ -1449,6 +1451,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       notify('存档无法序列化，未写入。');
       return false;
     } finally {
+      if(!confirmed)for(const [r,memory]of memories)r.memory=memory;
       if(assigned&&!confirmed){
         if(originalId===undefined)delete world.draftWorldId;
         else world.draftWorldId=originalId;
@@ -5255,8 +5258,10 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if(!recovering&&feeRisk&&!window.confirm('此日期的日记此前可能已经计费。再次生成可能产生第二次费用。'+
         (receipt?.state==='ready'?'这会替换目前保留的未归档正文。':'')+'确定继续？'))return false;
       const {messages,facts,personal}=buildCharacterDiaryPrompt(r,world.user,dateKey);
-      const snapshot=JSON.stringify([world.user,facts]);
-      const sourcesMatch=()=>snapshot===JSON.stringify([world.user,collectDailyDiaryFacts(r,dateKey,true)])&&personalTicketValid(r,personal);
+      const memoryAt=Math.min(now(),getLocalDayBounds(dateKey).endMs),memoryStart=getLocalDayBounds(dateKey).startMs;
+      const memorySnapshot=()=>roleMemoryText(r,memoryAt,'',{since:memoryStart});
+      const snapshot=JSON.stringify([world.user,facts,memorySnapshot()]);
+      const sourcesMatch=()=>snapshot===JSON.stringify([world.user,collectDailyDiaryFacts(r,dateKey,true),memorySnapshot()])&&personalTicketValid(r,personal);
       const sourceHash=await diarySourceHash(JSON.stringify([snapshot,{...personal,id:''}]));
       if(!valid()||!recovering&&(epoch!==modelPageEpoch||!sourcesMatch()))return false;
       if(!recovering){

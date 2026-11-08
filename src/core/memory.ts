@@ -1,15 +1,23 @@
 import type {ChatMessage,EventRecord,RoleData,UserProfileData} from './types';
+import {syncRoleExperiences,type RoleExperienceLedger} from './roleExperience';
 import type {ConversationContext,ConversationCompilation} from './conversationPrompt';
-import {matchesMessageSource,messageAvailableAt,messageSourceIndex,phoneMessagesAt} from './messageProvenance';
+import {matchesMessageSource,messageAvailableAt,messageSourceIndex,phoneMessagesAt,sceneMessagesAt,stageMessagesAt} from './messageProvenance';
 export interface MemoryRecord {
  id:string;roleId:string;scope:string;layer:'identity'|'relationship';attribute:string;value:string;
  polarity:'affirm'|'deny';correction:boolean;mutual?:true;at:number;knownBy:string[];origin:'explicit-user';
- source:{id:string;text:string;at:number;revisionCount:number};contextSource?:MemoryRecord['source'];supersedes:string[];
+ source:{id:string;text:string;at:number;revisionCount:number;scope?:string};contextSource?:MemoryRecord['source'];supersedes:string[];
 }
-export interface RoleMemoryLedger {version:1;records:MemoryRecord[]}
+export interface RoleMemoryLedger {version:1;records:MemoryRecord[];experiences?:RoleExperienceLedger}
 export interface MemoryDecision {id:string;layer:string;sourceIds:string[];reason:string}
 const normalize=(s:string)=>s.normalize('NFKC').toLocaleLowerCase().replace(/[\s。.!！?？]+$/g,'').trim();
-const snapshot=(m:ChatMessage)=>({id:m.id,text:m.text,at:m.at,revisionCount:m.revisionCount||0});
+type MemoryInput=ChatMessage&{memoryScope?:string};
+function memoryInputs(r:RoleData,at:number):MemoryInput[]{
+ const privateIds=new Set(r.events.filter(e=>e.messageId&&e.status!=='retracted'&&e.status!=='superseded'&&e.knownBy?.length&&!e.knownBy.includes(r.id)).map(e=>e.messageId));
+ const scenes=[...(r.meetings||[]),...(r.scene?[r.scene]:[])],plays=[...(r.plays||[]),...(r.play?[r.play]:[])];
+ const extra=[...scenes.filter(s=>scenes.filter(x=>x.id===s.id).length===1&&(s.endedAt===undefined||s.endedAt<=at)).flatMap(s=>sceneMessagesAt(r,s.messages,at).filter(m=>!m.sourceMessageId&&m.kind!=='play'&&m.novelOutput?.mode!=='theatre'&&!privateIds.has(m.id)).map(m=>({...m,memoryScope:'scene:'+s.id}))),...plays.flatMap(p=>stageMessagesAt(p.intermissionMessages,at).map(m=>({...m,memoryScope:'backstage:'+p.id})))];
+ const all=[...phoneMessagesAt(r,at),...extra],counts=new Map<string,number>();for(const m of all)counts.set(m.id,(counts.get(m.id)||0)+1);return all.filter(m=>counts.get(m.id)===1);
+}
+const snapshot=(m:MemoryInput)=>({id:m.id,text:m.text,at:m.at,revisionCount:m.revisionCount||0,...(m.memoryScope?{scope:m.memoryScope}:{})});
 const uncertain=/如果|假如|假设|要是|也许|可能|大概|是不是|是否|难道|莫非|开玩笑|玩笑话|反话|讽刺|对对对|行了吧|才怪|假装|扮演|台词|梦见|举例|比如|suppose|pretend|joking|if i\b/i;
 function assertedText(text:string):string {
  return text.replace(/```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)/g,'').replace(/“[^”]*”|「[^」]*」|『[^』]*』|"[^"\n]*"|^\s*>[^\n]*(?:\n|$)/gm,'');
@@ -40,14 +48,14 @@ const pureHedge=/^(?:也许(?:不是)?|可能(?:不是)?|大概|我猜|我想|�
 const roleplayEnter=/^(?:我们(?:来|开始)(?:角色)?扮演|let['’]s (?:role.?play|pretend)\b)/i;
 const roleplayExit=/^(?:回到现实|结束(?:角色)?扮演|不演了|out of character|stop roleplaying|back to reality)(?:\s|$)/i;
 const frameChanges=(text:string)=>[...text.matchAll(/[^，,。.!！?？；;\n]+/g)].flatMap(m=>{const clause=m[0].trim().replace(connective,'');return roleplayExit.test(clause)?[{index:m.index,value:false}]:roleplayEnter.test(clause)?[{index:m.index,value:true}]:[];});
-function roleplayStates(r:RoleData,messages:ChatMessage[],at:number){
+function roleplayStates(r:RoleData,messages:ChatMessage[],at:number,scope='chat'){
  const events:{at:number;order:number;value?:boolean;message?:ChatMessage}[]=[],states=new Map<ChatMessage,boolean>();
  const indices=new Map(r.chats.map((m,i)=>[m?.id,i])),activeIds=new Set(messages.map(m=>m.id)),historical=new Set<string>();
  const framing=(text:string)=>assertionProjection(text,true).text;
  for(const v of Array.isArray(r.messageRevisions)?r.messageRevisions:[]){
   if(!v||typeof v.targetMessageId!=='string')continue;
   const source=r.chats[indices.get(v.targetMessageId)??-1];
-  if(source?.speaker==='me'&&v.scope==='chat'&&v.speaker==='me'&&['edit','retract'].includes(v.action)&&Number.isFinite(v.at)&&v.at>=source.at&&typeof v.previousText==='string'&&frameChanges(framing(v.previousText)).some(m=>m.value))historical.add(source.id);
+  if(source?.speaker==='me'&&v.scope===scope&&v.speaker==='me'&&['edit','retract'].includes(v.action)&&Number.isFinite(v.at)&&v.at>=source.at&&typeof v.previousText==='string'&&frameChanges(framing(v.previousText)).some(m=>m.value))historical.add(source.id);
  }
  for(const m of messages.filter(m=>m.speaker==='me')){
   const order=indices.get(m.id)!*3,time=m.editedAt??m.at,text=framing(m.text);
@@ -88,10 +96,11 @@ function localAssertions(raw:string,pretending:boolean):{text:string;clauses:Ass
  return {text:projection.text,clauses,pretending};
 }
 function deriveRecords(r:RoleData,at:number,local:boolean,legacyIds=new Map<string,string>()) {
- const messages=phoneMessagesAt(r,at).filter(m=>(!m.kind||m.kind==='chat')).sort((a,b)=>a.at-b.at);
- const records:MemoryRecord[]=[],keys=new Map<string,string>(),frames=local?roleplayStates(r,messages,at):new Map<ChatMessage,boolean>();
+ const messages=memoryInputs(r,at).filter(m=>m.memoryScope||!m.kind||m.kind==='chat').sort((a,b)=>a.at-b.at);
+ const records:MemoryRecord[]=[],keys=new Map<string,string>(),frames=new Map<ChatMessage,boolean>();
+ if(local)for(const scope of new Set(messages.map(m=>m.memoryScope))){const scoped=messages.filter(m=>m.memoryScope===scope),source=scope?{...r,chats:scoped}:r;for(const [m,state]of roleplayStates(source,scoped,at,scope?.startsWith('scene:')?'scene':scope?'intermission':'chat'))frames.set(m,state);}
  const reserved=r.memory?.version===1&&Array.isArray(r.memory.records)?r.memory.records:[];
- const sameSource=(a:MemoryRecord['source']|undefined,b:MemoryRecord['source']|undefined)=>a&&b?a.id===b.id&&a.at===b.at&&a.text===b.text&&(a.revisionCount||0)===(b.revisionCount||0):a===b;
+ const sameSource=(a:MemoryRecord['source']|undefined,b:MemoryRecord['source']|undefined)=>a&&b?a.scope===b.scope&&a.id===b.id&&a.at===b.at&&a.text===b.text&&(a.revisionCount||0)===(b.revisionCount||0):a===b;
  const retainId=(record:MemoryRecord,fallback:string)=>{
   if(!local)return;
   const compatible=(old:MemoryRecord)=>old.roleId===record.roleId&&old.scope===record.scope&&old.attribute===record.attribute&&old.value===record.value&&old.polarity===record.polarity&&!!old.mutual===!!record.mutual&&sameSource(old.source,record.source)&&sameSource(old.contextSource,record.contextSource);
@@ -111,7 +120,7 @@ function deriveRecords(r:RoleData,at:number,local:boolean,legacyIds=new Map<stri
    if(local&&(!current.allowed||current.denyOnly&&polarity!=='deny'))return;
    const layer=attribute==='relationship'?'relationship':'identity';
    const key=JSON.stringify([snapshot(m),anchor,slot,attribute,value,polarity,contextSource?snapshot(contextSource):null]);
-   const prefix=`memory:${encodeURIComponent(m.id)}:${m.revisionCount||0}:`;
+   const prefix=`memory:${m.memoryScope?encodeURIComponent(m.memoryScope)+':':''}${encodeURIComponent(m.id)}:${m.revisionCount||0}:`;
    const id=local?(legacyIds.get(key)||prefix+`local:${anchor}:${slot}`):prefix+records.filter(f=>f.source.id===m.id).length;
    const record:MemoryRecord={id,roleId:r.id,scope:'real:'+r.id,layer,attribute,value,polarity,correction,at:m.at,knownBy:[r.id],origin:'explicit-user',source:snapshot(m),supersedes:[],...(contextSource?{contextSource:snapshot(contextSource)}:{})};
    retainId(record,prefix+`local:${anchor}:${slot}`);
@@ -128,7 +137,7 @@ function deriveRecords(r:RoleData,at:number,local:boolean,legacyIds=new Map<stri
    if((match=clause.match(/^(?:其实)?我(不是|是|叫)(.+)$/))){add(match[1]==='叫'?'name':'self',match[2],match[1]==='不是'?'deny':'affirm');continue;}
    if((match=clause.match(/^我们(?:现在|已经)?是(.+)$/))){
     const added=add('relationship',match[1],'affirm'),parent=local?added:records.at(-1),next=messages[index+1];
-    const consent=next?.speaker==='char'&&!uncertain.test(next.text)?assertedText(next.text).trim().match(/^(?:(?:是的|好|嗯)[，,]\s*)?我们(?:现在|已经)?是([^。.!！?？]+)[。.!！]?$/):null;
+    const consent=next?.memoryScope===m.memoryScope&&next?.speaker==='char'&&!uncertain.test(next.text)?assertedText(next.text).trim().match(/^(?:(?:是的|好|嗯)[，,]\s*)?我们(?:现在|已经)?是([^。.!！?？]+)[。.!！]?$/):null;
     if(parent?.source.id===m.id&&consent&&normalize(consent[1])===normalize(parent.value)){
      const confirmation:MemoryRecord={...parent,id:parent.id+':confirmed:'+encodeURIComponent(next.id)+':'+(next.revisionCount||0),at:next.at,mutual:true,contextSource:snapshot(next),supersedes:[parent.id,...records.filter(old=>old.layer==='relationship'&&old.mutual).map(old=>old.id)]};
      retainId(confirmation,confirmation.id+':local');records.push(confirmation);
@@ -140,7 +149,7 @@ function deriveRecords(r:RoleData,at:number,local:boolean,legacyIds=new Map<stri
   // A plain denial can refer to the immediately preceding direct question, not arbitrary old text.
   const previous=messages[index-1];
   current={text:'',start:0,end:0,allowed:true};part=0;anchor='context';
-  if(correction&&/^不是[，,。\s]/.test(text)&&previous?.speaker==='char'){
+  if(correction&&/^不是[，,。\s]/.test(text)&&previous?.speaker==='char'&&previous.memoryScope===m.memoryScope){
    const question=previous.text.trim().match(/^(?:你是不是(.+?)[？?。]?|你是(.+?)(?:吧|吗)[？?。]?|(?:Are you|You are) (.+?)(?:\?|,? right\?))$/i);
    const value=question&&(question[1]||question[2]||question[3]);
    if(value&&!uncertain.test(value)&&records.some(f=>f.source.id===m.id&&f.polarity==='affirm'))add('self',value,'deny',previous);
@@ -153,12 +162,13 @@ function derive(r:RoleData,at:number):MemoryRecord[] {
  return deriveRecords(r,at,true,deriveRecords(r,at,false).keys).records;
 }
 function sourceValid(r:RoleData,s:MemoryRecord['source'],at:number,user=false):boolean {
- const m=phoneMessagesAt(r,at).find(m=>m.id===s.id&&(!m.kind||m.kind==='chat'));
+ const m=memoryInputs(r,at).find(m=>m.id===s.id&&m.memoryScope===s.scope&&(m.memoryScope||!m.kind||m.kind==='chat'));
  return Boolean(m&&(!user||m.speaker==='me')&&matchesMessageSource(m,s));
 }
 function sourceChanged(r:RoleData,s:MemoryRecord['source'],at:number):boolean {
  // A source omitted from a bounded request is not a withdrawal.
- return r.chats.some(m=>m.id===s.id&&m.at<=at&&!sourceValid(r,s,at));
+ const originals=s.scope?.startsWith('scene:')?[...(r.meetings||[]),...(r.scene?[r.scene]:[])].flatMap(p=>p.messages):s.scope?.startsWith('backstage:')?[...(r.plays||[]),...(r.play?[r.play]:[])].flatMap(p=>p.intermissionMessages||[]):r.chats;
+ return originals.some(m=>m.id===s.id&&m.at<=at&&!sourceValid(r,s,at));
 }
 /** Legacy saves get a read-only projection; the first accepted save can persist it without a schema migration. */
 export function projectRoleMemory(r:RoleData,at=Date.now(),limit=24) {
@@ -200,7 +210,7 @@ export function compactRoleMemory(r:RoleData,at:number) {
 export function syncRoleMemory(r:RoleData,at=Date.now()):boolean {
  if(r.memory&&(r.memory.version!==1||!Array.isArray(r.memory.records)))return false;
  const previous=r.memory?.records||[],ids=new Set(previous.flatMap(f=>f&&typeof f.id==='string'?[f.id]:[])),added=derive(r,at).filter(f=>!ids.has(f.id));
- if(added.length)r.memory={version:1,records:[...previous,...added]};return true;
+ if(added.length)r.memory={...r.memory,version:1,records:[...previous,...added]};syncRoleExperiences(r,at);return true;
 }
 export function memoryFactText(f:MemoryRecord,compact=false):string {
  const subject=f.layer==='relationship'?(f.mutual?'双方明确确认的关系':'用户对关系的明确表述（不代替另一方同意）'):'用户明确自述';

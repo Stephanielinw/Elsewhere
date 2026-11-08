@@ -1,3 +1,5 @@
+import {roleMemoryText} from './roleMemoryView';
+import {publicUserText} from './roleExperience';
 import type {
   ApiSettings,
   ChatMessage,
@@ -423,7 +425,7 @@ export function buildCharacterDiaryPrompt(
     .map(
       (b) =>
         `地点：${b.where}\n` +
-        b.messages.slice(-8)
+        b.messages.filter(m=>m.speaker==='char'||m.speaker==='me'&&publicUserText(m)).slice(-8)
           .map(
             (m) =>
               `[${formatHm(m.at)}] ${
@@ -470,7 +472,7 @@ export function buildCharacterDiaryPrompt(
     .join('；');
 
   const otherKnownEvents = facts.knownEvents
-    .filter((e) => !['focus','chat','drama','diary_share'].includes(e.kind))
+    .filter((e) => !['focus','chat','scene','drama','diary_share'].includes(e.kind))
     .slice(-4)
     .map((e) => `[${formatHm(e.at)} | ${e.kind}] ${e.title}：${memoryExcerpt(e.detail,'',80)}`)
     .join('\n');
@@ -525,7 +527,7 @@ ${playTranscript||'无'}
 ${sharedTasksText?`公开待办背景：${sharedTasksText.slice(0,500)}`:''}
 
 直接写下 ${facts.dateKey} 的私人日记。`;
-  const prepared=preparePersonalReply(role,[{role:'system',content:systemPrompt},{role:'user',content:userPrompt}],facts.endMs,makeUid('private-diary'),'本次只输出私人日记正文；可选元数据同次提供，不生成公开手机消息。',facts.chatMessages.slice(-12),'diary',true);
+  const prepared=preparePersonalReply(role,[{role:'system',content:systemPrompt+'\n\n'+roleMemoryText(role,Math.min(Date.now(),facts.endMs),'',{since:facts.startMs})},{role:'user',content:userPrompt}],facts.endMs,makeUid('private-diary'),'本次只输出私人日记正文；可选元数据同次提供，不生成公开手机消息。',facts.chatMessages.slice(-12),'diary',true);
   return {messages:prepared.messages,facts,personal:prepared.ticket};
 }
 

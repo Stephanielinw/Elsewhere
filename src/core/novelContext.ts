@@ -1,3 +1,4 @@
+import {readRoleMemory,roleMemoryText} from './roleMemoryView';
 import {encounterHistory,encounterEntryContext} from './encounter';
 import type {ConversationContext} from './conversationPrompt';
 import type {AppData,RoleData} from './types';
@@ -34,6 +35,8 @@ export function createLiveNovelContext(data:AppData,r:RoleData,kind:'scene'|'pla
   add('relationship:'+r.id,'relationship','worldInfoBefore',relationshipContext(r,at));
   const entry=encounterEntryContext(r,at);
   add('state:'+r.id,'currentState','scenario',`本次见面地点：${r.scene!.locationEvidence||r.scene!.agreement?scenePlaceAt(r,r.scene!,at):r.scene!.where}；当前时间：${new Date(at).toISOString()}${entry?'\n'+entry:''}`);
+  facts.push({id:'role-memory:'+r.id,text:roleMemoryText(r,at,'',{excludeStage:p.id,includeEpisodes:false}),layer:'currentState',marker:'scenario',at,scope,knownBy:[r.id],active:true,revisionValid:true});
+  for(const f of readRoleMemory(r,at,'',{excludeStage:p.id}).episodes.facts)add(f.id,'episodic','worldInfoAfter',f.text);
   const active=messageSourceIndex(r,at);
   for(const candidate of base.facts.filter(f=>f.layer==='episodic')){
    const e=r.events.find(e=>e.id===candidate.id),message=e?.messageId?active.get(e.messageId):undefined;

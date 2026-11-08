@@ -5,7 +5,7 @@ import {nativePreset,isNativePreset} from './fruit/nativePreset';
 import {nativeBubbleRule,projectChatVoiceProfile,chatVoiceChoice} from './chatVoice';
 import {personalContext,collectRoleLife,personalDiaries} from './roleLife';
 import {projectRoleMemory,projectedUserFields,memoryFactText,eventSourceValid,relationshipContext,memoryMessageIndex,memoryRuleConflicts,compactRoleMemory} from './memory';
-import {meetingContinuity} from './meetingContinuity';
+import {readRoleMemory,roleMemoryText} from './roleMemoryView';
 import {asksPastExperience,memoryRelevance,memoryExcerpt,selectMemoryItems} from './contextBudget';
 import {createLiveNovelContext} from './novelContext';
 import {createFruitState} from './fruit/preset';
@@ -139,10 +139,11 @@ export function buildNativeContext(
   const nowTs = options.nowTs ?? Date.now();
   const isFocused = Boolean(options.isFocused);
   const memoryRole=options.currentInputs?.length?{...r,chats:[...r.chats,...options.currentInputs.filter(m=>!r.chats.some(old=>old.id===m.id))]}:r;
-  const memory=kind==='chat'?compactRoleMemory(memoryRole,nowTs):projectRoleMemory(kind==='play'?{...r,chats:[],memory:undefined}:memoryRole,nowTs);
+  const memory=kind==='chat'?compactRoleMemory(memoryRole,nowTs):projectRoleMemory(kind==='play'?{...r,chats:[],scene:null,meetings:[],play:null,plays:[],memory:undefined}:memoryRole,nowTs);
   const past=kind==='chat'&&asksPastExperience(input),ownContext=kind==='chat'?personalContext(memoryRole,nowTs,{query:input}):'';
   const userIdentity=identityContext(data,memoryRole,nowTs,memory);
-  const continuity=kind==='chat'?meetingContinuity(memoryRole,input,nowTs,memory.supersededSources):{facts:[],messageIds:new Set<string>()};
+  const sharedMemory=kind!=='play'?readRoleMemory(memoryRole,nowTs,input,{excludeStage:kind==='scene'?r.scene?.id:kind==='intermission'?r.play?.id:undefined}):undefined;
+  const continuity=sharedMemory?.episodes||{facts:[],messageIds:new Set<string>()};
   let base = '';
   let facts = '';
   let recalled:EventRecord[]=[];
@@ -180,7 +181,7 @@ export function buildNativeContext(
       const message=e.messageId?shownPhoneSources.get(e.messageId):undefined;
       // Only omit a verbatim record of the same visible source; summaries and facts remain candidates.
       const duplicate=e.kind==='chat'&&message&&e.detail===message.text&&e.at===message.at&&(!e.speaker||e.speaker===message.speaker)&&(!e.source||e.source==='chat');
-      if(kind==='chat'&&e.kind==='scene'&&(continuity.messageIds.has(e.messageId||'')||!e.messageId&&e.title==='这次见面结束'))return false;
+      if(e.kind==='scene'&&(continuity.messageIds.has(e.messageId||'')||!e.messageId&&e.title==='这次见面结束'))return false;
       if(kind==='chat'&&e.kind==='life')return false; // Read trusted life once through the shared private projection.
       return eventSourceValid(memoryRole,e,nowTs,messageIndex,memory.supersededSources)&&!duplicate&&e.kind!=='drama'&&(e.kind!=='life'||trustedLife.has(e.id))&&e.at<=nowTs&&(!e.messageId||!bridgedIds.has(e.messageId));
     });
@@ -215,10 +216,11 @@ export function buildNativeContext(
     base += `\n\n可检索的剧外经历（并非保证完整，剧内虚构剧情不等于现实历史）：\n${facts || '暂无'}`;
     if(kind==='chat'){
       base+='\n\n'+ownContext;
-      if(continuity.facts.length)base+='\n\n最近结束的真实见面原文节选（不是戏中戏，也不是新的客观总结）：结束交互不证明双方告别或离开；按原文分清行动主体。角色可以辩解、隐瞒或撒谎，但不要把缺失历史或个人主张当成证据；用户未表达的内心与未经确认的行动不是角色知识。\n'+continuity.facts.map(f=>f.text).join('\n');
+      if(continuity.facts.length)base+='\n\n最近结束的真实见面原文节选（不是戏中戏，也不是新的客观总结）：结束交互不证明双方告别或离开；按原文分清行动主体。角色可以辩解、隐瞒或撒谎，但不要把缺失历史或个人主张当成证据；用户未表达的内心与未经确认的行动不是角色知识。';
     }
   }
 
+  if(kind!=='play')base+='\n\n'+roleMemoryText(memoryRole,nowTs,input,{excludeStage:kind==='scene'?r.scene?.id:kind==='intermission'?r.play?.id:undefined});
   const memoryFragments:Record<string,string>={};
   if(kind!=='play'){
     const lines=memory.facts.map(f=>{
@@ -237,6 +239,7 @@ export function buildNativeContext(
     native_output_rule:kind==='play'?'这是独立戏剧世界，严格遵守本剧角色人设；不要透露戏外知识。':'这是面对面的文字小说，仅描述自己和环境，不替用户行动。'};
   if(options.profile&&(kind==='scene'||kind==='play'))values.native_output_rule+=`目标 ${options.profile.length.min}–${options.profile.length.max} 字，按剧情自然取舍，不凑字数。${options.profile.style?`文风：${options.profile.style}。`:''}`;
   const factsForContext:FruitContext['facts']=[
+    ...(kind!=='play'?[{id:'role-memory:'+r.id,text:roleMemoryText(memoryRole,nowTs,input,{excludeStage:kind==='scene'?r.scene?.id:kind==='intermission'?r.play?.id:undefined}),layer:'currentState' as const,at:nowTs,scope,knownBy:[r.id],active:true,revisionValid:true}]:[]),
     {id:'identity:'+r.id,text:kind==='play'?`你在剧内的身份：${r.play!.char}`:kind==='intermission'?`你的身份:${r.job}，性格:${r.traits}，完整人设:${r.profile}`:`身份：${r.job}。所在区域与世界观：${r.place}。性格：${r.traits}。人设：${r.profile}。前史节点与未发生剧情边界：${r.canonNotes||'以用户设定为准'}`,layer:'identity',marker:'charDescription',at:nowTs,scope,knownBy:[r.id],active:true,revisionValid:true},
     {id:'relationship:'+r.id,text:kind==='play'?'剧内角色之间的关系仅以剧本及本场对白为准。':relationshipContext(memoryRole,nowTs,memory),layer:'relationship',at:nowTs,scope,knownBy:[r.id],active:true,revisionValid:true},
     {id:'state:'+r.id,text:kind==='play'?r.play!.world:dt(nowTs),layer:'currentState',at:nowTs,scope,knownBy:[r.id],active:true,revisionValid:true},

@@ -1570,7 +1570,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     const label=attempt?.state==='archived'&&attempt.warning?'小说正文已保存，损坏的可选辅助块未采用。':active?({preparing:'正在准备预设。',compiling:'正在编译 Prompt。',checking:'正在校验场景和来源。',requesting:'正在等待模型响应。',reading:'正在读取模型正文。',parsing:'正在检查回复格式。',saving:'回复已返回，正在确认保存。',archived:'回复已保存。',failed:'生成已停止。'}[phase||'preparing']):code==='preset'?'预设准备未完成。':code==='compile'?'Prompt 配置无法编译。':code==='provider'?'服务商返回错误或拦截。':code==='format'?'响应已返回，但正文或格式无法接受。':code==='save'?'回复已返回，但保存未确认。':code==='stale'?'场景或来源已变化，未归档。':code==='timeout'?'等待已到截止时间。':'上次生成已停止。';
     const risk=state==='not-sent'?'请求未发送；原话和配置保留。':state==='archived'?'回复已确认保存。':'请求已经发送或可能发送，结果或归档未确认；可能已产生费用，应用不会自动重发。';
     const openingPending=r.scene===p&&r.scene?.opening&&r.scene.opening.status!=='archived';
-    const canRetry=!active&&!openingPending&&getActiveMessages(p.messages).at(-1)?.speaker==='me'&&(progress?.phase==='failed'||attempt&&attempt.state!=='archived');
+    const canRetry=!active&&!busy&&!openingPending&&getActiveMessages(p.messages).at(-1)?.speaker==='me'&&(progress?.phase==='failed'||attempt&&attempt.state!=='archived');
     const actions=[
       active?'<button type="button" class="btn secondary" data-action="cancel-novel">停止本次等待</button>':'',
       !active&&progress?.text?'<button type="button" class="btn secondary" data-action="copy-novel-reply">复制未确认的回复</button>':'',
@@ -4150,7 +4150,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       }
       ${novelStatusHtml(r,p)}
       ${openingPending?`<div class="chat-feedback" role="status" data-scene-opening="${esc(opening.status)}"><p>${busy?'正在准备或生成本轮面对面回复。':opening.status==='unsent'?'场景已保存，首次请求尚未发送。':'首次请求或保存结果未确认。可先刷新核对，重试可能再次计费。'}</p>${busy?'':`<button type="button" class="btn secondary" data-action="resume-scene-opening">${opening.status==='unsent'?'继续本轮':'重新发送首次请求'}</button>`}</div>`:''}
-      <form class="compose" id="novel-form" data-role-id="${esc(r.id)}" data-scene-id="${isPlay?'':esc(p.id)}"><textarea id="novel-input" data-scoped-draft ${showBackstage?'disabled':''} placeholder="写下你说的话或行动..." rows="1"></textarea><button class="btn" ${
+      <form class="compose" id="novel-form" data-role-id="${esc(r.id)}" data-scene-id="${isPlay?'':esc(p.id)}"><textarea id="novel-input" aria-label="写下你的言语或行动" data-scoped-draft ${showBackstage?'disabled':''} placeholder="写下你说的话或行动..." rows="1"></textarea><button type="submit" class="btn" aria-label="发送小说消息" title="发送言语或行动" ${
         busy||showBackstage||openingPending ? 'disabled' : ''
       }>${uiIcon('send')}</button></form></section>${showBackstage?renderIntermissionPanel(r,p as PlayData):''}</div>`,
       false

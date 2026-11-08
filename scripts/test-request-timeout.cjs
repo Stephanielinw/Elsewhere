@@ -308,7 +308,7 @@ async function main(){
     await run('first Scene body timeout preserves unknown opening without a second POST',{kind:'scene',body:1,posts:1},async t=>{
       await t.openScene();
       await t.bodyReady();await t.advance();
-      await t.p.locator('[data-action=resume-scene-opening]').waitFor();
+      await t.p.locator('[data-action=novel-details]').waitFor();
       const opening=(await t.role()).scene.opening;
       assert.equal(opening.status,'unknown');
       await t.release();await t.reload();await t.enter();await t.p.locator('[data-action=openconversation]').click();

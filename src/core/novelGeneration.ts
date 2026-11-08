@@ -10,7 +10,7 @@ export type NovelKind='scene'|'play';
 // Ten characters/second with queue allowance; this is a client wait bound, not a provider SLA.
 export function novelRequestTimeout(profile:FruitProfile){return Math.min(600_000,Math.max(180_000,profile.length.max*100));}
 const stage=(r:RoleData,kind:NovelKind)=>kind==='play'?r.play:r.scene;
-function revision(r:RoleData,kind:NovelKind){
+export function novelSourceKey(r:RoleData,kind:NovelKind){
  const p=stage(r,kind);
  const ids=new Set(r.events.flatMap(e=>e.messageId?[e.messageId]:[]));
  const sources=kind==='scene'?[...r.chats,...(r.meetings||[]).flatMap(s=>s.messages)].filter(m=>ids.has(m.id)).map(m=>[m.id,m.text,m.at,m.status,m.editedAt,m.revisionCount]):[];
@@ -18,15 +18,15 @@ function revision(r:RoleData,kind:NovelKind){
  return JSON.stringify([p?.id,p?.endedAt,kind==='play'&&r.play?[r.play.paused,r.play.title,r.play.world,r.play.user,r.play.char]:r.scene?.where,r.scene?.id,r.play?.id,getActiveMessages(p?.messages),realContext]);
 }
 export interface NovelTask {id:string;roleId:string;kind:NovelKind;stage:SceneData|PlayData;revision:string;controller:AbortController}
-function unchanged(task:NovelTask,r:RoleData){return r.id===task.roleId&&stage(r,task.kind)===task.stage&&!task.stage.endedAt&&!(task.kind==='play'&&r.play?.paused)&&!task.controller.signal.aborted&&revision(r,task.kind)===task.revision;}
+function unchanged(task:NovelTask,r:RoleData){return r.id===task.roleId&&stage(r,task.kind)===task.stage&&!task.stage.endedAt&&!(task.kind==='play'&&r.play?.paused)&&!task.controller.signal.aborted&&novelSourceKey(r,task.kind)===task.revision;}
 export function createNovelTasks(){
  const active=new Map<string,NovelTask>();
  return {
-  has(roleId:string){return active.has(roleId);},
+  has(roleId:string,attemptId?:string){const task=active.get(roleId);return !!task&&(!attemptId||task.id===attemptId);},
   begin(r:RoleData,kind:NovelKind):NovelTask{
    if(active.has(r.id))throw new Error('本角色的小说请求尚未结束，请勿重复生成');
    const p=stage(r,kind);if(!p||p.endedAt||(kind==='play'&&r.play?.paused))throw new Error('当前场景已结束或暂停');
-   const task:NovelTask={id:makeUid('novel-task'),roleId:r.id,kind,stage:p,revision:revision(r,kind),controller:new AbortController()};active.set(r.id,task);return task;
+   const task:NovelTask={id:makeUid('novel-task'),roleId:r.id,kind,stage:p,revision:novelSourceKey(r,kind),controller:new AbortController()};active.set(r.id,task);return task;
   },
   valid(task:NovelTask,r:RoleData,currentRoleId:string|null|undefined){return currentRoleId===r.id&&active.get(r.id)===task&&unchanged(task,r);},
   finish(task:NovelTask){if(active.get(task.roleId)===task)active.delete(task.roleId);},

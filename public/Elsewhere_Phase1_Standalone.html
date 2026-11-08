@@ -1997,7 +1997,23 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
 /* FRUIT-UI-02: scoped preset studio; native pages keep their existing styles. */
 #fruit-preset-root.card{padding:0;overflow:visible;border:0;background:transparent!important;box-shadow:none!important}
 .fruit-studio{--fruit-surface:color-mix(in srgb,var(--surface) 76%,transparent);--fruit-line:color-mix(in srgb,var(--accent) 17%,transparent);--fruit-soft:color-mix(in srgb,var(--accent) 8%,var(--surface));--fruit-selected:color-mix(in srgb,var(--accent) 17%,var(--surface));color:var(--ink);padding:26px;border:1px solid var(--glass-stroke);border-radius:30px;background:linear-gradient(135deg,color-mix(in srgb,var(--surface) 60%,transparent),light-dark(#f9f5ff90,var(--surface2)) 58%,light-dark(#e3f0ec60,var(--surface2)));box-shadow:0 18px 60px #5141630d;backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px)}
-.fruit-studio [hidden],.fruit-dialog [hidden]{display:none!important}
+.fruit-studio [hidden],.fruit-dialog [hidden],.novel-feedback[hidden]{display:none!important}
+.novel-feedback{padding:3px 14px;font-size:11px;color:var(--muted);line-height:1.5}
+.novel-error-marker{display:inline-flex;align-items:center;gap:5px;background:none;border:0;color:inherit;padding:4px 0;font:inherit;text-align:left;cursor:pointer}
+.novel-error-marker .ui-icon{width:14px;height:14px}
+.novel-error-marker:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:5px}
+#novel-form [data-novel-control]{min-width:44px;min-height:44px}
+#novel-form [data-novel-control][data-action=cancel-novel] .ui-icon{fill:currentColor;stroke-width:0;width:18px;height:18px}
+.novel-failure-dialog{width:min(420px,calc(100% - 28px));max-height:calc(var(--app-viewport-height,100dvh) - 28px)}
+.novel-failure-dialog .fruit-dialog-body{padding:19px 20px}
+.novel-failure-dialog h2{font-size:19px;margin:0 0 10px}
+.novel-failure-dialog p{font-size:13px;line-height:1.7;margin:8px 0;overflow-wrap:anywhere}
+.novel-failure-dialog .novel-recovery-help{color:var(--muted);font-size:12px}
+.novel-error-code{display:block;color:var(--muted);font-size:10px;margin:10px 0;letter-spacing:.4px}
+.novel-failure-dialog .btn{white-space:normal}
+.novel-failure-dialog .fruit-dialog-body>.btn{display:block;margin:8px 0;font-size:12px}
+.novel-failure-actions{display:flex;gap:10px;margin-top:16px}
+.novel-failure-actions>.btn{flex:1;min-height:44px;padding:9px 10px}
 .fruit-hero{display:flex;justify-content:space-between;align-items:center;gap:18px;margin-bottom:25px}
 .fruit-brand{display:flex;gap:14px;align-items:center}.fruit-emblem{width:59px;height:59px;display:grid;place-items:center;border-radius:20px;background:linear-gradient(135deg,light-dark(#ffe8dfcc,var(--surface2)),light-dark(#f1ddf4b8,var(--surface2)));border:1px solid var(--glass-stroke);box-shadow:0 5px 20px #b17b9312;font-size:29px}
 .fruit-eyebrow{font-size:9px;font-weight:750;letter-spacing:2px;color:var(--muted)}.fruit-studio .fruit-hero h3{font-size:24px;font-weight:720;letter-spacing:-.7px;margin:3px 0 5px}.fruit-studio p{line-height:1.7}.fruit-hero p{font-size:11px!important}
@@ -2787,7 +2803,7 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
       role.pendingReplies = role.pendingReplies.filter((job) => job.replyTo !== msg.id);
       hadPendingReply = role.pendingReplies.length < beforeLen;
     }
-    const revision2 = {
+    const revision = {
       id: makeUid("rev"),
       scope,
       targetMessageId: msg.id,
@@ -2799,10 +2815,10 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
       at: nowTs,
       supersededEventIds
     };
-    ensureRevisionsList(role).push(revision2);
+    ensureRevisionsList(role).push(revision);
     delete msg.sceneReply;
     reconcileSceneSources(role);
-    return { ok: true, revision: revision2, hadPendingReply };
+    return { ok: true, revision, hadPendingReply };
   }
   function retractMessage(role, scope, messageId, nowTs = Date.now()) {
     const list = getScopeMessages(role, scope);
@@ -2821,7 +2837,7 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
     if (scope === "chat" && Array.isArray(role.pendingReplies)) {
       role.pendingReplies = role.pendingReplies.filter((job) => job.replyTo !== msg.id);
     }
-    const revision2 = {
+    const revision = {
       id: makeUid("rev"),
       scope,
       targetMessageId: msg.id,
@@ -2831,10 +2847,10 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
       at: nowTs,
       supersededEventIds
     };
-    ensureRevisionsList(role).push(revision2);
+    ensureRevisionsList(role).push(revision);
     delete msg.sceneReply;
     reconcileSceneSources(role);
-    return { ok: true, revision: revision2 };
+    return { ok: true, revision };
   }
   function prepareRegenerateReply(role, scope, charMessageId, nowTs = Date.now()) {
     const list = getScopeMessages(role, scope);
@@ -2912,7 +2928,7 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
         return true;
       });
     }
-    const revision2 = {
+    const revision = {
       id: makeUid("rev"),
       scope,
       targetMessageId: targetMsg.id,
@@ -2922,14 +2938,14 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
       at: nowTs,
       supersededEventIds
     };
-    ensureRevisionsList(role).push(revision2);
+    ensureRevisionsList(role).push(revision);
     for (const m of toSupersede) delete m.sceneReply;
     reconcileSceneSources(role);
     return {
       ok: true,
       promptMessage: promptMsg,
       isOpeningOrProactive: !promptMsg,
-      revision: revision2,
+      revision,
       supersededMessageIds: toSupersede.map((m) => m.id)
     };
   }
@@ -11917,8 +11933,8 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
           let reason = "\u9884\u8BBE\u5E93\u672A\u4FDD\u5B58\uFF0C\u539F\u4EF6\u53CA\u914D\u7F6E\u4FDD\u7559\uFF1B\u8BF7\u68C0\u67E5\u5B58\u50A8\u7A7A\u95F4";
           get.onsuccess = () => {
             const old = get.result;
-            const revision2 = old === void 0 ? 0 : object3(old) && typeof old.revision === "number" ? old.revision : -1;
-            if (revision2 !== expectedRevision) {
+            const revision = old === void 0 ? 0 : object3(old) && typeof old.revision === "number" ? old.revision : -1;
+            if (revision !== expectedRevision) {
               reason = "\u5176\u4ED6\u6807\u7B7E\u9875\u5DF2\u4FEE\u6539\u9884\u8BBE\u5E93\uFF0C\u8BF7\u91CD\u65B0\u8BFB\u53D6\u540E\u518D\u4FDD\u5B58\uFF0C\u907F\u514D\u8986\u76D6";
               tx.abort();
               return;
@@ -12199,7 +12215,7 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
     return Math.min(6e5, Math.max(18e4, profile2.length.max * 100));
   }
   var stage = (r, kind) => kind === "play" ? r.play : r.scene;
-  function revision(r, kind) {
+  function novelSourceKey(r, kind) {
     const p = stage(r, kind);
     const ids = new Set(r.events.flatMap((e) => e.messageId ? [e.messageId] : []));
     const sources = kind === "scene" ? [...r.chats, ...(r.meetings || []).flatMap((s) => s.messages)].filter((m) => ids.has(m.id)).map((m) => [m.id, m.text, m.at, m.status, m.editedAt, m.revisionCount]) : [];
@@ -12207,19 +12223,20 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
     return JSON.stringify([p?.id, p?.endedAt, kind === "play" && r.play ? [r.play.paused, r.play.title, r.play.world, r.play.user, r.play.char] : r.scene?.where, r.scene?.id, r.play?.id, getActiveMessages(p?.messages), realContext]);
   }
   function unchanged(task, r) {
-    return r.id === task.roleId && stage(r, task.kind) === task.stage && !task.stage.endedAt && !(task.kind === "play" && r.play?.paused) && !task.controller.signal.aborted && revision(r, task.kind) === task.revision;
+    return r.id === task.roleId && stage(r, task.kind) === task.stage && !task.stage.endedAt && !(task.kind === "play" && r.play?.paused) && !task.controller.signal.aborted && novelSourceKey(r, task.kind) === task.revision;
   }
   function createNovelTasks() {
     const active = /* @__PURE__ */ new Map();
     return {
-      has(roleId) {
-        return active.has(roleId);
+      has(roleId, attemptId) {
+        const task = active.get(roleId);
+        return !!task && (!attemptId || task.id === attemptId);
       },
       begin(r, kind) {
         if (active.has(r.id)) throw new Error("\u672C\u89D2\u8272\u7684\u5C0F\u8BF4\u8BF7\u6C42\u5C1A\u672A\u7ED3\u675F\uFF0C\u8BF7\u52FF\u91CD\u590D\u751F\u6210");
         const p = stage(r, kind);
         if (!p || p.endedAt || kind === "play" && r.play?.paused) throw new Error("\u5F53\u524D\u573A\u666F\u5DF2\u7ED3\u675F\u6216\u6682\u505C");
-        const task = { id: makeUid("novel-task"), roleId: r.id, kind, stage: p, revision: revision(r, kind), controller: new AbortController() };
+        const task = { id: makeUid("novel-task"), roleId: r.id, kind, stage: p, revision: novelSourceKey(r, kind), controller: new AbortController() };
         active.set(r.id, task);
         return task;
       },
@@ -13100,6 +13117,22 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
         });
         observer.observe(pager);
       }
+    };
+  }
+
+  // src/novelRequestView.ts
+  function novelControl(active, phase) {
+    const saving = phase === "saving" || phase === "archived";
+    return active ? { label: saving ? "\u6B63\u5728\u4FDD\u5B58\u56DE\u590D" : "\u505C\u6B62\u672C\u6B21\u7B49\u5F85", icon: saving ? "hourglass" : "square", stop: !saving, disabled: saving } : { label: "\u53D1\u9001\u63CF\u5199", icon: "send", stop: false, disabled: false };
+  }
+  function novelFailureDetails(attempt) {
+    const descriptions = { preset: "\u5F53\u524D\u9884\u8BBE\u5C1A\u672A\u51C6\u5907\u597D\u3002", compile: "\u5F53\u524D\u9884\u8BBE\u914D\u7F6E\u65E0\u6CD5\u7F16\u8BD1\u3002", timeout: "\u7B49\u5F85\u5DF2\u8D85\u8FC7\u672C\u6B21\u622A\u6B62\u65F6\u95F4\u3002", cancelled: "\u4F60\u5DF2\u505C\u6B62\u672C\u6B21\u7B49\u5F85\u3002", provider: "\u670D\u52A1\u5546\u8FD4\u56DE\u9519\u8BEF\u6216\u62D2\u7EDD\u4E86\u8BF7\u6C42\u3002", format: "\u6536\u5230\u7684\u56DE\u590D\u672A\u6EE1\u8DB3\u6B63\u6587\u6216\u5B8C\u6210\u683C\u5F0F\u8981\u6C42\u3002", save: "\u5DF2\u6536\u5230\u56DE\u590D\uFF0C\u4F46\u4FDD\u5B58\u5C1A\u672A\u786E\u8BA4\u3002", stale: "\u573A\u666F\u6216\u6D88\u606F\u6765\u6E90\u5DF2\u7ECF\u53D8\u5316\uFF0C\u56DE\u590D\u672A\u5F52\u6863\u3002", connection: "\u672C\u6B21\u8FDE\u63A5\u672A\u80FD\u6B63\u5E38\u5B8C\u6210\u3002" };
+    const code = attempt.code && Object.hasOwn(descriptions, attempt.code) ? attempt.code : "connection";
+    return {
+      code: "NOVEL_" + code.toUpperCase(),
+      description: descriptions[code],
+      detail: attempt.presetIssue && Object.hasOwn(presetIssueText, attempt.presetIssue) ? presetIssueText[attempt.presetIssue] : "",
+      recovery: code === "stale" ? "\u8BF7\u8FD4\u56DE\u5F53\u524D\u573A\u666F\u6838\u5BF9\u8BB0\u5F55\uFF1B\u4E0D\u80FD\u76F4\u63A5\u91CD\u8BD5\u65E7\u8BF7\u6C42\u3002" : attempt.state === "returned" ? "\u4F18\u5148\u4FDD\u7559\u5DF2\u6536\u5230\u7684\u5B89\u5168\u6B63\u6587\uFF0C\u518D\u6838\u5BF9\u5B58\u6863\u3002\u91CD\u65B0\u8C03\u7528\u4F1A\u518D\u6B21\u751F\u6210\u3002" : attempt.state === "not-sent" ? "\u672C\u6B21\u8BF7\u6C42\u672A\u53D1\u9001\uFF0C\u539F\u8BDD\u4E0E\u914D\u7F6E\u4FDD\u7559\uFF1B\u4FEE\u6B63\u95EE\u9898\u540E\u53EF\u4E3B\u52A8\u91CD\u65B0\u8C03\u7528\u3002" : "\u4E0A\u6B21\u8BF7\u6C42\u53EF\u80FD\u5DF2\u7ECF\u8BA1\u8D39\uFF0C\u91CD\u65B0\u8C03\u7528\u53EF\u80FD\u518D\u6B21\u4EA7\u751F\u8D39\u7528\u3002\u5E94\u7528\u4E0D\u4F1A\u81EA\u52A8\u91CD\u53D1\u3002"
     };
   }
 
@@ -16514,24 +16547,134 @@ channel.onmessage=async({data:job})=>{
     }
     const novelTasks = createNovelTasks();
     const novelProgress = /* @__PURE__ */ new WeakMap();
+    let novelDialog;
+    function novelAttemptId(p) {
+      return novelProgress.get(p)?.id || p.novelAttempt?.id || "legacy:" + p.id;
+    }
     function novelRetrySource(r, p) {
       if (view !== "novel" || role() !== r || busy || novelTasks.has(r.id) || p.endedAt || data.settings.mode !== "api" || !token.trim() || !canUseRealModel(data.settings) || !saveSession.current()) return;
-      if (novelViewKind === "play" ? r.play !== p || r.play.paused : r.scene !== p || r.scene.opening && r.scene.opening.status !== "archived") return;
+      if (novelViewKind === "play" ? r.play !== p || r.play.paused : r.scene !== p) return;
+      const progress = novelProgress.get(p), attempt = p.novelAttempt;
+      if ((progress?.code || attempt?.code) === "stale" || progress?.retryValid && !progress.retryValid()) return;
+      const original = attempt?.inputId && getActiveMessages(p.messages).find((m) => m.id === attempt.inputId);
+      if (attempt?.inputId && (!original || original.editedAt && original.editedAt > attempt.at)) return;
+      if (attempt?.regenerateId) {
+        const plan = prepareNovelRegeneration(r, novelViewKind, attempt.regenerateId);
+        if (!plan) return;
+        return getActiveMessages(p.messages).find((m) => m.id === plan.sourceId && m.speaker === "me");
+      }
       const latest = (novelViewKind === "play" ? getActiveMessages(p.messages) : encounterHistory(r, p.messages)).at(-1);
-      if (latest?.speaker !== "me" || p.novelAttempt?.state === "archived" || p.novelAttempt?.inputId && p.novelAttempt.inputId !== latest.id) return;
+      if (latest?.speaker !== "me" || attempt?.state === "archived" || attempt?.inputId && attempt.inputId !== latest.id || attempt && latest.editedAt && latest.editedAt > attempt.at) return;
+      if (novelViewKind === "scene" && r.scene?.opening && r.scene.opening.status !== "archived" && !openingSourcesValid(r, r.scene)) return;
       return latest;
     }
     function novelStatusHtml(r, p) {
-      const active = novelTasks.has(r.id), progress = novelProgress.get(p), attempt = p.novelAttempt;
-      const retry = novelRetrySource(r, p);
-      if (!progress && !attempt && !retry) return '<div class="chat-feedback" data-novel-status="idle" role="status">\u7B49\u5F85\u4F60\u8F93\u5165\u8A00\u8BED\u6216\u884C\u52A8\uFF1B\u5C1A\u672A\u53D1\u9001\u5C0F\u8BF4\u8BF7\u6C42\u3002</div>';
-      if (!active && attempt?.state === "archived" && (!progress || progress.phase === "archived") && !attempt.warning) return "";
-      const state2 = progress?.state || attempt?.state, code = progress?.code || attempt?.code;
-      const phase = active ? progress?.phase : attempt?.state === "archived" ? "archived" : "failed";
-      const label2 = attempt?.state === "archived" && attempt.warning ? "\u5C0F\u8BF4\u6B63\u6587\u5DF2\u4FDD\u5B58\uFF0C\u635F\u574F\u7684\u53EF\u9009\u8F85\u52A9\u5757\u672A\u91C7\u7528\u3002" : active ? { preparing: "\u6B63\u5728\u51C6\u5907\u9884\u8BBE\u3002", compiling: "\u6B63\u5728\u7F16\u8BD1 Prompt\u3002", checking: "\u6B63\u5728\u6821\u9A8C\u573A\u666F\u548C\u6765\u6E90\u3002", requesting: "\u6B63\u5728\u7B49\u5F85\u6A21\u578B\u54CD\u5E94\u3002", reading: "\u6B63\u5728\u8BFB\u53D6\u6A21\u578B\u6B63\u6587\u3002", parsing: "\u6B63\u5728\u68C0\u67E5\u56DE\u590D\u683C\u5F0F\u3002", saving: "\u56DE\u590D\u5DF2\u8FD4\u56DE\uFF0C\u6B63\u5728\u786E\u8BA4\u4FDD\u5B58\u3002", archived: "\u56DE\u590D\u5DF2\u4FDD\u5B58\u3002", failed: "\u751F\u6210\u5DF2\u505C\u6B62\u3002" }[phase || "preparing"] : code === "preset" ? "\u9884\u8BBE\u51C6\u5907\u672A\u5B8C\u6210\u3002" : code === "compile" ? "Prompt \u914D\u7F6E\u65E0\u6CD5\u7F16\u8BD1\u3002" : code === "provider" ? "\u670D\u52A1\u5546\u8FD4\u56DE\u9519\u8BEF\u6216\u62E6\u622A\u3002" : code === "format" ? "\u54CD\u5E94\u5DF2\u8FD4\u56DE\uFF0C\u4F46\u6B63\u6587\u6216\u683C\u5F0F\u65E0\u6CD5\u63A5\u53D7\u3002" : code === "save" ? "\u56DE\u590D\u5DF2\u8FD4\u56DE\uFF0C\u4F46\u4FDD\u5B58\u672A\u786E\u8BA4\u3002" : code === "stale" ? "\u573A\u666F\u6216\u6765\u6E90\u5DF2\u53D8\u5316\uFF0C\u672A\u5F52\u6863\u3002" : code === "timeout" ? "\u7B49\u5F85\u5DF2\u5230\u622A\u6B62\u65F6\u95F4\u3002" : "\u4E0A\u6B21\u751F\u6210\u5DF2\u505C\u6B62\u3002";
-      const risk = state2 === "not-sent" ? "\u8BF7\u6C42\u672A\u53D1\u9001\uFF1B\u539F\u8BDD\u548C\u914D\u7F6E\u4FDD\u7559\u3002" : state2 === "archived" ? "\u56DE\u590D\u5DF2\u786E\u8BA4\u4FDD\u5B58\u3002" : "\u8BF7\u6C42\u5DF2\u7ECF\u53D1\u9001\u6216\u53EF\u80FD\u53D1\u9001\uFF0C\u7ED3\u679C\u6216\u5F52\u6863\u672A\u786E\u8BA4\uFF1B\u53EF\u80FD\u5DF2\u4EA7\u751F\u8D39\u7528\uFF0C\u5E94\u7528\u4E0D\u4F1A\u81EA\u52A8\u91CD\u53D1\u3002";
-      const issue = progress?.presetIssue || attempt?.presetIssue, detail = typeof issue === "string" && Object.hasOwn(presetIssueText, issue) ? presetIssueText[issue] : "";
-      return `<div class="chat-feedback" data-novel-status="${esc(phase || "failed")}" data-novel-state="${esc(state2 || "unknown")}" role="status"><p>${label2} ${risk}</p>${detail ? `<p>${esc(detail)}</p>` : ""}${code === "preset" || issue ? `<button type="button" class="btn secondary" data-action="check-novel-preset" data-role-id="${esc(r.id)}" data-stage-id="${esc(p.id)}">\u68C0\u67E5\u5F53\u524D\u89D2\u8272\u9884\u8BBE</button>` : ""}${active ? '<button type="button" class="btn secondary" data-action="cancel-novel">\u505C\u6B62\u672C\u6B21\u7B49\u5F85</button>' : progress?.text ? '<button type="button" class="btn secondary" data-action="copy-novel-reply">\u590D\u5236\u672A\u786E\u8BA4\u7684\u56DE\u590D</button>' : ""}${retry ? `<button type="button" class="btn secondary" data-action="retry-novel" data-role-id="${esc(r.id)}" data-stage-id="${esc(p.id)}" data-input-id="${esc(retry.id)}">\u91CD\u8BD5\u4E0A\u4E00\u6761\u56DE\u590D</button>` : ""}</div>`;
+      const progress = novelProgress.get(p), active = !!progress && novelTasks.has(r.id, progress.id), attempt = p.novelAttempt;
+      const archived = attempt?.state === "archived" && (!progress || progress.phase === "archived");
+      const opening = novelViewKind === "scene" ? r.scene?.opening : void 0;
+      const failed = !active && !archived && Boolean(progress || attempt || opening && opening.status !== "archived" || novelRetrySource(r, p));
+      const attributes = `data-novel-feedback data-novel-status="${active ? progress?.phase || "preparing" : archived ? "archived" : failed ? "failed" : "idle"}" data-novel-state="${progress?.state || attempt?.state || "not-sent"}" ${opening && opening.status !== "archived" ? `data-scene-opening="${esc(opening.status)}"` : ""}`;
+      return `<div class="novel-feedback" ${attributes} ${!failed && !(archived && attempt?.warning) ? "hidden" : ""}>${failed ? `<button type="button" class="novel-error-marker" data-action="novel-details" data-role-id="${esc(r.id)}" data-stage-id="${esc(p.id)}" data-attempt-id="${esc(novelAttemptId(p))}">${uiIcon("warning")} ${progress?.code === "cancelled" || attempt?.code === "cancelled" ? "\u672C\u6B21\u7B49\u5F85\u5DF2\u505C\u6B62" : !progress && !attempt && opening?.status === "unsent" ? "\u9996\u6B21\u56DE\u590D\u5F85\u751F\u6210" : "\u751F\u6210\u672A\u5B8C\u6210"} \xB7 \u67E5\u770B\u8BE6\u60C5</button>` : archived && attempt?.warning ? '<span role="status">\u6B63\u6587\u5DF2\u4FDD\u5B58 \xB7 \u90E8\u5206\u8F85\u52A9\u4FE1\u606F\u672A\u91C7\u7528</span>' : ""}</div>`;
+    }
+    function refreshNovelControls() {
+      if (novelDialog && !novelDialog.valid()) novelDialog.element.close();
+      const r = role(), p = r && (novelViewKind === "play" ? r.play : r.scene), form = $("#novel-form");
+      if (view !== "novel" || !r || !p || !form || form.dataset.roleId !== r.id || form.dataset.stageId !== p.id) return;
+      const progress = novelProgress.get(p), active = !!progress && novelTasks.has(r.id, progress.id), control = novelControl(active, progress?.phase), button = form.querySelector("[data-novel-control]");
+      form.setAttribute("aria-busy", String(active));
+      if (button) {
+        button.type = control.stop ? "button" : "submit";
+        button.disabled = control.disabled || !active && (busy || !!(novelViewKind === "scene" && r.scene?.opening && r.scene.opening.status !== "archived"));
+        button.setAttribute("aria-label", control.label);
+        button.title = control.label;
+        button.dataset.state = active ? progress?.phase || "preparing" : "idle";
+        button.dataset.roleId = r.id;
+        button.dataset.stageId = p.id;
+        button.dataset.attemptId = novelAttemptId(p);
+        if (control.stop) button.dataset.action = "cancel-novel";
+        else delete button.dataset.action;
+        const icon = uiIcon(control.icon);
+        if (button.innerHTML !== icon) button.innerHTML = icon;
+      }
+      const feedback = form.previousElementSibling;
+      if (feedback?.hasAttribute("data-novel-feedback")) {
+        const template = document.createElement("template");
+        template.innerHTML = novelStatusHtml(r, p);
+        if (!feedback.isEqualNode(template.content.firstElementChild)) feedback.replaceWith(template.content);
+      }
+      if (!active && !busy && progress?.offerError) {
+        progress.offerError = false;
+        if (!document.querySelector("dialog[open]")) openNovelFailure(r, p);
+      }
+    }
+    function openNovelFailure(r, p) {
+      if (novelDialog?.element.open || view !== "novel" || role() !== r || novelTasks.has(r.id)) return;
+      const world = data, kind = novelViewKind, id = novelAttemptId(p), progress = novelProgress.get(p), attempt = progress || p.novelAttempt;
+      const valid = () => data === world && view === "novel" && role() === r && novelViewKind === kind && (kind === "play" ? r.play : r.scene) === p && novelAttemptId(p) === id && !p.endedAt;
+      if (!valid()) return;
+      const details = novelFailureDetails(attempt || { state: kind === "scene" && r.scene?.opening?.status === "unknown" ? "unknown" : "not-sent" });
+      if (!attempt && kind === "scene" && r.scene?.opening?.status === "unsent") {
+        details.description = "\u573A\u666F\u5DF2\u4FDD\u5B58\uFF0C\u9996\u6B21\u8BF7\u6C42\u5C1A\u672A\u53D1\u9001\u3002";
+        details.code = "NOVEL_NOT_SENT";
+      }
+      const source = p.novelAttempt?.inputId && (kind === "scene" ? encounterHistory(r, p.messages) : getActiveMessages(p.messages)).find((m) => m.id === p.novelAttempt.inputId);
+      if (progress?.retryValid && !progress.retryValid() || p.novelAttempt?.inputId && (!source || source.editedAt && source.editedAt > p.novelAttempt.at) || kind === "scene" && r.scene?.opening && r.scene.opening.status !== "archived" && !openingSourcesValid(r, r.scene)) {
+        Object.assign(details, novelFailureDetails({ state: attempt?.state || "unknown", code: "stale" }));
+      }
+      const dialog = document.createElement("dialog"), focus = document.activeElement;
+      dialog.className = "fruit-dialog novel-failure-dialog";
+      dialog.setAttribute("aria-labelledby", "novel-failure-title");
+      dialog.innerHTML = `<div class="fruit-dialog-body"><h2 id="novel-failure-title">\u672C\u6B21\u751F\u6210\u672A\u5B8C\u6210</h2><p>${esc(details.description)}</p>${details.detail ? `<p>${esc(details.detail)}</p>` : ""}<p class="novel-recovery-help">${esc(details.recovery)}</p><small class="novel-error-code">${esc(details.code)}</small>${progress?.text ? '<button type="button" class="btn secondary" data-novel-recovery="copy" data-action="copy-novel-reply">\u67E5\u770B\uFF0F\u590D\u5236\u5DF2\u6709\u6B63\u6587</button>' : ""}${attempt?.code === "preset" || attempt?.presetIssue ? '<button type="button" class="btn secondary" data-novel-recovery="preset">\u68C0\u67E5\u5F53\u524D\u89D2\u8272\u9884\u8BBE</button>' : ""}<div class="novel-failure-actions"><button type="button" class="btn secondary" data-novel-recovery="close" autofocus>\u53D6\u6D88\u672C\u6B21</button><button type="button" class="btn" data-novel-recovery="retry" data-action="retry-novel" ${novelRetrySource(r, p) ? "" : "disabled"}>\u91CD\u65B0\u8C03\u7528</button></div></div>`;
+      dialog.addEventListener("click", (event) => {
+        const action = event.target instanceof Element ? event.target.closest("[data-novel-recovery]")?.dataset.novelRecovery : void 0;
+        if (action === "close") {
+          dialog.close();
+          return;
+        }
+        if (!valid()) {
+          dialog.close();
+          return;
+        }
+        if (action === "copy" && progress?.text) {
+          dialog.close();
+          offerUnstoredReply(progress.text);
+        }
+        if (action === "preset") {
+          dialog.close();
+          if (!busy) go("presets");
+        }
+        if (action === "retry") retryNovel(r, p, kind, id, () => dialog.close());
+      });
+      dialog.addEventListener("close", () => {
+        if (novelDialog?.element === dialog) novelDialog = void 0;
+        dialog.remove();
+        if (valid() && !document.querySelector("dialog[open]")) {
+          if (focus instanceof HTMLElement && focus !== document.body && focus.isConnected && focus.closest("#novel-form,[data-action=novel-details]")) focus.focus({ preventScroll: true });
+          else $("[data-action=novel-details]")?.focus({ preventScroll: true });
+        }
+      }, { once: true });
+      novelDialog = { element: dialog, valid };
+      document.body.append(dialog);
+      dialog.showModal();
+    }
+    function retryNovel(r, p, kind, id, close2) {
+      const latest = novelRetrySource(r, p);
+      if (!latest || novelViewKind !== kind || novelAttemptId(p) !== id || !checkWriteAccess()) return;
+      const confirmed = p.novelAttempt ? confirmNovelRetry(p) : kind === "scene" && r.scene?.opening?.status === "unsent" || window.confirm("\u65E7\u8BB0\u5F55\u65E0\u6CD5\u786E\u8BA4\u4E0A\u6B21\u8BF7\u6C42\u662F\u5426\u5DF2\u53D1\u9001\uFF0C\u91CD\u8BD5\u53EF\u80FD\u518D\u6B21\u8BA1\u8D39\u3002\u786E\u5B9A\u7EE7\u7EED\uFF1F");
+      if (!confirmed) return;
+      if (!novelRetrySource(r, p) || !saveSession.current() || novelAttemptId(p) !== id) return;
+      close2();
+      if (kind === "scene" && r.scene?.opening && r.scene.opening.status !== "archived") {
+        void runMeetingOpening(r, r.scene);
+        render(false);
+        return;
+      }
+      busy = true;
+      render(false);
+      void generateNovelReply(r, kind, latest.text, p.novelAttempt?.regenerateId).catch((error) => notify(error instanceof Error ? error.message : "\u672C\u6B21\u751F\u6210\u672A\u5B8C\u6210")).finally(() => {
+        busy = novelTasks.has(data.selected || "");
+        if (view === "novel" && role() === r) render(false);
+      });
     }
     function confirmNovelRetry(p) {
       return !p.novelAttempt || p.novelAttempt.state === "archived" || p.novelAttempt.state === "not-sent" || window.confirm("\u4E0A\u6B21\u8BF7\u6C42\u53EF\u80FD\u5DF2\u88AB\u670D\u52A1\u5546\u5904\u7406\uFF0C\u91CD\u8BD5\u6216\u91CD\u65B0\u751F\u6210\u53EF\u80FD\u518D\u6B21\u8BA1\u8D39\u3002\u786E\u5B9A\u7EE7\u7EED\uFF1F");
@@ -18648,8 +18791,6 @@ channel.onmessage=async({data:job})=>{
       }
       const title = isPlay ? p.title : `\u4E0E${r.name}\u7684\u89C1\u9762`;
       const showBackstage = isPlay && Boolean(p.paused);
-      const opening = isPlay ? void 0 : r.scene?.opening;
-      const openingPending = opening && opening.status !== "archived";
       if (showBackstage) view = "intermission";
       const activeMessages = isPlay ? getActiveMessages(p.messages) : encounterHistory(r, p.messages);
       const revCount = ensureRevisionsList(r).filter(
@@ -18700,8 +18841,7 @@ channel.onmessage=async({data:job})=>{
               <button type="button" data-action="cancelquote">\u53D6\u6D88\u5F15\u7528</button>
             </div>` : ""}
       ${novelStatusHtml(r, p)}
-      ${openingPending ? `<div class="chat-feedback" role="status" data-scene-opening="${esc(opening.status)}"><p>${busy ? "\u6B63\u5728\u51C6\u5907\u6216\u751F\u6210\u672C\u8F6E\u9762\u5BF9\u9762\u56DE\u590D\u3002" : opening.status === "unsent" ? "\u573A\u666F\u5DF2\u4FDD\u5B58\uFF0C\u9996\u6B21\u8BF7\u6C42\u5C1A\u672A\u53D1\u9001\u3002" : "\u9996\u6B21\u8BF7\u6C42\u6216\u4FDD\u5B58\u7ED3\u679C\u672A\u786E\u8BA4\u3002\u53EF\u5148\u5237\u65B0\u6838\u5BF9\uFF0C\u91CD\u8BD5\u53EF\u80FD\u518D\u6B21\u8BA1\u8D39\u3002"}</p>${busy ? "" : `<button type="button" class="btn secondary" data-action="resume-scene-opening">${opening.status === "unsent" ? "\u7EE7\u7EED\u672C\u8F6E" : "\u91CD\u65B0\u53D1\u9001\u9996\u6B21\u8BF7\u6C42"}</button>`}</div>` : ""}
-      <form class="compose" id="novel-form" data-role-id="${esc(r.id)}" data-scene-id="${isPlay ? "" : esc(p.id)}"><textarea id="novel-input" data-scoped-draft ${showBackstage ? "disabled" : ""} placeholder="\u5199\u4E0B\u4F60\u8BF4\u7684\u8BDD\u6216\u884C\u52A8..." rows="1"></textarea><button class="btn" ${busy || showBackstage || openingPending ? "disabled" : ""} aria-label="\u53D1\u9001\u63CF\u5199">${uiIcon("send")}</button></form></section>${showBackstage ? renderIntermissionPanel(r, p) : ""}</div>`,
+      <form class="compose" id="novel-form" data-role-id="${esc(r.id)}" data-stage-id="${esc(p.id)}" data-scene-id="${isPlay ? "" : esc(p.id)}"><textarea id="novel-input" data-scoped-draft ${showBackstage ? "disabled" : ""} placeholder="\u5199\u4E0B\u4F60\u8BF4\u7684\u8BDD\u6216\u884C\u52A8..." rows="1"></textarea><button type="submit" class="btn" data-novel-control ${showBackstage ? "disabled" : ""} aria-label="\u53D1\u9001\u63CF\u5199">${uiIcon("send")}</button></form></section>${showBackstage ? renderIntermissionPanel(r, p) : ""}</div>`,
         false
       );
     }
@@ -18786,8 +18926,8 @@ channel.onmessage=async({data:job})=>{
         return;
       }
       if (!checkWriteAccess()) return;
-      const previous = intermissionAttempt(p, latest.id), revision2 = latest.revisionCount || 0;
-      if (previous?.status === "archived" && previous.revision === revision2 || !previous && messages.some((m) => m.speaker === "char" && m.replyTo === latest.id && m.at >= (latest.editedAt || latest.at))) {
+      const previous = intermissionAttempt(p, latest.id), revision = latest.revisionCount || 0;
+      if (previous?.status === "archived" && previous.revision === revision || !previous && messages.some((m) => m.speaker === "char" && m.replyTo === latest.id && m.at >= (latest.editedAt || latest.at))) {
         notify("\u8FD9\u6761\u5E55\u95F4\u53D1\u8A00\u5DF2\u6709\u56DE\u590D\u3002");
         return;
       }
@@ -18810,7 +18950,7 @@ channel.onmessage=async({data:job})=>{
           return compileSource();
         }, valid);
         if (!valid()) throw Error("\u5E55\u95F4\u4EFB\u52A1\u6216\u8FDE\u63A5\u5DF2\u53D8\u5316");
-        const attempt = { id: uid(), revision: revision2, status: "unknown" };
+        const attempt = { id: uid(), revision, status: "unknown" };
         p.intermissionAttempts = { ...oldAttempts, [latest.id]: attempt };
         if (!save()) {
           p.intermissionAttempts = oldAttempts;
@@ -19317,6 +19457,7 @@ channel.onmessage=async({data:job})=>{
       if (view === "presets") fruitManager.mount(document.getElementById("fruit-preset-root"));
       if (view === "home") homePager.mount(document.querySelector(".home-view"));
       restoreUIState(uiSnap, !scroll, document, sameView);
+      refreshNovelControls();
       if (view === "chat") chatHistory.finish(chatAnchor);
       hydrateMedia();
       if (pendingScrollAnchorSelector) {
@@ -19414,7 +19555,9 @@ channel.onmessage=async({data:job})=>{
       let openingClaim;
       const task = novelTasks.begin(draft, kind), userRevision = JSON.stringify([data.user, data.sharedTasks]);
       const progress = { id: task.id, phase: "preparing", state: "not-sent", startedAt: now() };
+      progress.retryValid = () => data === world && world.roles.includes(r) && userRevision === JSON.stringify([world.user, world.sharedTasks]) && novelSourceKey(r, kind) === task.revision;
       novelProgress.set(task.stage, progress);
+      refreshNovelControls();
       let claim;
       let terminal = false;
       const update = (phase) => {
@@ -19423,7 +19566,7 @@ channel.onmessage=async({data:job})=>{
         progress.phase = phase;
         progress.elapsedMs = now() - progress.startedAt;
         syslog("novel-lifecycle", "\u5C0F\u8BF4\u9636\u6BB5\u66F4\u65B0", { roleId: null, ownerIndex: world.roles.indexOf(r), mode: kind, phase, elapsedMs: progress.elapsedMs, state: progress.state, ...progress.httpStatus ? { httpStatus: progress.httpStatus } : {}, ...progress.finishReason ? { finishReason: progress.finishReason } : {} });
-        if (view === "novel" && role() === r && (r.scene === task.stage || r.play === task.stage)) render(false);
+        if (view === "novel" && role() === r && (r.scene === task.stage || r.play === task.stage)) refreshNovelControls();
       };
       const valid = () => epoch === modelPageEpoch && !modelPageHidden && data === world && world.roles.includes(r) && userRevision === JSON.stringify([world.user, world.sharedTasks]) && (attached ? novelTasks.valid(task, r, data.selected) : view === "chat" && !document.hidden && chatBatchValid(r, batch) && sceneStateKey(r) === before && novelTasks.valid(task, draft, data.selected)) && (!opening || epoch === modelPageEpoch && !modelPageHidden && (dispatched || saveSession.current() && connection === apiConnectionVersion && credential === token && !!credential.trim() && canUseRealModel(world.settings))) && (!scene || openingSourcesValid(attached ? r : draft, scene));
       try {
@@ -19529,7 +19672,6 @@ channel.onmessage=async({data:job})=>{
         progress.text = result.text;
         progress.warning = result.warnings.length > 0;
         if (!valid() || openingClaim && scene?.opening !== openingClaim) {
-          if (scene && data === world && role() === r) offerUnstoredReply(result.text);
           throw new Error("\u573A\u666F\u6216\u6D88\u606F\u5DF2\u53D8\u5316\uFF0C\u8FDF\u5230\u56DE\u590D\u672A\u5199\u5165");
         }
         const lastInput = (kind === "scene" ? encounterHistory(r, task.stage.messages) : getActiveMessages(task.stage.messages)).filter((m) => m.speaker === "me").at(-1);
@@ -19552,7 +19694,6 @@ channel.onmessage=async({data:job})=>{
           if (save()) return true;
           task.stage.novelAttempt = claim;
           if (scene?.opening) scene.opening.status = "unknown";
-          offerUnstoredReply(result.text);
           return false;
         }, regeneration || void 0, now());
         progress.state = "archived";
@@ -19562,12 +19703,14 @@ channel.onmessage=async({data:job})=>{
         syslog("api", `\u5C0F\u8BF4\u56DE\u590D\u5DF2\u4FDD\u5B58 ${kind}`, { presetId: options.presetId });
         if (regenerateId) notify("\u5DF2\u91CD\u65B0\u751F\u6210\uFF1B\u539F\u7248\u672C\u53CA\u4FEE\u8BA2\u8BB0\u5F55\u4FDD\u7559");
       } catch (error) {
+        if (progress.state === "archived") return;
         const phase = progress.phase;
         if (phase === "preparing" && error instanceof PresetPreparationError) progress.presetIssue = error.issue;
         else if (phase === "preparing" && error instanceof Error && error.name === "TimeoutError") progress.presetIssue = "storage-timeout";
         if (error instanceof NovelOutputError) progress.text = error.safeText;
         progress.state = dispatched ? progress.state === "returned" ? "returned" : "unknown" : "not-sent";
         progress.code = progress.code || (error instanceof Error && error.name === "TimeoutError" ? "timeout" : error instanceof Error && error.name === "AbortError" ? "cancelled" : error instanceof ConversationCompileError ? "compile" : phase === "saving" ? "save" : phase === "preparing" ? "preset" : phase === "parsing" ? "format" : !valid() ? "stale" : "connection");
+        progress.offerError = progress.code !== "cancelled" && view === "novel" && role() === r;
         update("failed");
         if (novelProgress.get(task.stage) === progress && data === world && world.roles.includes(r) && (r.scene === task.stage || r.play === task.stage) && (!claim || task.stage.novelAttempt === claim) && saveSession.current() && (claim || !task.stage.novelAttempt || ["not-sent", "archived"].includes(task.stage.novelAttempt.state))) {
           const previous = task.stage.novelAttempt;
@@ -19578,7 +19721,7 @@ channel.onmessage=async({data:job})=>{
             if (!save()) scene.opening = openingClaim;
           }
         }
-        throw new Error(progress.state === "not-sent" ? "\u5C0F\u8BF4\u8BF7\u6C42\u672A\u53D1\u9001\uFF0C\u8BF7\u67E5\u770B\u6301\u7EED\u72B6\u6001\u63D0\u793A\u3002" : "\u5C0F\u8BF4\u7ED3\u679C\u672A\u786E\u8BA4\uFF0C\u53EF\u80FD\u5DF2\u8BA1\u8D39\uFF1B\u4E0D\u4F1A\u81EA\u52A8\u91CD\u53D1\u3002\u8BF7\u67E5\u770B\u6301\u7EED\u72B6\u6001\u63D0\u793A\u3002");
+        throw new Error(progress.state === "not-sent" ? "\u5C0F\u8BF4\u8BF7\u6C42\u672A\u53D1\u9001\uFF0C\u53EF\u4ECE\u751F\u6210\u8BE6\u60C5\u67E5\u770B\u6062\u590D\u64CD\u4F5C\u3002" : "\u5C0F\u8BF4\u7ED3\u679C\u672A\u786E\u8BA4\uFF0C\u53EF\u80FD\u5DF2\u8BA1\u8D39\uFF1B\u4E0D\u4F1A\u81EA\u52A8\u91CD\u53D1\u3002\u53EF\u4ECE\u751F\u6210\u8BE6\u60C5\u67E5\u770B\u6062\u590D\u64CD\u4F5C\u3002");
       } finally {
         novelTasks.finish(task);
       }
@@ -19639,7 +19782,7 @@ channel.onmessage=async({data:job})=>{
         return;
       }
       busy = true;
-      const controller = new AbortController(), revision2 = chatRevisionKey(r), scene = r.scene, play = r.play;
+      const controller = new AbortController(), revision = chatRevisionKey(r), scene = r.scene, play = r.play;
       activeChatRequests.set(r.id, controller);
       r.firstMessageState = {
         status: "generating",
@@ -19648,10 +19791,10 @@ channel.onmessage=async({data:job})=>{
       save();
       render();
       try {
-        const prompt = await compileRequest(r, "chat", (options) => compileOpeningPrompt(data, r, now(), options), () => data.roles.includes(r) && chatRevisionKey(r) === revision2 && r.scene === scene && r.play === play);
+        const prompt = await compileRequest(r, "chat", (options) => compileOpeningPrompt(data, r, now(), options), () => data.roles.includes(r) && chatRevisionKey(r) === revision && r.scene === scene && r.play === play);
         const personal = preparePersonalReply(r, prompt, now(), makeUid("opening-private"));
         const raw = splitPersonalReply(await requestPhoneReply(r, personal.messages, controller.signal, "first-message")), rawText = raw.text;
-        if (!data.roles.includes(r) || chatRevisionKey(r) !== revision2 || r.scene !== scene || r.play !== play) throw new Error("\u804A\u5929\u72B6\u6001\u5DF2\u53D8\u5316\uFF0C\u9996\u6761\u6D88\u606F\u672A\u5199\u5165");
+        if (!data.roles.includes(r) || chatRevisionKey(r) !== revision || r.scene !== scene || r.play !== play) throw new Error("\u804A\u5929\u72B6\u6001\u5DF2\u53D8\u5316\uFF0C\u9996\u6761\u6D88\u606F\u672A\u5199\u5165");
         const bubbles = splitChatBubbles(rawText, r);
         if (!bubbles.length) throw new Error("\u6A21\u578B\u672A\u8FD4\u56DE\u6709\u6548\u7684\u624B\u673A\u6D88\u606F");
         const chatsBefore = r.chats.length, eventsBefore = r.events.length, firstBefore = r.firstMessageState, privateBefore = r.personalThreads;
@@ -20306,7 +20449,7 @@ channel.onmessage=async({data:job})=>{
         return;
       }
       const regenerated = { plan: null };
-      const controller = new AbortController(), revision2 = chatRevisionKey(r), scene = r.scene, play = r.play;
+      const controller = new AbortController(), revision = chatRevisionKey(r), scene = r.scene, play = r.play;
       activeChatRequests.set(r.id, controller);
       if (view === "chat" && role()?.id === r.id) patchDynamicRegionsOnTick();
       try {
@@ -20314,11 +20457,11 @@ channel.onmessage=async({data:job})=>{
           regenerated.plan = buildPhoneRegeneration(data, r, id, now(), options);
           if (!regenerated.plan) throw new Error("\u6709\u6548\u6765\u6E90\u4E0D\u5B8C\u6574\uFF0C\u539F\u8BB0\u5F55\u5DF2\u4FDD\u7559");
           return regenerated.plan.compilation;
-        }, () => data.roles.includes(r) && chatRevisionKey(r) === revision2 && r.scene === scene && r.play === play);
+        }, () => data.roles.includes(r) && chatRevisionKey(r) === revision && r.scene === scene && r.play === play);
         const plan = regenerated.plan;
         if (!plan) throw new Error("\u6709\u6548\u6765\u6E90\u4E0D\u5B8C\u6574");
         const text2 = splitPersonalReply(await requestPhoneReply(r, promptMessages, controller.signal)).text;
-        if (!data.roles.includes(r) || chatRevisionKey(r) !== revision2 || r.scene !== scene || r.play !== play || !getActiveMessages(r.chats).some((m) => m.id === id)) return;
+        if (!data.roles.includes(r) || chatRevisionKey(r) !== revision || r.scene !== scene || r.play !== play || !getActiveMessages(r.chats).some((m) => m.id === id)) return;
         const bubbles = splitChatBubbles(text2, r);
         if (!bubbles.length) throw new Error("\u56DE\u590D\u4E2D\u6CA1\u6709\u6709\u6548\u7684\u624B\u673A\u6D88\u606F");
         const before = { chats: structuredClone(r.chats), events: structuredClone(r.events), messageRevisions: structuredClone(r.messageRevisions), pendingReplies: structuredClone(r.pendingReplies), firstMessageState: structuredClone(r.firstMessageState) };
@@ -20620,50 +20763,17 @@ channel.onmessage=async({data:job})=>{
         })();
         return;
       }
-      if (act === "resume-scene-opening") {
-        const scene = r?.scene;
-        if (!r || !scene?.opening || scene.opening.status === "archived" || busy || !checkWriteAccess()) return;
-        if (!openingSourcesValid(r, scene)) {
-          notify("\u539F\u8BDD\u7684\u6709\u6548\u7248\u672C\u5DF2\u53D8\u5316\uFF0C\u672C\u8F6E\u65E0\u6CD5\u7EE7\u7EED\u3002\u53EF\u4FDD\u7559\u73B0\u573A\u6216\u7ED3\u675F\u89C1\u9762\u3002");
-          return;
-        }
-        if (!token.trim() || !canUseRealModel(data.settings)) {
-          notify("\u8BF7\u5148\u5728\u7EC8\u7AEF\u8FDE\u63A5 API\u3002");
-          return;
-        }
-        if (scene.opening.status !== "unsent" && !window.confirm("\u9996\u6B21\u8BF7\u6C42\u53EF\u80FD\u5DF2\u88AB\u670D\u52A1\u5546\u5904\u7406\u3002\u91CD\u65B0\u53D1\u9001\u53EF\u80FD\u518D\u6B21\u8BA1\u8D39\uFF0C\u786E\u5B9A\u7EE7\u7EED\uFF1F")) return;
-        void runMeetingOpening(r, scene);
-        render(false);
-        return;
-      }
       if (act === "cancel-novel") {
-        if (r && novelTasks.cancel(r.id)) {
+        const p = r && (novelViewKind === "play" ? r.play : r.scene), progress = p && novelProgress.get(p);
+        if (view === "novel" && r && p && progress && b.dataset.roleId === r.id && b.dataset.stageId === p.id && b.dataset.attemptId === progress.id && novelTasks.has(r.id, progress.id) && novelControl(true, progress.phase).stop && novelTasks.cancel(r.id)) {
           busy = novelTasks.has(data.selected || "");
-          render(false);
+          refreshNovelControls();
         }
         return;
       }
-      if (act === "copy-novel-reply") {
-        const p = r && (novelViewKind === "play" ? r.play : r.scene), text2 = p && novelProgress.get(p)?.text;
-        if (p && view === "novel" && text2) offerUnstoredReply(text2);
-        return;
-      }
-      if (act === "check-novel-preset") {
-        const current = role(), p = current && (novelViewKind === "play" ? current.play : current.scene);
-        if (current && p && view === "novel" && !busy && b.dataset.roleId === current.id && b.dataset.stageId === p.id) go("presets");
-        return;
-      }
-      if (act === "retry-novel") {
-        const current = role(), kind = novelViewKind, p = current && (kind === "play" ? current.play : current.scene);
-        const latest = current && p && novelRetrySource(current, p);
-        if (!current || !p || !latest || b.dataset.roleId !== current.id || b.dataset.stageId !== p.id || b.dataset.inputId !== latest.id) return;
-        if (p.novelAttempt ? !confirmNovelRetry(p) : !window.confirm("\u65E7\u8BB0\u5F55\u65E0\u6CD5\u786E\u8BA4\u4E0A\u6B21\u8BF7\u6C42\u662F\u5426\u5DF2\u53D1\u9001\uFF0C\u91CD\u8BD5\u53EF\u80FD\u518D\u6B21\u8BA1\u8D39\u3002\u786E\u5B9A\u7EE7\u7EED\uFF1F")) return;
-        busy = true;
-        render(false);
-        void generateNovelReply(current, kind, latest.text).catch((error) => notify("\u751F\u6210\u672A\u5B8C\u6210\uFF1A" + (error instanceof Error ? error.message : "\u8FDE\u63A5\u5F02\u5E38"))).finally(() => {
-          busy = novelTasks.has(data.selected || "");
-          if (view === "novel" && role() === current) render(false);
-        });
+      if (act === "novel-details") {
+        const p = r && (novelViewKind === "play" ? r.play : r.scene);
+        if (r && p && b.dataset.roleId === r.id && b.dataset.stageId === p.id && b.dataset.attemptId === novelAttemptId(p)) openNovelFailure(r, p);
         return;
       }
       if (act === "intermissionreply") {

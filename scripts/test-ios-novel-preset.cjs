@@ -81,9 +81,10 @@ async function main(){
   finally{release();try{await ctx.close();}catch(error){if(!failed)throw error;}}
  }
  async function archived(t){await t.p.locator('.passage.theirs .novel-body').filter({hasText:'合成终点。'}).waitFor();assert.equal((await t.record()).novelAttempt.state,'archived');assert.ok((await t.record()).messages.some(m=>m.text===t.body));}
+ async function details(t){if(!await t.p.locator('.novel-failure-dialog[open]').count())await t.p.locator('[data-action=novel-details]').click();}
  async function recover(t){
   assert.equal(t.posts.length,0);assert.equal(await t.p.locator('#novel-form button').count(),1);const prior=await t.library(),before=await t.record();
-  await t.p.getByRole('button',{name:'重试上一条回复',exact:true}).click();await archived(t);assert.equal(t.posts.length,1);
+  await details(t);await t.p.getByRole('button',{name:'重新调用',exact:true}).click();await archived(t);assert.equal(t.posts.length,1);
   const after=await t.record();assert.equal(after.id,before.id);assert.deepEqual(after.messages.slice(0,before.messages.length),before.messages);assert.equal(after.messages.filter(m=>m.id==='pending').length,1);assert.deepEqual((await t.saved()).roles[0].meetings,t.before.meetings);assert.deepEqual((await t.saved()).roles[0].messageRevisions,t.before.messageRevisions);assert.deepEqual(await t.library(),prior);
   const wire=t.posts[0].messages.map(m=>m.content).join('\n');assert.ok(wire.includes('SYNTHETIC_ROLE_STYLE'));assert.ok(wire.includes('2200'));assert.equal(t.posts[0].max_tokens,undefined);
   assert.equal(after.messages.at(-1).novelOutput.presetId,'fruit');assert.ok(t.before.messageRevisions.length>0);
@@ -94,15 +95,15 @@ async function main(){
   await run('new Scene compiles preserved overrides and saves actual body',{},async t=>{await t.send();await archived(t);assert.equal(t.posts.length,1);assert.ok(JSON.stringify(t.posts[0].messages).includes('SYNTHETIC_NOVEL_RULE'));});
   await run('existing preset not-sent Scene recovers without inserting another user message',{recover:true},recover);
   await run('duplicate retry and a stale retry control cannot dispatch twice',{recover:true},async t=>{
-   await t.p.evaluate(()=>{const b=document.querySelector('[data-action=retry-novel]');window.oldRetry=b;b.click();b.click();});await archived(t);assert.equal(t.posts.length,1);assert.equal((await t.record()).messages.filter(m=>m.id==='pending').length,1);await t.p.evaluate(()=>window.oldRetry.click());assert.equal(t.posts.length,1);
+   await details(t);await t.p.evaluate(()=>{const b=document.querySelector('[data-action=retry-novel]');window.oldRetry=b;b.click();b.click();});await archived(t);assert.equal(t.posts.length,1);assert.equal((await t.record()).messages.filter(m=>m.id==='pending').length,1);await t.p.evaluate(()=>window.oldRetry.click());assert.equal(t.posts.length,1);
   });
   await run('retry loses write authority without changing the original Scene',{recover:true},async t=>{
-   const before=await t.record();await t.p.evaluate(()=>{const b=document.querySelector('[data-action=retry-novel]');dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true}));b.click();});assert.equal(t.posts.length,0);assert.deepEqual(await t.record(),before);
+   const before=await t.record();await details(t);await t.p.evaluate(()=>{const b=document.querySelector('[data-action=retry-novel]');dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true}));b.click();});assert.equal(t.posts.length,0);assert.deepEqual(await t.record(),before);
   });
   if(original)await run('private V6.4X original recovers an existing not-sent Scene',{recover:true,original:true},recover);
   await run('disabled role has actionable diagnosis and can be explicitly enabled',{disabled:true},async t=>{
    await t.send();await t.p.locator('[data-novel-status=failed]').waitFor();assert.equal(t.posts.length,0);assert.equal((await t.record()).novelAttempt.presetIssue,'preset-disabled');await t.p.getByRole('button',{name:'检查当前角色预设'}).click();await t.p.locator('[data-preset-active]').check();await t.p.getByTestId('preset-save').click();await wait(async()=>(await t.library()).roleNovel['ios-role'].profiles.fruit.enabled,'confirmed role enable');assert.equal(t.posts.length,0);
-   await t.p.locator('.back-btn[data-view=home]').click();await t.p.locator('[data-action=openconversation]').click();await t.p.getByRole('button',{name:'重试上一条回复',exact:true}).click();await archived(t);assert.equal(t.posts.length,1);assert.equal((await t.record()).messages.filter(m=>m.speaker==='me').length,1);
+   await t.p.locator('.back-btn[data-view=home]').click();await t.p.locator('[data-action=openconversation]').click();await details(t);await t.p.getByRole('button',{name:'重新调用',exact:true}).click();await archived(t);assert.equal(t.posts.length,1);assert.equal((await t.record()).messages.filter(m=>m.speaker==='me').length,1);
   });
   for(const fault of ['open','blocked','transaction','hang'])await run('preset '+fault+' is diagnosed without POST or lost input',{fault},async t=>{
    await t.send();if(fault==='hang')await t.p.clock.fastForward(31000);await t.p.locator('[data-novel-status=failed]').waitFor();const a=(await t.record()).novelAttempt;assert.equal(t.posts.length,0);assert.equal(a.state,'not-sent');assert.equal(a.presetIssue,fault==='blocked'?'storage-blocked':fault==='hang'?'storage-timeout':'storage-failed');assert.equal((await t.record()).messages.filter(m=>m.speaker==='me').length,1);assert.equal(await t.p.locator('#novel-form button').count(),1);
@@ -114,8 +115,8 @@ async function main(){
   await run('returned body refused by main storage is copyable but not archived',{},async t=>{await t.p.evaluate(()=>window.iosProbe.refuseWorld=true);await t.send();await t.p.locator('[data-novel-status=failed]').waitFor();assert.equal((await t.record()).messages.filter(m=>m.speaker==='char').length,0);assert.equal(t.posts.length,1);await t.p.locator('[data-action=copy-novel-reply]').waitFor();assert.equal(await t.p.locator('#novel-form button').count(),1);});
   await run('unknown result retries require confirmation and never duplicate the original input',{hold:true},async t=>{
    await t.send();await wait(()=>t.posts.length===1,'first POST');assert.equal(await t.p.locator('[data-action=retry-novel]').count(),0);await t.p.locator('[data-action=cancel-novel]').click();await t.p.locator('[data-novel-state=unknown]').waitFor();t.release();await t.p.clock.fastForward(1000);assert.equal((await t.record()).messages.filter(m=>m.speaker==='char').length,0);
-   await t.p.reload();await t.ready();await t.p.locator('[data-action=enter][data-id=ios-role]').click();await t.p.locator('[data-action=openconversation]').click();t.p.once('dialog',async d=>{assert.ok(d.message().includes('再次计费'));await d.dismiss();});await t.p.getByRole('button',{name:'重试上一条回复',exact:true}).click();assert.equal(t.posts.length,1);
-   t.p.once('dialog',d=>d.accept());await t.p.getByRole('button',{name:'重试上一条回复',exact:true}).click();await archived(t);assert.equal(t.posts.length,2);assert.equal((await t.record()).messages.filter(m=>m.speaker==='me').length,1);
+   await t.p.reload();await t.ready();await t.p.locator('[data-action=enter][data-id=ios-role]').click();await t.p.locator('[data-action=openconversation]').click();t.p.once('dialog',async d=>{assert.ok(d.message().includes('再次计费'));await d.dismiss();});await details(t);await t.p.getByRole('button',{name:'重新调用',exact:true}).click();assert.equal(t.posts.length,1);
+   t.p.once('dialog',d=>d.accept());await details(t);await t.p.getByRole('button',{name:'重新调用',exact:true}).click();await archived(t);assert.equal(t.posts.length,2);assert.equal((await t.record()).messages.filter(m=>m.speaker==='me').length,1);
   });
   for(const width of [320,375,390,430])for(const theme of ['blue','green','pink','coffee','night'])await run('compact multiline card and themed safe area '+width+' '+theme,{layout:true,width,theme,quote:width===320,long:width===430,short:width===390&&theme==='blue'},async t=>{
    await t.p.evaluate(()=>{const s=document.createElement('style');s.textContent=':root{--app-safe-top:47px;--app-safe-bottom:34px}';document.head.append(s);});

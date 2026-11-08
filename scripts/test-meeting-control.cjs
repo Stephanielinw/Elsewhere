@@ -251,12 +251,12 @@ async function main(){
    await t.chat();await t.send('进入但尚未派发');
    await t.p.evaluate(()=>window.failMeeting='unknown');
    await t.instant();await t.scene();
-   await t.p.locator('[data-action=resume-scene-opening]').waitFor();
+   await t.p.locator('[data-action=novel-details]').waitFor();
    const saved=await t.current();assert.equal(saved.scene.opening.status,'unsent');assert.equal(t.posts.length,0);
    await t.reload();await t.resume();await t.advance(62000);
    assert.equal(t.posts.length,0);assert.equal((await t.current()).scene.id,saved.scene.id);
    t.p.on('dialog',async dialog=>{await dialog.dismiss();assert.fail('a known unsent request must not ask about repeat fees');});
-   await t.p.locator('[data-action=resume-scene-opening]').click();await t.mock(1);await t.archived();
+   await t.p.locator('[data-action=novel-details]').click();await t.p.getByRole('button',{name:'重新调用',exact:true}).click();await t.mock(1);await t.archived();
   });
   await run('dispatched scene reloads as unknown and canceling fee confirmation sends nothing',async t=>{
    await t.chat();await t.send('已派发但结果未知');await t.instant();await t.mock(1);await t.status('unknown');
@@ -264,14 +264,14 @@ async function main(){
    await t.reload();await t.resume();await t.advance(75000);
    await t.p.locator('[data-scene-opening=unknown]').waitFor();
    const confirmation=t.p.waitForEvent('dialog');
-   const click=t.p.locator('[data-action=resume-scene-opening]').click();
+   await t.p.locator('[data-action=novel-details]').click();const click=t.p.getByRole('button',{name:'重新调用',exact:true}).click();
    const dialog=await confirmation;assert.match(dialog.message(),/再次计费/);await dialog.dismiss();await click;
    t.respond();assert.equal((await t.current()).scene.id,saved.scene.id);assert.equal(t.posts.length,1);
   });
   await run('first result save failure exposes copy and keeps uncertain status',async t=>{
    await t.chat();await t.send('等待正文保存');await t.instant();await t.mock(1);await t.status('unknown');
    await t.p.evaluate(()=>window.failMeeting='archived');t.respond();
-   const copy=t.p.locator('dialog[open] textarea');await copy.waitFor();assert.equal(await copy.inputValue(),opening);
+   await t.p.locator('[data-action=copy-novel-reply]').click();const copy=t.p.locator('dialog[open] textarea');await copy.waitFor();assert.equal(await copy.inputValue(),opening);
    const failed=await t.current();assert.equal(failed.scene.opening.status,'unknown');assert.equal(failed.scene.messages.filter(m=>m.speaker==='char').length,0);
    await t.reload();await t.resume();await t.advance(62000);assert.equal(t.posts.length,1);
   });

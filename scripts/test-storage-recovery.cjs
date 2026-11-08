@@ -105,7 +105,7 @@ try{
  const uncertain=(await t.stored()).roles[0],id=uncertain.scene.id;assert.equal(uncertain.scene.opening.status,'unsent');assert.equal(t.wire.length,0);
  await t.capture('actual Scene persisted; write outcome unknown to old page');await t.p.evaluate(()=>window.name='');await t.reload();
  assert.equal((await t.stored()).roles[0].scene.id,id);await openSavedScene(t,id);assert.equal(t.wire.length,0);
- await t.p.locator('[data-action=resume-scene-opening]').click();await complete(t);
+ await t.p.locator('[data-action=novel-details]').click();await t.p.getByRole('button',{name:'重新调用',exact:true}).click();await complete(t);
  assert.deepEqual((await t.stored()).roles[0].chats,uncertain.chats);
  await done('uncertain commit freezes rollback writes; reload reads actual persisted Scene before explicit continue',t);
  const approachReply='太好了，我也看见你了。你站在那别动，我这就朝你走过去。';

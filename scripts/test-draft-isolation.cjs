@@ -272,7 +272,7 @@ async function main() {
     await run('model failure after committed speech does not restore or resend the draft',async t=>{
       await t.play();await t.novel.fill('COMMITTED_BEFORE_MODEL_ERROR');await t.sendNovel();
       await poll(()=>t.posts.length===1,'failing model POST');
-      await t.p.locator('#novel-form button:not([type]):enabled').waitFor();
+      await t.p.locator('#novel-form button[type=submit]:enabled').waitFor();
       assert.equal(await t.novel.inputValue(),'');
       assert.equal((await t.saved()).roles[0].play.messages.some(m=>m.speaker==='char'),false);
       await t.reload();await t.play();

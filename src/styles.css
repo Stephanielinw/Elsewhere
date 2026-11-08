@@ -1986,7 +1986,23 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
 /* FRUIT-UI-02: scoped preset studio; native pages keep their existing styles. */
 #fruit-preset-root.card{padding:0;overflow:visible;border:0;background:transparent!important;box-shadow:none!important}
 .fruit-studio{--fruit-surface:color-mix(in srgb,var(--surface) 76%,transparent);--fruit-line:color-mix(in srgb,var(--accent) 17%,transparent);--fruit-soft:color-mix(in srgb,var(--accent) 8%,var(--surface));--fruit-selected:color-mix(in srgb,var(--accent) 17%,var(--surface));color:var(--ink);padding:26px;border:1px solid var(--glass-stroke);border-radius:30px;background:linear-gradient(135deg,color-mix(in srgb,var(--surface) 60%,transparent),light-dark(#f9f5ff90,var(--surface2)) 58%,light-dark(#e3f0ec60,var(--surface2)));box-shadow:0 18px 60px #5141630d;backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px)}
-.fruit-studio [hidden],.fruit-dialog [hidden]{display:none!important}
+.fruit-studio [hidden],.fruit-dialog [hidden],.novel-feedback[hidden]{display:none!important}
+.novel-feedback{padding:3px 14px;font-size:11px;color:var(--muted);line-height:1.5}
+.novel-error-marker{display:inline-flex;align-items:center;gap:5px;background:none;border:0;color:inherit;padding:4px 0;font:inherit;text-align:left;cursor:pointer}
+.novel-error-marker .ui-icon{width:14px;height:14px}
+.novel-error-marker:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:5px}
+#novel-form [data-novel-control]{min-width:44px;min-height:44px}
+#novel-form [data-novel-control][data-action=cancel-novel] .ui-icon{fill:currentColor;stroke-width:0;width:18px;height:18px}
+.novel-failure-dialog{width:min(420px,calc(100% - 28px));max-height:calc(var(--app-viewport-height,100dvh) - 28px)}
+.novel-failure-dialog .fruit-dialog-body{padding:19px 20px}
+.novel-failure-dialog h2{font-size:19px;margin:0 0 10px}
+.novel-failure-dialog p{font-size:13px;line-height:1.7;margin:8px 0;overflow-wrap:anywhere}
+.novel-failure-dialog .novel-recovery-help{color:var(--muted);font-size:12px}
+.novel-error-code{display:block;color:var(--muted);font-size:10px;margin:10px 0;letter-spacing:.4px}
+.novel-failure-dialog .btn{white-space:normal}
+.novel-failure-dialog .fruit-dialog-body>.btn{display:block;margin:8px 0;font-size:12px}
+.novel-failure-actions{display:flex;gap:10px;margin-top:16px}
+.novel-failure-actions>.btn{flex:1;min-height:44px;padding:9px 10px}
 .fruit-hero{display:flex;justify-content:space-between;align-items:center;gap:18px;margin-bottom:25px}
 .fruit-brand{display:flex;gap:14px;align-items:center}.fruit-emblem{width:59px;height:59px;display:grid;place-items:center;border-radius:20px;background:linear-gradient(135deg,light-dark(#ffe8dfcc,var(--surface2)),light-dark(#f1ddf4b8,var(--surface2)));border:1px solid var(--glass-stroke);box-shadow:0 5px 20px #b17b9312;font-size:29px}
 .fruit-eyebrow{font-size:9px;font-weight:750;letter-spacing:2px;color:var(--muted)}.fruit-studio .fruit-hero h3{font-size:24px;font-weight:720;letter-spacing:-.7px;margin:3px 0 5px}.fruit-studio p{line-height:1.7}.fruit-hero p{font-size:11px!important}

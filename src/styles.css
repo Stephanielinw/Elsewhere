@@ -2252,3 +2252,23 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
 .monitor-life .fp-date-display{min-width:0}
 .monitor-life .fp-nav-btn{flex-shrink:0}
 @media(max-width:420px){.monitor-life .fp-date-bar{gap:6px}.monitor-life .fp-nav-btn{padding:8px;font-size:12px}.monitor-life .fp-date-display strong{font-size:14px}}
+
+/* iOS novel view polish: scoped to narrative mode only. */
+.novel-view .passage{white-space:normal;line-height:1.8;margin:18px 0;font-size:15px;overflow-wrap:anywhere}
+.novel-view .passage .novel-passage-body{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.82}
+.novel-view .passage .speaker{font:600 11px/1.4 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;color:var(--muted);letter-spacing:.02em;margin:0 0 8px}
+.novel-view .passage.mine{width:fit-content;max-width:min(91%,670px);min-width:0;margin:18px 0 22px auto;padding:13px 17px 11px;border:1px solid color-mix(in srgb,var(--accent) 20%,transparent);border-radius:17px 17px 5px 17px;background:color-mix(in srgb,var(--accent) 9%,var(--surface));box-shadow:0 4px 18px color-mix(in srgb,var(--ink) 5%,transparent)}
+.novel-view .passage.mine .novel-passage-body{font-size:15px;line-height:1.76}
+.novel-view .passage.mine .speaker{color:var(--accent)}
+.novel-view .passage.mine .message-meta-row{margin-top:10px;justify-content:flex-end}
+.novel-view .passage.mine .msg-actions{flex-wrap:wrap;justify-content:flex-end}
+.novel-view .passage.note{white-space:normal}
+.novel-view .compose{gap:8px;padding:9px 14px calc(9px + env(safe-area-inset-bottom,0px));align-items:center}
+.novel-view .compose textarea{min-width:0;flex:1;max-width:none;border-radius:17px;line-height:1.5;padding:10px 14px;resize:none}
+.novel-view .compose button[type="submit"],.novel-view .compose button:not([type]){flex:none;min-width:44px;height:44px;display:grid;place-items:center;padding:0;border-radius:15px}
+.novel-view .chat-feedback{padding:10px 15px 12px;border-top:1px solid var(--line);font-size:12px;line-height:1.55}
+.novel-view .chat-feedback p{margin:0 0 7px}
+.novel-view .novel-status-detail{font-size:12px;color:var(--muted);line-height:1.65}
+.novel-view .novel-status-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:7px}
+.novel-view .novel-status-actions .btn{font-size:12px;padding:9px 13px;border-radius:11px}
+@media(max-width:420px){.novel-view .novel{padding:18px 17px 24px}.novel-view .passage.mine{max-width:94%}.novel-view .compose{padding-left:12px;padding-right:12px}}

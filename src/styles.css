@@ -161,6 +161,14 @@ html,body{overflow:hidden;background:var(--bg)}
 @media(max-width:345px){.novel-view .top h1{font-size:11px}.novel-view .top .btn.small{font-size:10px;padding:7px 5px}.intermission-top .back-btn{min-width:74px}.intermission-top h1{font-size:12px}}
 .novel-view .top button.btn.small{display:inline-flex;align-items:center;justify-content:center}
 
+/* Preserve authored line breaks in the body, not indentation in the surrounding template. */
+.novel-view .passage{white-space:normal}
+.novel-view .novel-body{white-space:pre-wrap;overflow-wrap:anywhere}
+.novel-view .passage.mine{padding:12px 14px;border:1px solid color-mix(in srgb,var(--accent) 18%,transparent);border-radius:16px;background:color-mix(in srgb,var(--accent) 9%,var(--surface));box-shadow:0 3px 12px #00000004}
+.novel-view .passage.mine .speaker{font-size:11px;color:var(--muted);margin:0 0 6px}
+.novel-view .passage.mine .message-meta-row{margin-top:9px}
+.novel-view .passage.mine .msg-actions{display:flex;flex-wrap:wrap;gap:5px}
+
 /* Toast notification */
 .toast{position:fixed;bottom:86px;left:50%;transform:translateX(-50%);z-index:99;background:rgba(36,31,46,.88);color:#fff;padding:10px 16px;border-radius:99px;font-size:12px;box-shadow:0 8px 25px rgba(0,0,0,.22);backdrop-filter:blur(12px);max-width:min(90vw,420px);text-align:center;pointer-events:none}
 

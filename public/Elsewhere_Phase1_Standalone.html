@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#edf6ff">
+<meta name="color-scheme" content="light">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>Elsewhere · 一角色一手机 (Phase 1 Standalone)</title>
@@ -170,6 +171,14 @@ html,body{overflow:hidden;background:var(--bg)}
 .intermission-top .back-btn{min-width:88px;flex:none;font-size:23px}.intermission-top .back-btn span{font-size:11px}
 @media(max-width:345px){.novel-view .top h1{font-size:11px}.novel-view .top .btn.small{font-size:10px;padding:7px 5px}.intermission-top .back-btn{min-width:74px}.intermission-top h1{font-size:12px}}
 .novel-view .top button.btn.small{display:inline-flex;align-items:center;justify-content:center}
+
+/* Preserve authored line breaks in the body, not indentation in the surrounding template. */
+.novel-view .passage{white-space:normal}
+.novel-view .novel-body{white-space:pre-wrap;overflow-wrap:anywhere}
+.novel-view .passage.mine{padding:12px 14px;border:1px solid color-mix(in srgb,var(--accent) 18%,transparent);border-radius:16px;background:color-mix(in srgb,var(--accent) 9%,var(--surface));box-shadow:0 3px 12px #00000004}
+.novel-view .passage.mine .speaker{font-size:11px;color:var(--muted);margin:0 0 6px}
+.novel-view .passage.mine .message-meta-row{margin-top:9px}
+.novel-view .passage.mine .msg-actions{display:flex;flex-wrap:wrap;gap:5px}
 
 /* Toast notification */
 .toast{position:fixed;bottom:86px;left:50%;transform:translateX(-50%);z-index:99;background:rgba(36,31,46,.88);color:#fff;padding:10px 16px;border-radius:99px;font-size:12px;box-shadow:0 8px 25px rgba(0,0,0,.22);backdrop-filter:blur(12px);max-width:min(90vw,420px);text-align:center;pointer-events:none}
@@ -2273,6 +2282,9 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
         const legacy = {violet: 'pink', sand: 'coffee'};
         const requested = role?.theme || legacy[saved?.theme] || saved?.theme;
         document.documentElement.dataset.theme = ['blue', 'green', 'pink', 'coffee', 'night'].includes(requested) ? requested : 'blue';
+        const scheme = document.documentElement.dataset.theme === 'night' ? 'dark' : 'light';
+        document.documentElement.style.colorScheme = scheme;
+        document.querySelector('meta[name="color-scheme"]').content = scheme;
         const updateColor = () => {
           const color = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
           if (color) {
@@ -11502,11 +11514,33 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
     return segments;
   }
 
+  // src/core/fruit/presetIssue.ts
+  var presetIssueText = {
+    "storage-blocked": "\u9884\u8BBE\u5E93\u88AB\u5176\u4ED6\u9875\u9762\u7684\u66F4\u65B0\u963B\u585E\uFF0C\u8BF7\u5173\u95ED\u5176\u4ED6 Elsewhere \u9875\u9762\u540E\u91CD\u65B0\u8BFB\u53D6\u3002",
+    "storage-failed": "\u65E0\u6CD5\u8BFB\u53D6\u79C1\u6709\u9884\u8BBE\u5E93\uFF0C\u8BF7\u5728\u9884\u8BBE App \u91CD\u65B0\u8BFB\u53D6\u5E76\u68C0\u67E5\u6D4F\u89C8\u5668\u5B58\u50A8\u6743\u9650\u3002",
+    "storage-timeout": "\u9884\u8BBE\u8BFB\u53D6\u8D85\u65F6\uFF0C\u8BF7\u5728\u9884\u8BBE App \u91CD\u65B0\u8BFB\u53D6\uFF1B\u672C\u6B21\u672A\u53D1\u9001\u6A21\u578B\u8BF7\u6C42\u3002",
+    "library-invalid": "\u9884\u8BBE\u5E93\u8BB0\u5F55\u65E0\u6CD5\u901A\u8FC7\u9A8C\u8BC1\uFF0C\u8BF7\u5728\u9884\u8BBE App \u68C0\u67E5\u6216\u9009\u62E9\u6709\u6548\u7684\u5907\u4EFD\uFF1B\u539F\u5E93\u672A\u91CD\u7F6E\u3002",
+    "selection-missing": "\u5F53\u524D\u89D2\u8272\u7F3A\u5C11\u6709\u6548\u7684\u9884\u8BBE\u9009\u62E9\uFF0C\u8BF7\u5728\u9884\u8BBE App \u9009\u62E9\u6216\u786E\u8BA4\u6CBF\u7528\u65E7\u914D\u7F6E\u3002",
+    "preset-disabled": "\u5F53\u524D\u89D2\u8272\u6240\u9009\u5C0F\u8BF4\u9884\u8BBE\u5C1A\u672A\u542F\u7528\uFF0C\u8BF7\u5728\u9884\u8BBE App \u68C0\u67E5\u540E\u660E\u786E\u542F\u7528\u3002",
+    "version-missing": "\u89D2\u8272\u914D\u7F6E\u5F15\u7528\u7684\u539F\u4EF6\u7248\u672C\u7F3A\u5931\uFF0C\u8BF7\u5728\u9884\u8BBE App \u590D\u6838\u539F\u4EF6\u53CA\u66F4\u65B0\u524D\u5907\u4EFD\u3002",
+    "overrides-incompatible": "\u89D2\u8272\u8986\u76D6\u4E0E\u539F\u4EF6\u4E0D\u517C\u5BB9\uFF0C\u8BF7\u5728\u9884\u8BBE App \u590D\u6838\u8986\u76D6\uFF1B\u4E0D\u4F1A\u81EA\u52A8\u5220\u9664\u914D\u7F6E\u6216\u56DE\u9000\u3002"
+  };
+  var PresetPreparationError = class extends Error {
+    constructor(issue, message = presetIssueText[issue]) {
+      super(message);
+      this.issue = issue;
+    }
+  };
+
   // src/core/fruit/storage.ts
   var FRUIT_DATABASE = "elsewhere-fruit-private-v1";
   var STORE = "documents";
   async function openFruitDatabaseReadonly(signal) {
-    if (typeof indexedDB.databases === "function" && !(await indexedDB.databases()).some((db) => db.name === FRUIT_DATABASE)) return null;
+    try {
+      if (typeof indexedDB.databases === "function" && !(await indexedDB.databases()).some((db) => db.name === FRUIT_DATABASE)) return null;
+    } catch {
+      throw new PresetPreparationError("storage-failed");
+    }
     if (signal?.aborted) throw signal.reason;
     return new Promise((resolve, reject) => {
       const cancel = () => reject(signal?.reason || new DOMException("\u9884\u8BBE\u8BFB\u53D6\u5DF2\u53D6\u6D88", "AbortError"));
@@ -11530,12 +11564,12 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
       };
       request.onerror = () => {
         clean();
-        absent ? resolve(null) : reject(new Error("\u65E0\u6CD5\u8BFB\u53D6\u79C1\u6709\u9884\u8BBE\u5E93\uFF0C\u539F\u914D\u7F6E\u4FDD\u7559"));
+        absent ? resolve(null) : reject(new PresetPreparationError("storage-failed"));
       };
       request.onblocked = () => {
         clean();
         blocked = true;
-        reject(new Error("\u79C1\u6709\u9884\u8BBE\u5E93\u6B63\u5728\u53D8\u66F4\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5"));
+        reject(new PresetPreparationError("storage-blocked"));
       };
     });
   }
@@ -11578,11 +11612,11 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
 
   // src/core/fruit/roleProfiles.ts
   var safeId = (v) => typeof v === "string" && v.length > 0 && v.length <= 200 && !["__proto__", "constructor", "prototype"].includes(v) && !/[\u0000-\u001f]/.test(v);
-  var fail2 = (message) => {
-    throw new Error(message + "\uFF1B\u539F\u914D\u7F6E\u4FDD\u7559\uFF0C\u672A\u56DE\u9000\u6216\u91CD\u7F6E");
+  var fail2 = (message, issue = "overrides-incompatible") => {
+    throw new PresetPreparationError(issue, message + "\uFF1B\u539F\u914D\u7F6E\u4FDD\u7559\uFF0C\u672A\u56DE\u9000\u6216\u91CD\u7F6E");
   };
   var presetHash = (entry2) => entry2.kind === "native" ? "native" : entry2.preset.sha256;
-  var entry = (l, id) => l.entries.find((e) => e.id === id) || fail2("\u6240\u9009\u9884\u8BBE\u4E0D\u5B58\u5728");
+  var entry = (l, id) => l.entries.find((e) => e.id === id) || fail2("\u6240\u9009\u9884\u8BBE\u4E0D\u5B58\u5728", "selection-missing");
   function legacyNovelSnapshot(l) {
     return l.legacyNovel || { defaults: { ...l.defaults }, entries: Object.fromEntries(l.entries.map((e) => [e.id, { baseHash: presetHash(e), enabled: e.enabled, profiles: structuredClone(e.profiles) }])) };
   }
@@ -11604,7 +11638,7 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
       if (hash !== "native") return fail2("\u539F\u751F\u9884\u8BBE\u5F15\u7528\u65E0\u6548");
       return nativePreset(mode);
     }
-    return (e.preset.sha256 === hash ? e.preset : l.versions?.find((p) => p.sha256 === hash)) || fail2("\u914D\u7F6E\u6240\u5F15\u7528\u7684\u539F\u4EF6\u7248\u672C\u7F3A\u5931");
+    return (e.preset.sha256 === hash ? e.preset : l.versions?.find((p) => p.sha256 === hash)) || fail2("\u914D\u7F6E\u6240\u5F15\u7528\u7684\u539F\u4EF6\u7248\u672C\u7F3A\u5931", "version-missing");
   }
   function rolePresetBinding(l, roleId, id) {
     const r = l.roleNovel?.[roleId];
@@ -11668,12 +11702,12 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
     }
     if (r && !r.useLegacy) {
       const b2 = rolePresetBinding(l, roleId), e2 = entry(l, r.presetId);
-      if (e2.kind !== "native" && !b2.enabled) return fail2("\u89D2\u8272\u6240\u9009\u5C0F\u8BF4\u9884\u8BBE\u5DF2\u505C\u7528");
+      if (e2.kind !== "native" && !b2.enabled) return fail2("\u89D2\u8272\u6240\u9009\u5C0F\u8BF4\u9884\u8BBE\u5DF2\u505C\u7528", "preset-disabled");
       return { profile: projectRoleNovelProfile(l, r.presetId, b2), preset: e2.kind === "native" ? nativePreset(slot) : e2.preset, revision: l.revision, requestedPresetId: r.presetId, actualPresetId: r.presetId, roleId, configSource: "role-shared", presetHash: presetHash(e2), profileBaseHash: b2.baseHash };
     }
     const old = legacyNovelSnapshot(l), id = old.defaults[slot], e = entry(l, id), b = old.entries[id];
-    if (!b) return fail2("\u65E7\u5C0F\u8BF4\u914D\u7F6E\u7F3A\u5931");
-    if (e.kind !== "native" && !b.enabled) return fail2("\u6240\u9009\u5C0F\u8BF4\u9884\u8BBE\u5DF2\u505C\u7528");
+    if (!b) return fail2("\u65E7\u5C0F\u8BF4\u914D\u7F6E\u7F3A\u5931", "selection-missing");
+    if (e.kind !== "native" && !b.enabled) return fail2("\u6240\u9009\u5C0F\u8BF4\u9884\u8BBE\u5DF2\u505C\u7528", "preset-disabled");
     return { profile: projectRoleNovelProfile(l, id, { profile: b.profiles[slot], baseHash: b.baseHash, enabled: b.enabled }, false), preset: e.kind === "native" ? nativePreset(slot) : e.preset, revision: l.revision, requestedPresetId: id, actualPresetId: id, roleId, configSource: "legacy-unresolved", presetHash: presetHash(e), profileBaseHash: b.baseHash };
   }
   function decodeRoleNovelState(value, l) {
@@ -11715,6 +11749,17 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
   }
   function planRoleProfile(l, id, b) {
     const e = entry(l, id), source = presetVersion(l, id, b.baseHash), profile2 = sharedNovelProfile(b.profile, e.kind === "native");
+    if (typeof b.enabled !== "boolean") return fail2("\u89D2\u8272\u9884\u8BBE\u542F\u7528\u72B6\u6001\u65E0\u6548");
+    if (e.kind !== "native" && b.baseHash === presetHash(e)) {
+      const effective = applyFruitProfile(source, profile2), prompts = new Map(effective.prompts.map((p) => [p.identifier, p]));
+      for (const [key2, on] of Object.entries(profile2.overrides)) {
+        const p = prompts.get(key2);
+        if (!p) return fail2("\u89D2\u8272\u8986\u76D6\u5F15\u7528\u7684\u6761\u76EE\u4E0D\u5B58\u5728");
+        if (on && (p.blockedReason || !effective.order.some((e2) => e2.identifier === key2))) return fail2("\u89D2\u8272\u8986\u76D6\u542F\u7528\u4E86\u4E0D\u53EF\u7528\u6761\u76EE");
+      }
+      if (Object.keys(profile2.regexOverrides || {}).some((id2) => !source.regex.some((r) => r.id === id2))) return fail2("\u89D2\u8272\u8986\u76D6\u5F15\u7528\u7684\u6B63\u5219\u4E0D\u5B58\u5728");
+      return { next: { preset: source, profiles: { meeting: profile2, theatre: profile2 }, enabled: b.enabled }, profile: profile2, added: 0, removed: 0, changed: 0, orderChanged: 0, enabledChanged: 0, modelParametersChanged: [], dropped: [] };
+    }
     const plan = planPresetUpdate({ preset: source, profiles: { meeting: profile2, theatre: profile2 }, enabled: b.enabled }, e.preset);
     const dropped = [...new Map(plan.dropped.map((d) => [d.id, { id: d.id, reason: d.reason }])).values()];
     const regexIds = new Set(e.preset.regex.map((r) => r.id));
@@ -11900,7 +11945,14 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
     return selectRoleRequestPreset(library, mode, roleId);
   }
   async function loadRequestPreset(mode, roleId, signal) {
-    const library = await new PresetLibraryRepository(nativePreset("meeting")).load(false, signal);
+    let library;
+    try {
+      library = await new PresetLibraryRepository(nativePreset("meeting")).load(false, signal);
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason;
+      if (error instanceof PresetPreparationError) throw error;
+      throw new PresetPreparationError(error instanceof DOMException ? "storage-failed" : "library-invalid");
+    }
     if (signal?.aborted) throw signal.reason;
     return selectRequestPreset(library, mode, roleId);
   }
@@ -16462,15 +16514,24 @@ channel.onmessage=async({data:job})=>{
     }
     const novelTasks = createNovelTasks();
     const novelProgress = /* @__PURE__ */ new WeakMap();
+    function novelRetrySource(r, p) {
+      if (view !== "novel" || role() !== r || busy || novelTasks.has(r.id) || p.endedAt || data.settings.mode !== "api" || !token.trim() || !canUseRealModel(data.settings) || !saveSession.current()) return;
+      if (novelViewKind === "play" ? r.play !== p || r.play.paused : r.scene !== p || r.scene.opening && r.scene.opening.status !== "archived") return;
+      const latest = (novelViewKind === "play" ? getActiveMessages(p.messages) : encounterHistory(r, p.messages)).at(-1);
+      if (latest?.speaker !== "me" || p.novelAttempt?.state === "archived" || p.novelAttempt?.inputId && p.novelAttempt.inputId !== latest.id) return;
+      return latest;
+    }
     function novelStatusHtml(r, p) {
       const active = novelTasks.has(r.id), progress = novelProgress.get(p), attempt = p.novelAttempt;
-      if (!progress && !attempt) return '<div class="chat-feedback" data-novel-status="idle" role="status">\u7B49\u5F85\u4F60\u8F93\u5165\u8A00\u8BED\u6216\u884C\u52A8\uFF1B\u5C1A\u672A\u53D1\u9001\u5C0F\u8BF4\u8BF7\u6C42\u3002</div>';
+      const retry = novelRetrySource(r, p);
+      if (!progress && !attempt && !retry) return '<div class="chat-feedback" data-novel-status="idle" role="status">\u7B49\u5F85\u4F60\u8F93\u5165\u8A00\u8BED\u6216\u884C\u52A8\uFF1B\u5C1A\u672A\u53D1\u9001\u5C0F\u8BF4\u8BF7\u6C42\u3002</div>';
       if (!active && attempt?.state === "archived" && (!progress || progress.phase === "archived") && !attempt.warning) return "";
       const state2 = progress?.state || attempt?.state, code = progress?.code || attempt?.code;
       const phase = active ? progress?.phase : attempt?.state === "archived" ? "archived" : "failed";
       const label2 = attempt?.state === "archived" && attempt.warning ? "\u5C0F\u8BF4\u6B63\u6587\u5DF2\u4FDD\u5B58\uFF0C\u635F\u574F\u7684\u53EF\u9009\u8F85\u52A9\u5757\u672A\u91C7\u7528\u3002" : active ? { preparing: "\u6B63\u5728\u51C6\u5907\u9884\u8BBE\u3002", compiling: "\u6B63\u5728\u7F16\u8BD1 Prompt\u3002", checking: "\u6B63\u5728\u6821\u9A8C\u573A\u666F\u548C\u6765\u6E90\u3002", requesting: "\u6B63\u5728\u7B49\u5F85\u6A21\u578B\u54CD\u5E94\u3002", reading: "\u6B63\u5728\u8BFB\u53D6\u6A21\u578B\u6B63\u6587\u3002", parsing: "\u6B63\u5728\u68C0\u67E5\u56DE\u590D\u683C\u5F0F\u3002", saving: "\u56DE\u590D\u5DF2\u8FD4\u56DE\uFF0C\u6B63\u5728\u786E\u8BA4\u4FDD\u5B58\u3002", archived: "\u56DE\u590D\u5DF2\u4FDD\u5B58\u3002", failed: "\u751F\u6210\u5DF2\u505C\u6B62\u3002" }[phase || "preparing"] : code === "preset" ? "\u9884\u8BBE\u51C6\u5907\u672A\u5B8C\u6210\u3002" : code === "compile" ? "Prompt \u914D\u7F6E\u65E0\u6CD5\u7F16\u8BD1\u3002" : code === "provider" ? "\u670D\u52A1\u5546\u8FD4\u56DE\u9519\u8BEF\u6216\u62E6\u622A\u3002" : code === "format" ? "\u54CD\u5E94\u5DF2\u8FD4\u56DE\uFF0C\u4F46\u6B63\u6587\u6216\u683C\u5F0F\u65E0\u6CD5\u63A5\u53D7\u3002" : code === "save" ? "\u56DE\u590D\u5DF2\u8FD4\u56DE\uFF0C\u4F46\u4FDD\u5B58\u672A\u786E\u8BA4\u3002" : code === "stale" ? "\u573A\u666F\u6216\u6765\u6E90\u5DF2\u53D8\u5316\uFF0C\u672A\u5F52\u6863\u3002" : code === "timeout" ? "\u7B49\u5F85\u5DF2\u5230\u622A\u6B62\u65F6\u95F4\u3002" : "\u4E0A\u6B21\u751F\u6210\u5DF2\u505C\u6B62\u3002";
       const risk = state2 === "not-sent" ? "\u8BF7\u6C42\u672A\u53D1\u9001\uFF1B\u539F\u8BDD\u548C\u914D\u7F6E\u4FDD\u7559\u3002" : state2 === "archived" ? "\u56DE\u590D\u5DF2\u786E\u8BA4\u4FDD\u5B58\u3002" : "\u8BF7\u6C42\u5DF2\u7ECF\u53D1\u9001\u6216\u53EF\u80FD\u53D1\u9001\uFF0C\u7ED3\u679C\u6216\u5F52\u6863\u672A\u786E\u8BA4\uFF1B\u53EF\u80FD\u5DF2\u4EA7\u751F\u8D39\u7528\uFF0C\u5E94\u7528\u4E0D\u4F1A\u81EA\u52A8\u91CD\u53D1\u3002";
-      return `<div class="chat-feedback" data-novel-status="${esc(phase || "failed")}" data-novel-state="${esc(state2 || "unknown")}" role="status"><p>${label2} ${risk}</p>${active ? '<button type="button" class="btn secondary" data-action="cancel-novel">\u505C\u6B62\u672C\u6B21\u7B49\u5F85</button>' : progress?.text ? '<button type="button" class="btn secondary" data-action="copy-novel-reply">\u590D\u5236\u672A\u786E\u8BA4\u7684\u56DE\u590D</button>' : ""}</div>`;
+      const issue = progress?.presetIssue || attempt?.presetIssue, detail = typeof issue === "string" && Object.hasOwn(presetIssueText, issue) ? presetIssueText[issue] : "";
+      return `<div class="chat-feedback" data-novel-status="${esc(phase || "failed")}" data-novel-state="${esc(state2 || "unknown")}" role="status"><p>${label2} ${risk}</p>${detail ? `<p>${esc(detail)}</p>` : ""}${code === "preset" || issue ? `<button type="button" class="btn secondary" data-action="check-novel-preset" data-role-id="${esc(r.id)}" data-stage-id="${esc(p.id)}">\u68C0\u67E5\u5F53\u524D\u89D2\u8272\u9884\u8BBE</button>` : ""}${active ? '<button type="button" class="btn secondary" data-action="cancel-novel">\u505C\u6B62\u672C\u6B21\u7B49\u5F85</button>' : progress?.text ? '<button type="button" class="btn secondary" data-action="copy-novel-reply">\u590D\u5236\u672A\u786E\u8BA4\u7684\u56DE\u590D</button>' : ""}${retry ? `<button type="button" class="btn secondary" data-action="retry-novel" data-role-id="${esc(r.id)}" data-stage-id="${esc(p.id)}" data-input-id="${esc(retry.id)}">\u91CD\u8BD5\u4E0A\u4E00\u6761\u56DE\u590D</button>` : ""}</div>`;
     }
     function confirmNovelRetry(p) {
       return !p.novelAttempt || p.novelAttempt.state === "archived" || p.novelAttempt.state === "not-sent" || window.confirm("\u4E0A\u6B21\u8BF7\u6C42\u53EF\u80FD\u5DF2\u88AB\u670D\u52A1\u5546\u5904\u7406\uFF0C\u91CD\u8BD5\u6216\u91CD\u65B0\u751F\u6210\u53EF\u80FD\u518D\u6B21\u8BA1\u8D39\u3002\u786E\u5B9A\u7EE7\u7EED\uFF1F");
@@ -18603,7 +18664,7 @@ channel.onmessage=async({data:job})=>{
       ${renderRevisionsDrawer(r, scope)}
       <div class="novel" id="scroll-area"><div class="chapter">${isPlay ? "theatre / act one" : "a moment together"}</div><h2 class="scene-title">${esc(title)}</h2>${!isPlay ? `<div class="row between"><span data-scene-location>\u5730\u70B9\uFF1A${esc(r.scene.where)}</span><details><summary>\u573A\u666F\u9009\u9879</summary><button type="button" class="btn small secondary" data-action="edit-meeting-place" data-role-id="${esc(r.id)}" data-scene-id="${esc(p.id)}">\u5907\u7528\u5730\u70B9\u7EA0\u9519</button></details></div>` : ""}${activeMessages.map((m) => {
           const isEditingThis = editingMessageId === m.id && editingMessageScope === scope;
-          return `<div class="passage ${m.speaker === "me" ? "mine" : m.speaker === "char" ? "theirs" : "note"}" data-msg-id="${esc(m.id)}"><span class="speaker">${m.speaker === "me" ? "\u4F60" : m.speaker === "char" ? esc(r.name) : "\u573A\u666F"}${m.editedAt ? " \xB7 \u5DF2\u7F16\u8F91" : ""}</span>${quoteBubbleHtml(m, r)}${novelMessageHtml(m, r.id, p.id, isPlay ? "theatre" : "meeting")}
+          return `<div class="passage ${m.speaker === "me" ? "mine" : m.speaker === "char" ? "theirs" : "note"}" data-msg-id="${esc(m.id)}"><span class="speaker">${m.speaker === "me" ? "\u4F60" : m.speaker === "char" ? esc(r.name) : "\u573A\u666F"}${m.editedAt ? " \xB7 \u5DF2\u7F16\u8F91" : ""}</span>${quoteBubbleHtml(m, r)}<div class="novel-body">${novelMessageHtml(m, r.id, p.id, isPlay ? "theatre" : "meeting")}</div>
           ${m.speaker !== "note" ? isEditingThis ? `<form id="inline-edit-form" class="inline-edit-form" data-scope="${scope}" data-id="${esc(
             m.id
           )}">
@@ -18640,7 +18701,7 @@ channel.onmessage=async({data:job})=>{
             </div>` : ""}
       ${novelStatusHtml(r, p)}
       ${openingPending ? `<div class="chat-feedback" role="status" data-scene-opening="${esc(opening.status)}"><p>${busy ? "\u6B63\u5728\u51C6\u5907\u6216\u751F\u6210\u672C\u8F6E\u9762\u5BF9\u9762\u56DE\u590D\u3002" : opening.status === "unsent" ? "\u573A\u666F\u5DF2\u4FDD\u5B58\uFF0C\u9996\u6B21\u8BF7\u6C42\u5C1A\u672A\u53D1\u9001\u3002" : "\u9996\u6B21\u8BF7\u6C42\u6216\u4FDD\u5B58\u7ED3\u679C\u672A\u786E\u8BA4\u3002\u53EF\u5148\u5237\u65B0\u6838\u5BF9\uFF0C\u91CD\u8BD5\u53EF\u80FD\u518D\u6B21\u8BA1\u8D39\u3002"}</p>${busy ? "" : `<button type="button" class="btn secondary" data-action="resume-scene-opening">${opening.status === "unsent" ? "\u7EE7\u7EED\u672C\u8F6E" : "\u91CD\u65B0\u53D1\u9001\u9996\u6B21\u8BF7\u6C42"}</button>`}</div>` : ""}
-      <form class="compose" id="novel-form" data-role-id="${esc(r.id)}" data-scene-id="${isPlay ? "" : esc(p.id)}"><textarea id="novel-input" data-scoped-draft ${showBackstage ? "disabled" : ""} placeholder="\u5199\u4E0B\u4F60\u8BF4\u7684\u8BDD\u6216\u884C\u52A8..." rows="1"></textarea><button class="btn" ${busy || showBackstage || openingPending ? "disabled" : ""}>${uiIcon("send")}</button>${data.settings.mode === "api" && !showBackstage && !openingPending && activeMessages.at(-1)?.speaker === "me" ? `<button type="button" class="btn secondary" data-action="retry-novel" ${busy ? "disabled" : ""} title="\u4E0D\u91CD\u590D\u6DFB\u52A0\u7528\u6237\u6D88\u606F">\u91CD\u8BD5\u56DE\u590D</button>` : ""}</form></section>${showBackstage ? renderIntermissionPanel(r, p) : ""}</div>`,
+      <form class="compose" id="novel-form" data-role-id="${esc(r.id)}" data-scene-id="${isPlay ? "" : esc(p.id)}"><textarea id="novel-input" data-scoped-draft ${showBackstage ? "disabled" : ""} placeholder="\u5199\u4E0B\u4F60\u8BF4\u7684\u8BDD\u6216\u884C\u52A8..." rows="1"></textarea><button class="btn" ${busy || showBackstage || openingPending ? "disabled" : ""} aria-label="\u53D1\u9001\u63CF\u5199">${uiIcon("send")}</button></form></section>${showBackstage ? renderIntermissionPanel(r, p) : ""}</div>`,
         false
       );
     }
@@ -18944,6 +19005,15 @@ channel.onmessage=async({data:job})=>{
       const rawTheme = role()?.theme || legacyMap[data.theme] || data.theme || "blue";
       const key2 = ["blue", "green", "pink", "coffee", "night"].includes(rawTheme) ? rawTheme : "blue";
       if (root.dataset) root.dataset.theme = key2;
+      const scheme = key2 === "night" ? "dark" : "light";
+      root.style.colorScheme = scheme;
+      let schemeMeta = document.querySelector('meta[name="color-scheme"]');
+      if (!schemeMeta) {
+        schemeMeta = document.createElement("meta");
+        schemeMeta.name = "color-scheme";
+        document.head.append(schemeMeta);
+      }
+      schemeMeta.content = scheme;
       let themeColor = document.querySelector('meta[name="theme-color"]');
       if (!themeColor) {
         themeColor = document.createElement("meta");
@@ -19493,13 +19563,15 @@ channel.onmessage=async({data:job})=>{
         if (regenerateId) notify("\u5DF2\u91CD\u65B0\u751F\u6210\uFF1B\u539F\u7248\u672C\u53CA\u4FEE\u8BA2\u8BB0\u5F55\u4FDD\u7559");
       } catch (error) {
         const phase = progress.phase;
+        if (phase === "preparing" && error instanceof PresetPreparationError) progress.presetIssue = error.issue;
+        else if (phase === "preparing" && error instanceof Error && error.name === "TimeoutError") progress.presetIssue = "storage-timeout";
         if (error instanceof NovelOutputError) progress.text = error.safeText;
         progress.state = dispatched ? progress.state === "returned" ? "returned" : "unknown" : "not-sent";
         progress.code = progress.code || (error instanceof Error && error.name === "TimeoutError" ? "timeout" : error instanceof Error && error.name === "AbortError" ? "cancelled" : error instanceof ConversationCompileError ? "compile" : phase === "saving" ? "save" : phase === "preparing" ? "preset" : phase === "parsing" ? "format" : !valid() ? "stale" : "connection");
         update("failed");
         if (novelProgress.get(task.stage) === progress && data === world && world.roles.includes(r) && (r.scene === task.stage || r.play === task.stage) && (!claim || task.stage.novelAttempt === claim) && saveSession.current() && (claim || !task.stage.novelAttempt || ["not-sent", "archived"].includes(task.stage.novelAttempt.state))) {
           const previous = task.stage.novelAttempt;
-          task.stage.novelAttempt = { ...claim || { id: task.id, at: now(), timeoutMs: 0 }, state: progress.state, code: progress.code, ...progress.httpStatus ? { httpStatus: progress.httpStatus } : {}, ...progress.finishReason ? { finishReason: progress.finishReason } : {} };
+          task.stage.novelAttempt = { ...claim || { id: task.id, at: now(), timeoutMs: 0, inputId: getActiveMessages(task.stage.messages).filter((m) => m.speaker === "me").at(-1)?.id }, state: progress.state, code: progress.code, ...progress.presetIssue ? { presetIssue: progress.presetIssue } : {}, ...progress.httpStatus ? { httpStatus: progress.httpStatus } : {}, ...progress.finishReason ? { finishReason: progress.finishReason } : {} };
           if (!save()) task.stage.novelAttempt = previous;
           else if (!dispatched && scene?.opening && scene.opening === openingClaim) {
             scene.opening = { ...scene.opening, status: "unsent" };
@@ -20576,10 +20648,16 @@ channel.onmessage=async({data:job})=>{
         if (p && view === "novel" && text2) offerUnstoredReply(text2);
         return;
       }
+      if (act === "check-novel-preset") {
+        const current = role(), p = current && (novelViewKind === "play" ? current.play : current.scene);
+        if (current && p && view === "novel" && !busy && b.dataset.roleId === current.id && b.dataset.stageId === p.id) go("presets");
+        return;
+      }
       if (act === "retry-novel") {
         const current = role(), kind = novelViewKind, p = current && (kind === "play" ? current.play : current.scene);
-        const latest = getActiveMessages(p?.messages).at(-1);
-        if (!current || !p || busy || latest?.speaker !== "me" || !confirmNovelRetry(p)) return;
+        const latest = current && p && novelRetrySource(current, p);
+        if (!current || !p || !latest || b.dataset.roleId !== current.id || b.dataset.stageId !== p.id || b.dataset.inputId !== latest.id) return;
+        if (p.novelAttempt ? !confirmNovelRetry(p) : !window.confirm("\u65E7\u8BB0\u5F55\u65E0\u6CD5\u786E\u8BA4\u4E0A\u6B21\u8BF7\u6C42\u662F\u5426\u5DF2\u53D1\u9001\uFF0C\u91CD\u8BD5\u53EF\u80FD\u518D\u6B21\u8BA1\u8D39\u3002\u786E\u5B9A\u7EE7\u7EED\uFF1F")) return;
         busy = true;
         render(false);
         void generateNovelReply(current, kind, latest.text).catch((error) => notify("\u751F\u6210\u672A\u5B8C\u6210\uFF1A" + (error instanceof Error ? error.message : "\u8FDE\u63A5\u5F02\u5E38"))).finally(() => {

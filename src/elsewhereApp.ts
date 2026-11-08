@@ -13,6 +13,7 @@ import {phoneMessagesAt,messageSourceIndex} from './core/messageProvenance';
 import {identityName,identityContext,buildNativeContext,compileNativeConversation,compileNovelConversation,compileOpeningPrompt,type NativePromptOptions} from './core/prompt';
 import {ConversationCompileError,requestMessages,promptStructure,type ConversationCompilation} from './core/conversationPrompt';
 import {loadRequestPreset} from './core/fruit/library';
+import {PresetPreparationError,presetIssueText} from './core/fruit/presetIssue';
 import type {FruitPreset} from './core/fruit/types';
 import {createNovelTasks,commitNovelReply,prepareNovelRegeneration,parseNovelResponse,NovelOutputError,safeNovelText,novelRequestTimeout,novelSamplingParameters,type NovelKind} from './core/novelGeneration';
 import {monitorItemsForDisplay} from './core/monitorPresentation';
@@ -1547,17 +1548,26 @@ export function initElsewhereApp(saveSession:SaveSession): void {
 
   const novelTasks=createNovelTasks();
   type NovelPhase='preparing'|'compiling'|'checking'|'requesting'|'reading'|'parsing'|'saving'|'archived'|'failed';
-  type NovelProgress={id:string;phase:NovelPhase;state:'not-sent'|'unknown'|'returned'|'archived';warning?:boolean;code?:NonNullable<SceneData['novelAttempt']>['code'];httpStatus?:number;finishReason?:string;startedAt:number;elapsedMs?:number;text?:string};
+  type NovelProgress={id:string;phase:NovelPhase;state:'not-sent'|'unknown'|'returned'|'archived';warning?:boolean;code?:NonNullable<SceneData['novelAttempt']>['code'];presetIssue?:NonNullable<SceneData['novelAttempt']>['presetIssue'];httpStatus?:number;finishReason?:string;startedAt:number;elapsedMs?:number;text?:string};
   const novelProgress=new WeakMap<SceneData|PlayData,NovelProgress>();
+  function novelRetrySource(r:RoleData,p:SceneData|PlayData){
+    if(view!=='novel'||role()!==r||busy||novelTasks.has(r.id)||p.endedAt||data.settings.mode!=='api'||!token.trim()||!canUseRealModel(data.settings)||!saveSession.current())return;
+    if(novelViewKind==='play'?r.play!==p||r.play.paused:r.scene!==p||r.scene.opening&&r.scene.opening.status!=='archived')return;
+    const latest=(novelViewKind==='play'?getActiveMessages(p.messages):encounterHistory(r,p.messages)).at(-1);
+    if(latest?.speaker!=='me'||p.novelAttempt?.state==='archived'||p.novelAttempt?.inputId&&p.novelAttempt.inputId!==latest.id)return;
+    return latest;
+  }
   function novelStatusHtml(r:RoleData,p:SceneData|PlayData):string{
     const active=novelTasks.has(r.id),progress=novelProgress.get(p),attempt=p.novelAttempt;
-    if(!progress&&!attempt)return '<div class="chat-feedback" data-novel-status="idle" role="status">等待你输入言语或行动；尚未发送小说请求。</div>';
+    const retry=novelRetrySource(r,p);
+    if(!progress&&!attempt&&!retry)return '<div class="chat-feedback" data-novel-status="idle" role="status">等待你输入言语或行动；尚未发送小说请求。</div>';
     if(!active&&attempt?.state==='archived'&&(!progress||progress.phase==='archived')&&!attempt.warning)return '';
     const state=progress?.state||attempt?.state,code=progress?.code||attempt?.code;
     const phase=active?progress?.phase:attempt?.state==='archived'?'archived':'failed';
     const label=attempt?.state==='archived'&&attempt.warning?'小说正文已保存，损坏的可选辅助块未采用。':active?({preparing:'正在准备预设。',compiling:'正在编译 Prompt。',checking:'正在校验场景和来源。',requesting:'正在等待模型响应。',reading:'正在读取模型正文。',parsing:'正在检查回复格式。',saving:'回复已返回，正在确认保存。',archived:'回复已保存。',failed:'生成已停止。'}[phase||'preparing']):code==='preset'?'预设准备未完成。':code==='compile'?'Prompt 配置无法编译。':code==='provider'?'服务商返回错误或拦截。':code==='format'?'响应已返回，但正文或格式无法接受。':code==='save'?'回复已返回，但保存未确认。':code==='stale'?'场景或来源已变化，未归档。':code==='timeout'?'等待已到截止时间。':'上次生成已停止。';
     const risk=state==='not-sent'?'请求未发送；原话和配置保留。':state==='archived'?'回复已确认保存。':'请求已经发送或可能发送，结果或归档未确认；可能已产生费用，应用不会自动重发。';
-    return `<div class="chat-feedback" data-novel-status="${esc(phase||'failed')}" data-novel-state="${esc(state||'unknown')}" role="status"><p>${label} ${risk}</p>${active?'<button type="button" class="btn secondary" data-action="cancel-novel">停止本次等待</button>':progress?.text?'<button type="button" class="btn secondary" data-action="copy-novel-reply">复制未确认的回复</button>':''}</div>`;
+    const issue=progress?.presetIssue||attempt?.presetIssue,detail=typeof issue==='string'&&Object.hasOwn(presetIssueText,issue)?presetIssueText[issue]:'';
+    return `<div class="chat-feedback" data-novel-status="${esc(phase||'failed')}" data-novel-state="${esc(state||'unknown')}" role="status"><p>${label} ${risk}</p>${detail?`<p>${esc(detail)}</p>`:''}${code==='preset'||issue?`<button type="button" class="btn secondary" data-action="check-novel-preset" data-role-id="${esc(r.id)}" data-stage-id="${esc(p.id)}">检查当前角色预设</button>`:''}${active?'<button type="button" class="btn secondary" data-action="cancel-novel">停止本次等待</button>':progress?.text?'<button type="button" class="btn secondary" data-action="copy-novel-reply">复制未确认的回复</button>':''}${retry?`<button type="button" class="btn secondary" data-action="retry-novel" data-role-id="${esc(r.id)}" data-stage-id="${esc(p.id)}" data-input-id="${esc(retry.id)}">重试上一条回复</button>`:''}</div>`;
   }
   function confirmNovelRetry(p:SceneData|PlayData):boolean{
     return !p.novelAttempt||p.novelAttempt.state==='archived'||p.novelAttempt.state==='not-sent'||window.confirm('上次请求可能已被服务商处理，重试或重新生成可能再次计费。确定继续？');
@@ -4078,7 +4088,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
               : 'note'
           }" data-msg-id="${esc(m.id)}"><span class="speaker">${
             m.speaker === 'me' ? '你' : m.speaker === 'char' ? esc(r.name) : '场景'
-          }${m.editedAt ? ' · 已编辑' : ''}</span>${quoteBubbleHtml(m, r)}${novelMessageHtml(m,r.id,p.id,isPlay?'theatre':'meeting')}
+          }${m.editedAt ? ' · 已编辑' : ''}</span>${quoteBubbleHtml(m, r)}<div class="novel-body">${novelMessageHtml(m,r.id,p.id,isPlay?'theatre':'meeting')}</div>
           ${
             m.speaker !== 'note'
               ? isEditingThis
@@ -4132,7 +4142,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       ${openingPending?`<div class="chat-feedback" role="status" data-scene-opening="${esc(opening.status)}"><p>${busy?'正在准备或生成本轮面对面回复。':opening.status==='unsent'?'场景已保存，首次请求尚未发送。':'首次请求或保存结果未确认。可先刷新核对，重试可能再次计费。'}</p>${busy?'':`<button type="button" class="btn secondary" data-action="resume-scene-opening">${opening.status==='unsent'?'继续本轮':'重新发送首次请求'}</button>`}</div>`:''}
       <form class="compose" id="novel-form" data-role-id="${esc(r.id)}" data-scene-id="${isPlay?'':esc(p.id)}"><textarea id="novel-input" data-scoped-draft ${showBackstage?'disabled':''} placeholder="写下你说的话或行动..." rows="1"></textarea><button class="btn" ${
         busy||showBackstage||openingPending ? 'disabled' : ''
-      }>${uiIcon('send')}</button>${data.settings.mode==='api'&&!showBackstage&&!openingPending&&activeMessages.at(-1)?.speaker==='me'?`<button type="button" class="btn secondary" data-action="retry-novel" ${busy?'disabled':''} title="不重复添加用户消息">重试回复</button>`:''}</form></section>${showBackstage?renderIntermissionPanel(r,p as PlayData):''}</div>`,
+      } aria-label="发送描写">${uiIcon('send')}</button></form></section>${showBackstage?renderIntermissionPanel(r,p as PlayData):''}</div>`,
       false
     );
   }
@@ -4454,6 +4464,11 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       ? (rawTheme as ThemeName)
       : 'blue';
     if (root.dataset) root.dataset.theme = key;
+    const scheme=key==='night'?'dark':'light';
+    root.style.colorScheme=scheme;
+    let schemeMeta=document.querySelector<HTMLMetaElement>('meta[name="color-scheme"]');
+    if(!schemeMeta){schemeMeta=document.createElement('meta');schemeMeta.name='color-scheme';document.head.append(schemeMeta);}
+    schemeMeta.content=scheme;
     let themeColor=document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
     if(!themeColor){themeColor=document.createElement('meta');themeColor.name='theme-color';document.head.append(themeColor);}
     themeColor.content=getComputedStyle(root).getPropertyValue('--bg').trim();
@@ -4988,13 +5003,15 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if(regenerateId)notify('已重新生成；原版本及修订记录保留');
     }catch(error){
       const phase=progress.phase;
+      if(phase==='preparing'&&error instanceof PresetPreparationError)progress.presetIssue=error.issue;
+      else if(phase==='preparing'&&error instanceof Error&&error.name==='TimeoutError')progress.presetIssue='storage-timeout';
       if(error instanceof NovelOutputError)progress.text=error.safeText;
       progress.state=dispatched?(progress.state==='returned'?'returned':'unknown'):'not-sent';
       progress.code=progress.code||(error instanceof Error&&error.name==='TimeoutError'?'timeout':error instanceof Error&&error.name==='AbortError'?'cancelled':error instanceof ConversationCompileError?'compile':phase==='saving'?'save':phase==='preparing'?'preset':phase==='parsing'?'format':!valid()?'stale':'connection');
       update('failed');
       if(novelProgress.get(task.stage)===progress&&data===world&&world.roles.includes(r)&&(r.scene===task.stage||r.play===task.stage)&&(!claim||task.stage.novelAttempt===claim)&&saveSession.current()&&(claim||!task.stage.novelAttempt||['not-sent','archived'].includes(task.stage.novelAttempt.state))){
         const previous=task.stage.novelAttempt;
-        task.stage.novelAttempt={...(claim||{id:task.id,at:now(),timeoutMs:0}),state:progress.state,code:progress.code,...(progress.httpStatus?{httpStatus:progress.httpStatus}:{}),...(progress.finishReason?{finishReason:progress.finishReason}:{})};
+        task.stage.novelAttempt={...(claim||{id:task.id,at:now(),timeoutMs:0,inputId:getActiveMessages(task.stage.messages).filter(m=>m.speaker==='me').at(-1)?.id}),state:progress.state,code:progress.code,...(progress.presetIssue?{presetIssue:progress.presetIssue}:{}),...(progress.httpStatus?{httpStatus:progress.httpStatus}:{}),...(progress.finishReason?{finishReason:progress.finishReason}:{})};
         if(!save())task.stage.novelAttempt=previous;
         else if(!dispatched&&scene?.opening&&scene.opening===openingClaim){scene.opening={...scene.opening,status:'unsent'};if(!save())scene.opening=openingClaim;}
       }
@@ -5964,10 +5981,15 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     }
     if(act==='cancel-novel'){if(r&&novelTasks.cancel(r.id)){busy=novelTasks.has(data.selected||'');render(false);}return;}
     if(act==='copy-novel-reply'){const p=r&&(novelViewKind==='play'?r.play:r.scene),text=p&&novelProgress.get(p)?.text;if(p&&view==='novel'&&text)offerUnstoredReply(text);return;}
+    if(act==='check-novel-preset'){
+      const current=role(),p=current&&(novelViewKind==='play'?current.play:current.scene);
+      if(current&&p&&view==='novel'&&!busy&&b.dataset.roleId===current.id&&b.dataset.stageId===p.id)go('presets');return;
+    }
     if(act==='retry-novel'){
       const current=role(),kind:NovelKind=novelViewKind,p=current&&(kind==='play'?current.play:current.scene);
-      const latest=getActiveMessages(p?.messages).at(-1);
-      if(!current||!p||busy||latest?.speaker!=='me'||!confirmNovelRetry(p))return;
+      const latest=current&&p&&novelRetrySource(current,p);
+      if(!current||!p||!latest||b.dataset.roleId!==current.id||b.dataset.stageId!==p.id||b.dataset.inputId!==latest.id)return;
+      if(p.novelAttempt?!confirmNovelRetry(p):!window.confirm('旧记录无法确认上次请求是否已发送，重试可能再次计费。确定继续？'))return;
       busy=true;render(false);
       void generateNovelReply(current,kind,latest.text).catch(error=>notify('生成未完成：'+(error instanceof Error?error.message:'连接异常'))).finally(()=>{busy=novelTasks.has(data.selected||'');if(view==='novel'&&role()===current)render(false);});return;
     }

@@ -1,11 +1,12 @@
 import { createFruitState, object, parseFruitPreset, validateProfile } from './preset';
 import type { FruitState } from './types';
+import {PresetPreparationError} from './presetIssue';
 
 export const FRUIT_DATABASE='elsewhere-fruit-private-v1';
 const STORE='documents',KEY='current';
 /** Open only an existing version; a generation request must not create or upgrade storage. */
 export async function openFruitDatabaseReadonly(signal?:AbortSignal):Promise<IDBDatabase|null>{
-  if(typeof indexedDB.databases==='function'&&!(await indexedDB.databases()).some(db=>db.name===FRUIT_DATABASE))return null;
+  try{if(typeof indexedDB.databases==='function'&&!(await indexedDB.databases()).some(db=>db.name===FRUIT_DATABASE))return null;}catch{throw new PresetPreparationError('storage-failed');}
   if(signal?.aborted)throw signal.reason;
   return new Promise((resolve,reject)=>{
     const cancel=()=>reject(signal?.reason||new DOMException('预设读取已取消','AbortError'));
@@ -14,8 +15,8 @@ export async function openFruitDatabaseReadonly(signal?:AbortSignal):Promise<IDB
     const request=indexedDB.open(FRUIT_DATABASE);let absent=false,blocked=false;
     request.onupgradeneeded=()=>{absent=true;request.transaction?.abort();};
     request.onsuccess=()=>{const db=request.result;clean();if(blocked||signal?.aborted){db.close();return;}db.onversionchange=()=>db.close();resolve(db);};
-    request.onerror=()=>{clean();absent?resolve(null):reject(new Error('无法读取私有预设库，原配置保留'));};
-    request.onblocked=()=>{clean();blocked=true;reject(new Error('私有预设库正在变更，请稍后重试'));};
+    request.onerror=()=>{clean();absent?resolve(null):reject(new PresetPreparationError('storage-failed'));};
+    request.onblocked=()=>{clean();blocked=true;reject(new PresetPreparationError('storage-blocked'));};
   });
 }
 export function openFruitDatabase():Promise<IDBDatabase>{

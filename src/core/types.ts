@@ -170,6 +170,7 @@ export interface NovelAttempt {
   id:string;inputId?:string;regenerateId?:string;at:number;
   state:'not-sent'|'unknown'|'returned'|'archived';warning?:boolean;
   code?:'preset'|'compile'|'timeout'|'cancelled'|'provider'|'format'|'save'|'stale'|'connection';
+  presetIssue?:import('./fruit/presetIssue').PresetIssue;
   httpStatus?:number;finishReason?:string;presetId?:string;timeoutMs:number;
 }
 export interface SceneData {

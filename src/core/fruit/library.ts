@@ -6,6 +6,7 @@ import {selectRoleRequestPreset,decodeRoleNovelState} from './roleProfiles';
 import type {RoleNovelConfig,LegacyNovelSnapshot} from './roleProfiles';
 import type {ConversationMode} from './nativePreset';
 import type {FruitMode,FruitPreset,FruitProfile,FruitState} from './types';
+import {PresetPreparationError} from './presetIssue';
 export interface PresetEntry {id:string;kind:'native'|'fruit'|'st';preset:FruitPreset;profiles:Record<FruitMode,FruitProfile>;enabled:boolean;archived?:boolean}
 export interface PresetLibrary {schema:2|3;revision:number;selectedId:string;defaults:Record<FruitMode,string>;entries:PresetEntry[];roleNovel?:Record<string,RoleNovelConfig>;legacyNovel?:LegacyNovelSnapshot;versions?:FruitPreset[]}
 const STORE='preset-library',KEY='current';
@@ -74,7 +75,12 @@ export async function loadNativeRequestProfile(mode:ConversationMode){
  return {profile:structuredClone(entry.profiles[slot]),revision:library.revision,requestedPresetId:mode==='meeting'||mode==='theatre'?library.defaults[slot]:'native',actualPresetId:'native' as const};
 }
 export function selectRequestPreset(library:PresetLibrary,mode:ConversationMode,roleId:string){return selectRoleRequestPreset(library,mode,roleId);}
-export async function loadRequestPreset(mode:ConversationMode,roleId:string,signal?:AbortSignal){const library=await new PresetLibraryRepository(nativePreset('meeting')).load(false,signal);if(signal?.aborted)throw signal.reason;return selectRequestPreset(library,mode,roleId);}
+export async function loadRequestPreset(mode:ConversationMode,roleId:string,signal?:AbortSignal){
+ let library:PresetLibrary;
+ try{library=await new PresetLibraryRepository(nativePreset('meeting')).load(false,signal);}
+ catch(error){if(signal?.aborted)throw signal.reason;if(error instanceof PresetPreparationError)throw error;throw new PresetPreparationError(error instanceof DOMException?'storage-failed':'library-invalid');}
+ if(signal?.aborted)throw signal.reason;return selectRequestPreset(library,mode,roleId);
+}
 
 /** Explicit local backup only; never bundled or sent to any model. */
 export function encodePresetLibraryBackup(library:PresetLibrary):Uint8Array {

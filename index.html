@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#edf6ff" />
+    <meta name="color-scheme" content="light" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <link rel="stylesheet" href="/src/styles.css" />
@@ -16,6 +17,9 @@
         const legacy = {violet: 'pink', sand: 'coffee'};
         const requested = role?.theme || legacy[saved?.theme] || saved?.theme;
         document.documentElement.dataset.theme = ['blue', 'green', 'pink', 'coffee', 'night'].includes(requested) ? requested : 'blue';
+        const scheme = document.documentElement.dataset.theme === 'night' ? 'dark' : 'light';
+        document.documentElement.style.colorScheme = scheme;
+        document.querySelector('meta[name="color-scheme"]').content = scheme;
         const updateColor = () => {
           const color = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
           if (color) {

@@ -1,6 +1,7 @@
 import {createFruitState,object,validateProfile} from './preset';
 import {applyFruitProfile,planPresetUpdate} from './profile';
 import {nativePreset} from './nativePreset';
+import {PresetPreparationError,type PresetIssue} from './presetIssue';
 import type {ConversationMode} from './nativePreset';
 import type {PresetEntry,PresetLibrary} from './library';
 import type {FruitMode,FruitPreset,FruitProfile} from './types';
@@ -10,9 +11,9 @@ export interface RoleNovelBase {presetId:string;sourceMode:FruitMode;profiles:Re
 export interface RoleNovelConfig extends RoleNovelBase {useLegacy?:boolean;previous?:RoleNovelBase}
 export interface LegacyNovelSnapshot {defaults:Record<FruitMode,string>;entries:Record<string,{baseHash:string;enabled:boolean;profiles:Record<FruitMode,FruitProfile>}>}
 const safeId=(v:unknown):v is string=>typeof v==='string'&&v.length>0&&v.length<=200&&!['__proto__','constructor','prototype'].includes(v)&&!/[\u0000-\u001f]/.test(v);
-const fail=(message:string):never=>{throw new Error(message+'；原配置保留，未回退或重置');};
+const fail=(message:string,issue:PresetIssue='overrides-incompatible'):never=>{throw new PresetPreparationError(issue,message+'；原配置保留，未回退或重置');};
 export const presetHash=(entry:PresetEntry)=>entry.kind==='native'?'native':entry.preset.sha256;
-const entry=(l:PresetLibrary,id:string)=>l.entries.find(e=>e.id===id)||fail('所选预设不存在');
+const entry=(l:PresetLibrary,id:string)=>l.entries.find(e=>e.id===id)||fail('所选预设不存在','selection-missing');
 export function legacyNovelSnapshot(l:PresetLibrary):LegacyNovelSnapshot {
  return l.legacyNovel||{defaults:{...l.defaults},entries:Object.fromEntries(l.entries.map(e=>[e.id,{baseHash:presetHash(e),enabled:e.enabled,profiles:structuredClone(e.profiles)}]))};
 }
@@ -29,7 +30,7 @@ export function sharedNovelProfile(p:FruitProfile,native=false):FruitProfile {
 }
 export function presetVersion(l:PresetLibrary,id:string,hash:string,mode:FruitMode='meeting'):FruitPreset {
  const e=entry(l,id);if(e.kind==='native'){if(hash!=='native')return fail('原生预设引用无效');return nativePreset(mode);}
- return (e.preset.sha256===hash?e.preset:l.versions?.find(p=>p.sha256===hash))||fail('配置所引用的原件版本缺失');
+ return (e.preset.sha256===hash?e.preset:l.versions?.find(p=>p.sha256===hash))||fail('配置所引用的原件版本缺失','version-missing');
 }
 export function rolePresetBinding(l:PresetLibrary,roleId:string,id?:string):RolePresetBinding {
  const r=l.roleNovel?.[roleId];if(!r||r.useLegacy)return fail('请先确认沿用哪份旧小说配置');
@@ -73,8 +74,8 @@ export function selectRoleRequestPreset(l:PresetLibrary,mode:ConversationMode,ro
  if(!safeId(roleId))return fail('请求角色 ID 无效');
  const slot=mode==='theatre'||mode==='intermission'?'theatre':'meeting',novel=mode==='meeting'||mode==='theatre',r=l.roleNovel?.[roleId];
  if(!novel){const e=entry(l,'native');return {profile:structuredClone(e.profiles[slot]),preset:nativePreset(slot),revision:l.revision,requestedPresetId:'native',actualPresetId:'native',roleId,configSource:'native-task',presetHash:'native',profileBaseHash:'native'};}
- if(r&&!r.useLegacy){const b=rolePresetBinding(l,roleId),e=entry(l,r.presetId);if(e.kind!=='native'&&!b.enabled)return fail('角色所选小说预设已停用');return {profile:projectRoleNovelProfile(l,r.presetId,b),preset:e.kind==='native'?nativePreset(slot):e.preset,revision:l.revision,requestedPresetId:r.presetId,actualPresetId:r.presetId,roleId,configSource:'role-shared',presetHash:presetHash(e),profileBaseHash:b.baseHash};}
- const old=legacyNovelSnapshot(l),id=old.defaults[slot],e=entry(l,id),b=old.entries[id];if(!b)return fail('旧小说配置缺失');if(e.kind!=='native'&&!b.enabled)return fail('所选小说预设已停用');
+ if(r&&!r.useLegacy){const b=rolePresetBinding(l,roleId),e=entry(l,r.presetId);if(e.kind!=='native'&&!b.enabled)return fail('角色所选小说预设已停用','preset-disabled');return {profile:projectRoleNovelProfile(l,r.presetId,b),preset:e.kind==='native'?nativePreset(slot):e.preset,revision:l.revision,requestedPresetId:r.presetId,actualPresetId:r.presetId,roleId,configSource:'role-shared',presetHash:presetHash(e),profileBaseHash:b.baseHash};}
+ const old=legacyNovelSnapshot(l),id=old.defaults[slot],e=entry(l,id),b=old.entries[id];if(!b)return fail('旧小说配置缺失','selection-missing');if(e.kind!=='native'&&!b.enabled)return fail('所选小说预设已停用','preset-disabled');
  return {profile:projectRoleNovelProfile(l,id,{profile:b.profiles[slot],baseHash:b.baseHash,enabled:b.enabled},false),preset:e.kind==='native'?nativePreset(slot):e.preset,revision:l.revision,requestedPresetId:id,actualPresetId:id,roleId,configSource:'legacy-unresolved',presetHash:presetHash(e),profileBaseHash:b.baseHash};
 }
 /** Validate against the referenced original version, never silently rebase another role. */
@@ -97,6 +98,17 @@ export function decodeRoleNovelState(value:Record<string,unknown>,l:PresetLibrar
 
 export function planRoleProfile(l:PresetLibrary,id:string,b:RolePresetBinding){
  const e=entry(l,id),source=presetVersion(l,id,b.baseHash),profile=sharedNovelProfile(b.profile,e.kind==='native');
+ if(typeof b.enabled!=='boolean')return fail('角色预设启用状态无效');
+ if(e.kind!=='native'&&b.baseHash===presetHash(e)){
+  const effective=applyFruitProfile(source,profile),prompts=new Map(effective.prompts.map(p=>[p.identifier,p]));
+  for(const [key,on]of Object.entries(profile.overrides)){
+   const p=prompts.get(key);if(!p)return fail('角色覆盖引用的条目不存在');
+   if(on&&(p.blockedReason||!effective.order.some(e=>e.identifier===key)))return fail('角色覆盖启用了不可用条目');
+  }
+  if(Object.keys(profile.regexOverrides||{}).some(id=>!source.regex.some(r=>r.id===id)))return fail('角色覆盖引用的正则不存在');
+  // The same original needs validation, not an update that discards valid disabled entries.
+  return {next:{preset:source,profiles:{meeting:profile,theatre:profile},enabled:b.enabled},profile,added:0,removed:0,changed:0,orderChanged:0,enabledChanged:0,modelParametersChanged:[] as string[],dropped:[] as {id:string;reason:string}[]};
+ }
  const plan=planPresetUpdate({preset:source,profiles:{meeting:profile,theatre:profile},enabled:b.enabled},e.preset);
  const dropped=[...new Map(plan.dropped.map(d=>[d.id,{id:d.id,reason:d.reason}])).values()];
  const regexIds=new Set(e.preset.regex.map(r=>r.id));const next=plan.next.profiles.meeting;

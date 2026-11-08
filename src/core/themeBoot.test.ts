@@ -15,16 +15,18 @@ test('saved theme is restored before the application loads, without changing sav
   [{theme:'sand'},'coffee'],[{theme:'violet'},'pink'],[{theme:'invalid'},'blue'],
   [null,'blue'],['broken-json','blue'],
  ] as const){
-  const root={dataset:{} as Record<string,string>},meta={content:''};let reads=0;
-  runInNewContext(script,{document:{documentElement:root,querySelector:()=>meta,addEventListener(){},removeEventListener(){}},localStorage:{getItem(key:string){assert.equal(key,'elsewhere-v01');reads++;return typeof saved==='string'?saved:JSON.stringify(saved);}},getComputedStyle:()=>({getPropertyValue:()=> '#22273a'})});
+  const root={dataset:{} as Record<string,string>,style:{colorScheme:''}},meta={content:''},scheme={content:''};let reads=0;
+  runInNewContext(script,{document:{documentElement:root,querySelector:(s:string)=>s.includes('color-scheme')?scheme:meta,addEventListener(){},removeEventListener(){}},localStorage:{getItem(key:string){assert.equal(key,'elsewhere-v01');reads++;return typeof saved==='string'?saved:JSON.stringify(saved);}},getComputedStyle:()=>({getPropertyValue:()=> '#22273a'})});
   assert.equal(root.dataset.theme,expected);assert.equal(meta.content,'#22273a');assert.equal(reads,1);
+  assert.equal(root.style.colorScheme,expected==='night'?'dark':'light');assert.equal(scheme.content,root.style.colorScheme);
  }
 });
 
 test('production stylesheet arriving after the bootstrap still updates the browser tint',()=>{
  const script=html.match(/<script id="theme-boot">([\s\S]*?)<\/script>/)?.[1];assert.ok(script);
- const root={dataset:{}},meta={content:'#edf6ff'};let color='',loaded=()=>{},removed=false;
- runInNewContext(script,{document:{documentElement:root,querySelector:()=>meta,addEventListener(_name:string,fn:()=>void){loaded=fn;},removeEventListener(){removed=true;}},localStorage:{getItem:()=>JSON.stringify({theme:'night'})},getComputedStyle:()=>({getPropertyValue:()=>color})});
+ const root={dataset:{},style:{colorScheme:''}},meta={content:'#edf6ff'},scheme={content:''};let color='',loaded=()=>{},removed=false;
+ runInNewContext(script,{document:{documentElement:root,querySelector:(s:string)=>s.includes('color-scheme')?scheme:meta,addEventListener(_name:string,fn:()=>void){loaded=fn;},removeEventListener(){removed=true;}},localStorage:{getItem:()=>JSON.stringify({theme:'night'})},getComputedStyle:()=>({getPropertyValue:()=>color})});
+ assert.equal(scheme.content,'dark');assert.equal(root.style.colorScheme,'dark');
  assert.equal(meta.content,'#edf6ff');assert.equal(removed,false);
  color='#22273a';loaded();assert.equal(meta.content,color);assert.equal(removed,true);
 });

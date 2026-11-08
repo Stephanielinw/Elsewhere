@@ -1790,14 +1790,15 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         try{writeLifeJournal(localStorage,journal);}catch{r.lifeTasks=previous;lifeJournalError='无法保存生活调用额度，未发送请求。';return;}
         let maySave=true,version='';const hadThreads=Array.isArray(r.personalThreads);
         const controller=new AbortController();lifeController=controller;
-        const timeout=setTimeout(()=>controller.abort(),90000);
         try{
           if(!data.roles.includes(r)||r.scene||r.play||r.chatTiming?.pending.length||r.chatTiming?.inFlight||!lifeEnabled()||localStorage.getItem(STORAGE_KEY)!==saveSession.raw||!save())throw Error('生活任务未能保存');
           const prepared=prepareLifeTask(r,data.user,task),settings={...data.settings};version=lifeVersion(r);
           if(storedLifeVersion(r.id)!==version)throw Error('生活来源已变化');
           syslog('life','独立生活推进已开始',{roleId:r.id,taskId:task.id});
-          const res=await postModel(settings.endpoint.trim().replace(/\/+$/,'')+'/chat/completions',{method:'POST',signal:controller.signal,headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({model:settings.model,messages:prepared.messages,temperature:settings.temperature,max_tokens:LIFE_MAX_OUTPUT,stream:false})});
-          const raw=await readChatResponse(res);
+          const raw=await readModelBeforeDeadline(async signal=>{
+            const res=await postModel(settings.endpoint.trim().replace(/\/+$/,'')+'/chat/completions',{method:'POST',signal,headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({model:settings.model,messages:prepared.messages,temperature:settings.temperature,max_tokens:LIFE_MAX_OUTPUT,stream:false})});
+            return readChatResponse(res);
+          },controller.signal);
           maySave=localStorage.getItem(STORAGE_KEY)===saveSession.raw&&storedLifeVersion(r.id)===version;
           if(controller.signal.aborted||!maySave||!data.roles.includes(r)||lifeVersion(r)!==version||data.settings.autonomousLife===false||isRoleInActiveFocus(r))throw Error('生活来源或任务已变化');
           commitLifeTask(r,task,prepared,raw,now());
@@ -1813,7 +1814,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
           if(maySave)save();
           syslog('life','独立生活未归档，额度已占用，不自动重试',{roleId:r.id,code:task.status});
         }finally{
-          clearTimeout(timeout);lifeController=null;
+          if(lifeController===controller)lifeController=null;
           try{writeLifeJournal(localStorage,journal);}catch{lifeJournalError='生活调用记录保存失败，自动推进已暂停。';}
           if(view==='monitor'&&role()?.id===r.id)render(false);
         }

@@ -27,6 +27,8 @@ import {syncLifeBudget,reserveLifeAttempt} from './core/lifeBudget';
 import {diaryRequestKey,diarySourceHash,readDiaryReceipt,replaceDiaryReceipt,type DiaryReceipt} from './core/diaryRequests';
 import {claimLifeTask,prepareLifeTask,commitLifeTask,readLifeJournal,writeLifeJournal,lifeTaskState,LIFE_MAX_OUTPUT,type LifeTask} from './core/autonomousLife';
 import {roleMemoryText} from './core/roleMemoryView';
+import {advanceLifePlans,lifeStageOccupied,updateStageAttendance} from './core/lifeExecution';
+import {lifeSourcesValid} from './core/roleLife';
 import {syncRoleMemory} from './core/memory';
 import {claimProactive,proactiveTaskValid,finishProactive,recordProactiveDelivery,recoverProactive,proactiveInstruction,parseProactiveReply,type ProactiveTask} from './core/proactiveChat';
 import {createChatVoiceDialog} from './chatVoiceView';
@@ -1851,10 +1853,21 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   let lifeBusy=false,lifeLastCheck=0,lifeController:AbortController|null=null,lifeJournalError='';
   let lifeClaims:LifeTask[]=[];
   const lifeEnabled=()=>data.settings.autonomousLife!==false;
-  const lifeVersion=(r:RoleData)=>JSON.stringify([r.chats,r.scene,r.play,r.events,r.personalThreads,r.memory,r.name,r.profile,r.job,r.traits,r.place,r.relationship,r.canonNotes,r.notes]);
+  const lifeVersion=(r:RoleData)=>JSON.stringify([r.chats,r.scene,r.play,r.events,r.personalThreads,r.memory,r.lifePlans,r.name,r.profile,r.job,r.traits,r.place,r.relationship,r.canonNotes,r.notes]);
   function storedLifeVersion(id:string):string {
     const stored=JSON.parse(localStorage.getItem(STORAGE_KEY)||'null') as AppData|null;
     const r=stored?.roles?.find(r=>r.id===id);if(!r)throw Error('生活来源已变化');return lifeVersion(r);
+  }
+  function pumpLifeExecution():void {
+    if(document.hidden||modelPageHidden||!saveSession.current())return;
+    for(const r of data.roles){
+      if(!r.lifePlans?.length)continue;
+      const before={plans:structuredClone(r.lifePlans),events:r.events.slice(),tasks:r.lifeTasks?structuredClone(r.lifeTasks):undefined};
+      const allowed=lifeEnabled()&&!isRoleInActiveFocus(r)&&!activeChatRequests.has(r.id)&&!novelTasks.has(r.id);
+      if(!advanceLifePlans(r,now(),allowed,sources=>lifeSourcesValid(r,sources,now())))continue;
+      if(!save()){r.lifePlans=before.plans;r.events=before.events;r.lifeTasks=before.tasks;return;}
+      if(view==='monitor'&&role()===r)render(false);
+    }
   }
   function pumpRoleLife():void {
     if(document.hidden||lifeJournalError||lifeBusy||busy||diaryQueueBusy||proactiveBusy||activeChatRequests.size||!token.trim()||!canUseRealModel(data.settings)||data.settings.autonomousLife===false||now()-lifeLastCheck<60000)return;
@@ -1876,21 +1889,27 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         let maySave=true,version='';const hadThreads=Array.isArray(r.personalThreads);
         const controller=new AbortController();lifeController=controller;
         try{
-          if(!data.roles.includes(r)||r.scene||r.play||r.chatTiming?.pending.length||r.chatTiming?.inFlight||!lifeEnabled()||localStorage.getItem(STORAGE_KEY)!==saveSession.raw||!save())throw Error('生活任务未能保存');
-          const prepared=prepareLifeTask(r,data.user,task),settings={...data.settings};version=lifeVersion(r);
+          task.transport='not-sent';
+          if(!data.roles.includes(r)||lifeStageOccupied(r)||r.chatTiming?.pending.length||r.chatTiming?.inFlight||!lifeEnabled()||localStorage.getItem(STORAGE_KEY)!==saveSession.raw||!save())throw Error('生活任务未能保存');
+          const prepared=prepareLifeTask(r,data.user,task),settings={...data.settings},credential=token;version=lifeVersion(r);
           if(storedLifeVersion(r.id)!==version)throw Error('生活来源已变化');
           syslog('life','独立生活推进已开始',{roleId:r.id,taskId:task.id});
-          const raw=await readModelBeforeDeadline(async signal=>{
-            const res=await postModel(settings.endpoint.trim().replace(/\/+$/,'')+'/chat/completions',{method:'POST',signal,headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({model:settings.model,messages:prepared.messages,temperature:settings.temperature,max_tokens:LIFE_MAX_OUTPUT,stream:false})});
-            return readChatResponse(res);
+          if(modelPageHidden||controller.signal.aborted)throw Error('请求未派发');
+          task.transport='unknown';task.dispatchedAt=now();if(!save())throw Error('生活领取未确认');
+          const received=await readModelBeforeDeadline(async signal=>{
+            const res=await postModel(settings.endpoint.trim().replace(/\/+$/,'')+'/chat/completions',{method:'POST',signal,headers:{'Content-Type':'application/json',Authorization:'Bearer '+credential},body:JSON.stringify({model:settings.model,messages:prepared.messages,temperature:settings.temperature,max_tokens:LIFE_MAX_OUTPUT,stream:false})});
+            const body=await readChatResponseBody(res) as {usage?:{prompt_tokens?:number;completion_tokens?:number}};
+            return {raw:parseChatResponse(body),usage:body.usage};
           },controller.signal);
           maySave=localStorage.getItem(STORAGE_KEY)===saveSession.raw&&storedLifeVersion(r.id)===version;
           if(controller.signal.aborted||!maySave||!data.roles.includes(r)||lifeVersion(r)!==version||data.settings.autonomousLife===false||isRoleInActiveFocus(r))throw Error('生活来源或任务已变化');
-          commitLifeTask(r,task,prepared,raw,now());
+          task.transport='returned';if(received.usage)task.usage={...(Number.isSafeInteger(received.usage.prompt_tokens)&&received.usage.prompt_tokens!>=0?{input:received.usage.prompt_tokens}:{}),...(Number.isSafeInteger(received.usage.completion_tokens)&&received.usage.completion_tokens!>=0?{output:received.usage.completion_tokens}:{})};
+          commitLifeTask(r,task,prepared,received.raw,now());
           if(localStorage.getItem(STORAGE_KEY)!==saveSession.raw||!save())throw Error('生活记录保存失败');
           syslog('life',task.status==='quiet'?'该窗口没有需要单独记录的生活事件':'独立生活已归档',{roleId:r.id,taskId:task.id});
         }catch(error){
           r.events=r.events.filter(e=>e.lifeRecord?.taskId!==task.id);
+          if(r.lifePlans)r.lifePlans=r.lifePlans.filter(p=>p.taskId!==task.id);
           if(r.personalThreads){r.personalThreads=r.personalThreads.filter(t=>t.requestId!==task.id);if(!hadThreads&&!r.personalThreads.length)delete r.personalThreads;}
           try{maySave=maySave&&localStorage.getItem(STORAGE_KEY)===saveSession.raw;}catch{maySave=false;}
           task.status=controller.signal.aborted?'cancelled':'failed';
@@ -4325,7 +4344,9 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       let compileSource:(()=>ConversationCompilation)|undefined;
       const prompt=await compileRequest(r,'intermission',options=>{
         const snapshot={...options,isFocused:isFocused(r),nowTs:now()};
-        compileSource=()=>compileNativeConversation(world,r,'intermission',latest.text,snapshot);
+        // Navigation changes attendance, not the sources of an already dispatched backstage turn.
+        const sceneAttendance=r.scene?.attendance?structuredClone(r.scene.attendance):undefined,playAttendance=p.attendance?structuredClone(p.attendance):undefined;
+        compileSource=()=>compileNativeConversation(world,{...r,scene:r.scene?{...r.scene,attendance:sceneAttendance}:null,play:{...p,attendance:playAttendance}},'intermission',latest.text,snapshot);
         return compileSource();
       },valid);
       if(!valid())throw Error('幕间任务或连接已变化');
@@ -4909,6 +4930,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   let leavingPresets=false;
   window.addEventListener('beforeunload',(event)=>{captureDrafts();if(fruitManager.hasUnsaved()){event.preventDefault();event.returnValue='';}});
   function go(v: string,kind?:NovelKind,persist=true,settlingScene=false): void {
+    const previousStage=(view==='novel'||view==='intermission')?(novelViewKind==='play'?role()?.play:role()?.scene):undefined;
     if(kind)novelViewKind=kind;
     if(v==='intermission')novelViewKind='play';
     captureDrafts();
@@ -4954,8 +4976,14 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       simulate(role()!);
       deliverPending(role());
     }
+    const owner=role(),stage=(v==='novel'||v==='intermission')&&owner?(novelViewKind==='play'?owner.play:owner.scene):undefined;
+    const attendanceBefore=new Map<SceneData|PlayData,SceneData['attendance']>();
+    if(persist&&saveSession.current())for(const candidate of new Set([previousStage,stage]))if(candidate&&!candidate.endedAt){
+      const before=candidate.attendance?structuredClone(candidate.attendance):undefined;
+      if(updateStageAttendance(candidate,candidate===stage,now()))attendanceBefore.set(candidate,before);
+    }
     view = v;
-    if(persist&&saveSession.hasWriter())save();
+    if(persist&&saveSession.hasWriter()&&!save())for(const [candidate,before]of attendanceBefore)candidate.attendance=before;
     render(!preserveStage);
     if(!settlingScene&&role())resumeLocalSceneReplies(role()!);
     const diaryOwner=role();
@@ -7467,7 +7495,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     }
   });
   window.addEventListener(SAVE_ACCESS_EVENT,refreshSaveAccess);
-  queueMicrotask(()=>{if(saveSession.current()){pumpChatSchedules();pumpProactive();pumpRoleLife();}});
+  queueMicrotask(()=>{if(saveSession.current()){pumpChatSchedules();pumpProactive();pumpLifeExecution();pumpRoleLife();}});
 
   if (typeof setInterval === 'function') {
     setInterval(() => {
@@ -7476,6 +7504,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if(view==='home')homeTasks.refresh();
       pumpChatSchedules();
       pumpProactive();
+      pumpLifeExecution();
       pumpRoleLife();
       let chatDelivered=false;for(const item of data.roles){if(deliverPending(item)&&item.id===data.selected)chatDelivered=true;}
       let update = syncFocusMoments() || chatDelivered;

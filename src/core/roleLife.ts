@@ -4,6 +4,7 @@ import {messageSourceIndex,phoneMessagesAt} from './messageProvenance';
 import {eventSourceValid,memoryVersion,compactRoleMemory} from './memory';
 import {memoryExcerpt,memoryRelevance,selectMemoryItems} from './contextBudget';
 import {dateDayNumber} from './homeTasks';
+import {lifeExecutionEvidence} from './lifeExecution';
 
 export interface PersonalSource {kind:'profile'|'message'|'event'|'diary'|'thread';id:string;at:number;version:string}
 export interface PersonalThread {
@@ -19,7 +20,7 @@ function messageRef(m:ChatMessage):PersonalSource{return {kind:'message',id:m.id
 function diaryRef(d:DiaryEntry):PersonalSource{return {kind:'diary',id:d.id,at:d.at,version:version([d.speaker,d.text,d.at,d.sourceMessageIds,d.sourceEventIds,d.sourceMessageRevisions,d.memoryState])};}
 function eventRef(e:EventRecord):PersonalSource{
  const fields:unknown[]=[e.kind,e.title,e.detail,e.at,e.source,e.knownBy,e.messageId,e.lifeEvidence];
- if(e.lifeRecord)fields.push(e.where,[e.lifeRecord.version,e.lifeRecord.roleId,e.lifeRecord.taskId,e.lifeRecord.origin,e.lifeRecord.action,e.lifeRecord.until,Array.isArray(e.lifeRecord.sources)?e.lifeRecord.sources.map(s=>s&&[s.kind,s.id,s.at]):null]);
+ if(e.lifeRecord)fields.push(e.where,[e.lifeRecord.version,e.lifeRecord.roleId,e.lifeRecord.taskId,e.lifeRecord.origin,e.lifeRecord.action,e.lifeRecord.until,Array.isArray(e.lifeRecord.sources)?e.lifeRecord.sources.map(s=>s&&[s.kind,s.id,s.at]):null],...(e.lifeRecord.version===2?[[e.lifeRecord.planId,e.lifeRecord.stepId,e.lifeRecord.artifact]]:[]));
  return {kind:'event',id:e.id,at:e.at,version:version(fields)};
 }
 function archivedProfileValid(r:RoleData,s:PersonalSource,taskAt:number):boolean {
@@ -44,20 +45,20 @@ function referenceValid(r:RoleData,s:PersonalSource,at:number,seen=new Set<strin
   if(!life&&e?.source?.startsWith('autonomous-life-v1:'))return false;
   if(life){
    const tasks=Array.isArray(r.lifeTasks)?r.lifeTasks.filter(t=>t?.id===life.taskId):[],task=tasks[0];
-   if(!e||life.version!==1||life.roleId!==r.id||life.origin!=='simulation'||tasks.length!==1||
+   if(!e||![1,2].includes(life.version)||life.roleId!==r.id||life.origin!=='simulation'||tasks.length!==1||
     task.roleId!==r.id||task.status!=='completed'||dateDayNumber(task.dateKey)===null||
     task.id!=='life:'+encodeURIComponent(r.id)+':'+task.dateKey||
     ![task.at,task.from,task.to].every(Number.isFinite)||task.to!==task.at||task.from>task.to||task.to>at||
-    !Array.isArray(task.eventIds)||!task.eventIds.length||task.eventIds.length>3||
-    !task.eventIds.every((id,i)=>id===task.id+':event:'+i)||
-    !task.eventIds.includes(e.id)||e.source!=='autonomous-life-v1:'+task.id||e.kind!=='life'||
+    !Array.isArray(task.eventIds)||!task.eventIds.length||task.eventIds.length>(life.version===1?3:8)||
+    life.version===1&&!task.eventIds.every((id,i)=>id===task.id+':event:'+i)||
+    !task.eventIds.includes(e.id)||e.source!==`autonomous-life-v${life.version}:`+task.id||e.kind!=='life'||
     typeof e.title!=='string'||typeof e.detail!=='string'||e.at<task.from||e.status!==undefined&&e.status!=='active'||
-    !Number.isFinite(life.until)||life.until>task.to||life.until>at||life.until<=e.at||
-    !Number.isInteger((life.until-e.at)/60000)||life.until-e.at>30*60000||
-    !['rest','walk','read','organize','practice','care','social'].includes(life.action)||
+    !Number.isFinite(life.until)||life.version===1&&life.until>task.to||life.until>at||life.until<=e.at||
+    !Number.isInteger((life.until-e.at)/60000)||life.until-e.at>(life.version===1?30:120)*60000||
+    !['rest','walk','read','organize','practice','care','social',...(life.version===2?['prepare-rest','reminder']:[])].includes(life.action)||
     !Array.isArray(life.sources)||!life.sources.length||
     life.sources.filter(ref=>ref?.kind==='profile').length!==1||
-    new Set(life.sources.map(ref=>ref?.kind+':'+ref?.id)).size!==life.sources.length)return false;
+    new Set(life.sources.map(ref=>ref?.kind+':'+ref?.id)).size!==life.sources.length||life.version===2&&!lifeExecutionEvidence(r,e,at))return false;
    // The snapshot is context only; the completed task and every live dependency must also verify.
    for(const ref of life.sources){
     if(ref?.kind==='profile'){
@@ -83,6 +84,10 @@ function referenceValid(r:RoleData,s:PersonalSource,at:number,seen=new Set<strin
  const t=r.personalThreads?.find(t=>t.id===s.id);
  if(!t||seen.has(t.id)||t.roleId!==r.id||t.at>at||s.version!==threadVersion(t))return false;
  return t.sources.length>0&&t.sources.every(ref=>referenceValid(r,ref,at,new Set([...seen,t.id]),memory,historical));
+}
+
+export function lifeSourcesValid(r:RoleData,sources:PersonalSource[],at:number):boolean {
+ return Array.isArray(sources)&&sources.length>0&&sources.every(s=>referenceValid(r,s,at));
 }
 
 /** Shared read-only life timeline: inferred monitor enrichments never become evidence. */

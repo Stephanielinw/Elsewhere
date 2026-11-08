@@ -18,7 +18,8 @@ async function main(extraCases){
   const ctx=await browser.newContext({viewport:{width:options.width||390,height:844},timezoneId:'America/Los_Angeles',serviceWorkers:'block',ignoreHTTPSErrors:true,isMobile:true,hasTouch:true});
   const posts=[],errors=[];let boot=true,release;const held=new Promise(r=>release=r);
   try{
-   await ctx.addInitScript(({endpoint,fault})=>{
+   await ctx.addInitScript(({endpoint,fault,fixedTime})=>{
+    if(fixedTime)Date.now=()=>fixedTime;
     window.novelProbe={starts:[],shows:[],id:Math.random()};addEventListener('pageshow',e=>window.novelProbe.shows.push(e.persisted));
     const fetchOriginal=fetch.bind(window);window.fetch=async(...args)=>{const response=await fetchOriginal(...args);if(fault==='body'&&String(args[0]).startsWith(endpoint))Object.defineProperty(response,'json',{value:()=>new Promise((yes,no)=>window.novelBodyRelease=(value,fail=false)=>fail?no(Error('late synthetic rejection')):yes(value))});return response;};
     const set=Storage.prototype.setItem;Storage.prototype.setItem=function(k,v){if(k==='elsewhere-v01'&&window.refuseNovelSave){const d=JSON.parse(v);if(d.roles.some(r=>(r.scene||r.play)?.messages.some(m=>m.speaker==='char'&&m.text==='合成有效小说正文。')))throw Error('synthetic reply save refusal');}return set.call(this,k,v);};
@@ -29,7 +30,7 @@ async function main(extraCases){
      IDBDatabase.prototype.close=function(){if(this.name==='elsewhere-fruit-private-v1'){window.closedFruitReads=(window.closedFruitReads||0)+1;window.novelFruitHandles.delete(this);}return close.call(this);};
     }
 
-   },{endpoint,fault:options.fault});
+   },{endpoint,fault:options.fault,fixedTime:options.fixedTime?at:undefined});
    await ctx.route('**/*',async route=>{const req=route.request(),u=new URL(req.url());if(boot&&req.isNavigationRequest()){boot=false;return route.fulfill({contentType:'text/html',body:'<!doctype html><title>Isolated novel lifecycle seed</title>'});}
     if(req.url()===endpoint+'/chat/completions'){const headers={'access-control-allow-origin':'*','access-control-allow-headers':'*','access-control-allow-methods':'POST'};if(req.method()==='OPTIONS')return route.fulfill({status:204,headers});posts.push(req.postDataJSON());if(options.fault==='headers'||options.hold)await held;
      const content=options.response?options.response(req.postDataJSON(),posts.length):options.content??(options.fruit?'<content>合成有效小说正文。</content>':'合成有效小说正文。');return route.fulfill({status:options.status||200,headers,json:{choices:[{finish_reason:options.finish||'stop',message:{role:'assistant',content,...(options.refusal?{refusal:'synthetic blocked'}:{})}}]}}).catch(()=>{});
@@ -44,9 +45,9 @@ async function main(extraCases){
    if(options.styles){library.entries[1].profiles.meeting.style='MEETING_STYLE_ONLY';library.entries[1].profiles.theatre.style='THEATRE_STYLE_ONLY';}
    if(options.length)library.entries[1].profiles.meeting.length=options.length;
    if(options.badCompile)library.entries[1].profiles.meeting.customPrompts=[{identifier:'custom:bad',name:'不支持的宏',content:'{{unsupported_synthetic_macro}}',role:'system',position:0,depth:0,injectionOrder:0}];
-   const p=await ctx.newPage();p.setDefaultTimeout(8000);p.on('pageerror',e=>errors.push(e.message));await p.goto(url);
+   const p=await ctx.newPage();p.setDefaultTimeout(8000);p.on('pageerror',e=>errors.push(e.message));if(options.fixedTime)await p.clock.install({time:at});await p.goto(url);
    await p.evaluate(async({world,key,endpoint,library})=>{localStorage.setItem(key,JSON.stringify(world));localStorage.setItem('elsewhere-device-api-key-v1',JSON.stringify({endpoint,key:'SYNTHETIC_ONLY'}));await new Promise((yes,no)=>{const q=indexedDB.open('elsewhere-fruit-private-v1',2);q.onupgradeneeded=()=>{q.result.createObjectStore('documents');q.result.createObjectStore('preset-library');};q.onsuccess=()=>{const db=q.result,tx=db.transaction('preset-library','readwrite');tx.objectStore('preset-library').put(library,'current');tx.oncomplete=()=>{db.close();yes();};tx.onabort=()=>no(Error('synthetic preset seed failed'));};});},{world,key,endpoint,library:serializePresetLibrary(library)});
-   await p.reload();await p.locator('#app[data-storage-state=ready][data-write-access=writer]').waitFor();await p.clock.install({time:at});
+   await p.reload();await p.locator('#app[data-storage-state=ready][data-write-access=writer]').waitFor();if(!options.fixedTime)await p.clock.install({time:at});
    await p.locator('[data-action=enter][data-id=novel-role]').click();await p.locator(options.play?'[data-action=resume]':'[data-action=openconversation]').click();await p.locator('#novel-form').waitFor();
    const submit=p.locator('[data-novel-control]'),record=()=>p.evaluate(key=>{const r=JSON.parse(localStorage.getItem(key)).roles[0];return r.scene||r.play;},key);
    const waitPost=async(n=1)=>{const end=Date.now()+8000;while(posts.length<n&&Date.now()<end)await new Promise(r=>setTimeout(r,20));assert.equal(posts.length,n);};

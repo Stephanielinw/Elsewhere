@@ -1,6 +1,7 @@
 import type {ChatMessage,RoleData,SceneData,PlayData} from './types';
 import {phoneMessagesAt,sceneMessagesAt,stageMessagesAt,messageSourceIndex,scenePlaceAt} from './messageProvenance';
 import {estimateTextTokens,memoryRelevance,memoryExcerpt} from './contextBudget';
+import {stageIntervals} from './lifeExecution';
 
 export interface EpisodeSource {id:string;at:number;revision:number;editedAt?:number;replyTo?:string}
 export interface RoleEpisode {id:string;roleId:string;domain:'real'|'performance'|'backstage';kind:'phone'|'meeting'|'life'|'play'|'backstage';containerId:string;at:number;until?:number;sources:EpisodeSource[];links:string[]}
@@ -19,7 +20,7 @@ export function roleEpisodes(r:RoleData,at:number):RoleEpisode[]{
  const scenes=[...(r.meetings||[]),...(r.scene?[r.scene]:[])],plays=[...(r.plays||[]),...(r.play?[r.play]:[])];
  for(const scene of scenes){if(scenes.filter(s=>s.id===scene.id).length!==1||!Number.isFinite(scene.startedAt)||scene.startedAt>at||scene.endedAt!==undefined&&(!Number.isFinite(scene.endedAt)||scene.endedAt<scene.startedAt||scene.endedAt>at))continue;add('meeting','real',scene.id,sceneMessagesAt(r,scene.messages,at).filter(m=>m.at>=scene.startedAt&&(scene.endedAt===undefined||m.at<=scene.endedAt)&&m.speaker!=='note'&&m.kind!=='play'&&m.novelOutput?.mode!=='theatre'),scene.endedAt);}
  for(const play of plays){if(plays.filter(p=>p.id===play.id).length!==1||!Number.isFinite(play.startedAt)||play.startedAt>at)continue;add('play','performance',play.id,stageMessagesAt(play.messages,at).filter(m=>m.speaker!=='note'),play.endedAt);add('backstage','backstage',play.id,stageMessagesAt(play.intermissionMessages,at).filter(m=>m.speaker!=='note'));}
- for(const e of r.events.filter(e=>e.kind==='life'&&e.at<=at&&e.status!=='retracted'&&e.status!=='superseded'))episodes.push({id:id('life',e.id),roleId:r.id,domain:'real',kind:'life',containerId:e.id,at:e.at,until:e.lifeRecord?.until,sources:[],links:[]});
+ for(const e of r.events.filter(e=>e.kind==='life'&&e.at<=at&&(e.lifeRecord?.until??e.at)<=at&&e.status!=='retracted'&&e.status!=='superseded'))episodes.push({id:id('life',e.id),roleId:r.id,domain:'real',kind:'life',containerId:e.id,at:e.at,until:e.lifeRecord?.until,sources:[],links:[]});
  return episodes.sort((a,b)=>a.at-b.at||a.id.localeCompare(b.id));
 }
 export function syncRoleExperiences(r:RoleData,at:number):void{
@@ -64,7 +65,7 @@ export function experienceContext(r:RoleData,query:string,at:number,rejected:Rea
 }
 export function observedRoleState(r:RoleData,at:number){
  const scene=r.scene,play=r.play;
- if(scene&&!scene.endedAt&&scene.startedAt<=at)return {kind:'meeting' as const,label:'正在见面',where:scene.locationEvidence||scene.agreement?scenePlaceAt(r,scene,at):scene.where,sourceId:scene.id,at:scene.startedAt};
- if(play&&!play.endedAt&&play.startedAt<=at)return {kind:'performance' as const,label:play.paused?'幕间讨论':'戏剧演出',where:'排演地点未记录',sourceId:play.id,at:play.startedAt};
+ if(scene&&!scene.endedAt&&stageIntervals(scene,at+1).some(w=>w.from<=at&&w.to>at))return {kind:'meeting' as const,label:'正在见面',where:scene.locationEvidence||scene.agreement?scenePlaceAt(r,scene,at):scene.where,sourceId:scene.id,at:scene.startedAt};
+ if(play&&!play.endedAt&&stageIntervals(play,at+1).some(w=>w.from<=at&&w.to>at))return {kind:'performance' as const,label:play.paused?'幕间讨论':'戏剧演出',where:'排演地点未记录',sourceId:play.id,at:play.startedAt};
  return {kind:'unknown' as const,label:'暂无新的活动记录',where:'地点未记录',sourceId:'',at};
 }

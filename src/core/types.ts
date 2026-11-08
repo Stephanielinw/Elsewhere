@@ -3,6 +3,7 @@ import type {PersonalThread,PersonalTicket,PersonalSource} from './roleLife';
 import type {ProactiveState} from './proactiveChat';
 import type {RoleMemoryLedger} from './memory';
 import type {LifeTask,LifeRecord} from './autonomousLife';
+import type {RoleLifePlan} from './lifeExecution';
 export type ThemeName = 'blue' | 'green' | 'pink' | 'coffee' | 'night';
 
 export type MessageKind = 'chat' | 'sticker' | 'photo' | 'voice' | 'packet' | 'scene' | 'play';
@@ -174,6 +175,7 @@ export interface NovelAttempt {
   httpStatus?:number;finishReason?:string;presetId?:string;timeoutMs:number;
 }
 export interface SceneData {
+  attendance?:{from:number;to?:number}[];
   id: string;
   startedAt: number;
   endedAt?: number;
@@ -195,6 +197,7 @@ export interface PlayRevision {
 }
 
 export interface PlayData {
+  attendance?:{from:number;to?:number}[];
   id: string;
   title: string;
   world: string;
@@ -379,6 +382,7 @@ export interface CustomAvatarFrame {
 }
 
 export interface RoleData {
+  lifePlans?:RoleLifePlan[];
   lifeTasks?:LifeTask[];
   memory?: RoleMemoryLedger;
   proactive?: ProactiveState;

@@ -1547,8 +1547,20 @@ export function initElsewhereApp(saveSession:SaveSession): void {
 
   const novelTasks=createNovelTasks();
   type NovelPhase='preparing'|'compiling'|'checking'|'requesting'|'reading'|'parsing'|'saving'|'archived'|'failed';
-  type NovelProgress={id:string;phase:NovelPhase;state:'not-sent'|'unknown'|'returned'|'archived';warning?:boolean;code?:NonNullable<SceneData['novelAttempt']>['code'];httpStatus?:number;finishReason?:string;startedAt:number;elapsedMs?:number;text?:string};
+  type NovelProgress={id:string;phase:NovelPhase;state:'not-sent'|'unknown'|'returned'|'archived';warning?:boolean;code?:NonNullable<SceneData['novelAttempt']>['code'];httpStatus?:number;finishReason?:string;startedAt:number;elapsedMs?:number;text?:string;detail?:string};
   const novelProgress=new WeakMap<SceneData|PlayData,NovelProgress>();
+  // Categorize private preset failures without exposing imported content, secrets or URLs.
+  function presetFailureHint(error:unknown):string{
+    const message=error instanceof Error?error.message:'';
+    if(/角色所选小说预设已停用/.test(message))return '当前角色所选的小说预设已停用。请在「预设」App 中检查启用开关和自动保存状态。';
+    if(/请先确认沿用|完成小说配置选择|角色小说预设尚未选择/.test(message))return '当前角色的小说预设尚未完成选择或旧配置确认。请打开「预设」App 完成选择后再尝试。';
+    if(/原件与.*不兼容|角色覆盖与新原件不兼容|预设版本/.test(message))return '此角色的预设覆盖与当前原件不兼容。请在「预设」App 复核原件与覆盖，原始配置仍保留。';
+    if(/私有预设库正在变更|存储升级.*阻塞|其他标签页/.test(message))return '预设数据库正被其他标签页占用。请先关闭其他 Elsewhere 页面，再返回检查预设。';
+    if(error instanceof Error&&error.name==='TimeoutError')return '读取本机预设库超过 30 秒。请求尚未发送；请核对 Safari 网站存储状态，不要清空网站数据。';
+    if(/预设.*损坏|配置.*无效|原件.*损坏/.test(message))return '本机预设库或角色配置未通过验证。请先导出预设库备份，再检查配置；不要清空网站数据。';
+    if(/读取|IndexedDB|数据库|存储|permission|SecurityError/i.test(message))return '本机预设存储读取失败。请检查 Safari 网站存储权限与预设库；原件和聊天记录未被自动重置。';
+    return '预设准备阶段未完成。请在「预设」App 核对本角色所选原件及启用状态；本轮没有发送模型请求。';
+  }
   function novelStatusHtml(r:RoleData,p:SceneData|PlayData):string{
     const active=novelTasks.has(r.id),progress=novelProgress.get(p),attempt=p.novelAttempt;
     if(!progress&&!attempt)return '<div class="chat-feedback" data-novel-status="idle" role="status">等待你输入言语或行动；尚未发送小说请求。</div>';
@@ -1557,7 +1569,15 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     const phase=active?progress?.phase:attempt?.state==='archived'?'archived':'failed';
     const label=attempt?.state==='archived'&&attempt.warning?'小说正文已保存，损坏的可选辅助块未采用。':active?({preparing:'正在准备预设。',compiling:'正在编译 Prompt。',checking:'正在校验场景和来源。',requesting:'正在等待模型响应。',reading:'正在读取模型正文。',parsing:'正在检查回复格式。',saving:'回复已返回，正在确认保存。',archived:'回复已保存。',failed:'生成已停止。'}[phase||'preparing']):code==='preset'?'预设准备未完成。':code==='compile'?'Prompt 配置无法编译。':code==='provider'?'服务商返回错误或拦截。':code==='format'?'响应已返回，但正文或格式无法接受。':code==='save'?'回复已返回，但保存未确认。':code==='stale'?'场景或来源已变化，未归档。':code==='timeout'?'等待已到截止时间。':'上次生成已停止。';
     const risk=state==='not-sent'?'请求未发送；原话和配置保留。':state==='archived'?'回复已确认保存。':'请求已经发送或可能发送，结果或归档未确认；可能已产生费用，应用不会自动重发。';
-    return `<div class="chat-feedback" data-novel-status="${esc(phase||'failed')}" data-novel-state="${esc(state||'unknown')}" role="status"><p>${label} ${risk}</p>${active?'<button type="button" class="btn secondary" data-action="cancel-novel">停止本次等待</button>':progress?.text?'<button type="button" class="btn secondary" data-action="copy-novel-reply">复制未确认的回复</button>':''}</div>`;
+    const openingPending=r.scene===p&&r.scene?.opening&&r.scene.opening.status!=='archived';
+    const canRetry=!active&&!openingPending&&getActiveMessages(p.messages).at(-1)?.speaker==='me'&&(progress?.phase==='failed'||attempt&&attempt.state!=='archived');
+    const actions=[
+      active?'<button type="button" class="btn secondary" data-action="cancel-novel">停止本次等待</button>':'',
+      !active&&progress?.text?'<button type="button" class="btn secondary" data-action="copy-novel-reply">复制未确认的回复</button>':'',
+      !active&&code==='preset'?'<button type="button" class="btn secondary" data-action="view" data-view="presets">检查角色预设</button>':'',
+      canRetry?'<button type="button" class="btn secondary" data-action="retry-novel">重试上一条回复</button>':''
+    ].filter(Boolean).join('');
+    return `<div class="chat-feedback" data-novel-status="${esc(phase||'failed')}" data-novel-state="${esc(state||'unknown')}" role="status"><p>${label} ${risk}</p>${!active&&code==='preset'?'<p class="novel-status-detail">'+esc(progress?.detail||'可打开预设 App 检查当前角色的预设选择、启用和保存状态。')+'</p>':''}${actions?'<div class="novel-status-actions">'+actions+'</div>':''}</div>`;
   }
   function confirmNovelRetry(p:SceneData|PlayData):boolean{
     return !p.novelAttempt||p.novelAttempt.state==='archived'||p.novelAttempt.state==='not-sent'||window.confirm('上次请求可能已被服务商处理，重试或重新生成可能再次计费。确定继续？');
@@ -4078,7 +4098,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
               : 'note'
           }" data-msg-id="${esc(m.id)}"><span class="speaker">${
             m.speaker === 'me' ? '你' : m.speaker === 'char' ? esc(r.name) : '场景'
-          }${m.editedAt ? ' · 已编辑' : ''}</span>${quoteBubbleHtml(m, r)}${novelMessageHtml(m,r.id,p.id,isPlay?'theatre':'meeting')}
+          }${m.editedAt ? ' · 已编辑' : ''}</span>${quoteBubbleHtml(m, r)}<div class="novel-passage-body">${novelMessageHtml(m,r.id,p.id,isPlay?'theatre':'meeting')}</div>
           ${
             m.speaker !== 'note'
               ? isEditingThis
@@ -4132,7 +4152,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       ${openingPending?`<div class="chat-feedback" role="status" data-scene-opening="${esc(opening.status)}"><p>${busy?'正在准备或生成本轮面对面回复。':opening.status==='unsent'?'场景已保存，首次请求尚未发送。':'首次请求或保存结果未确认。可先刷新核对，重试可能再次计费。'}</p>${busy?'':`<button type="button" class="btn secondary" data-action="resume-scene-opening">${opening.status==='unsent'?'继续本轮':'重新发送首次请求'}</button>`}</div>`:''}
       <form class="compose" id="novel-form" data-role-id="${esc(r.id)}" data-scene-id="${isPlay?'':esc(p.id)}"><textarea id="novel-input" data-scoped-draft ${showBackstage?'disabled':''} placeholder="写下你说的话或行动..." rows="1"></textarea><button class="btn" ${
         busy||showBackstage||openingPending ? 'disabled' : ''
-      }>${uiIcon('send')}</button>${data.settings.mode==='api'&&!showBackstage&&!openingPending&&activeMessages.at(-1)?.speaker==='me'?`<button type="button" class="btn secondary" data-action="retry-novel" ${busy?'disabled':''} title="不重复添加用户消息">重试回复</button>`:''}</form></section>${showBackstage?renderIntermissionPanel(r,p as PlayData):''}</div>`,
+      }>${uiIcon('send')}</button></form></section>${showBackstage?renderIntermissionPanel(r,p as PlayData):''}</div>`,
       false
     );
   }
@@ -4991,6 +5011,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if(error instanceof NovelOutputError)progress.text=error.safeText;
       progress.state=dispatched?(progress.state==='returned'?'returned':'unknown'):'not-sent';
       progress.code=progress.code||(error instanceof Error&&error.name==='TimeoutError'?'timeout':error instanceof Error&&error.name==='AbortError'?'cancelled':error instanceof ConversationCompileError?'compile':phase==='saving'?'save':phase==='preparing'?'preset':phase==='parsing'?'format':!valid()?'stale':'connection');
+      if(progress.code==='preset')progress.detail=presetFailureHint(error);
       update('failed');
       if(novelProgress.get(task.stage)===progress&&data===world&&world.roles.includes(r)&&(r.scene===task.stage||r.play===task.stage)&&(!claim||task.stage.novelAttempt===claim)&&saveSession.current()&&(claim||!task.stage.novelAttempt||['not-sent','archived'].includes(task.stage.novelAttempt.state))){
         const previous=task.stage.novelAttempt;

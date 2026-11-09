@@ -1,4 +1,5 @@
-export type DiaryResult = {text:string;sourceHash:string;requestId:string;payload?:string};
+import type {TimelineTicket} from './worldTimeline';
+export type DiaryResult = {text:string;sourceHash:string;requestId:string;payload?:string;timeline?:TimelineTicket};
 export type DiaryReceipt = {
  attempt:string;
  state:'claimed'|'sent'|'ready'|'archived'|'failed';

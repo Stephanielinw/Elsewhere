@@ -26,7 +26,7 @@ export function roleEpisodes(r:RoleData,at:number):RoleEpisode[]{
   add('play','performance',play.id,stageMessagesAt(play.messages,cutoff).filter(m=>m.at>=play.startedAt&&m.speaker!=='note'),play.endedAt);
   add('backstage','backstage',play.id,stageMessagesAt(play.intermissionMessages,cutoff).filter(m=>m.at>=play.startedAt&&m.speaker!=='note'));
  }
- for(const e of r.events.filter(e=>e.kind==='life'&&e.at<=at&&(e.lifeRecord?.until??e.at)<=at&&e.status!=='retracted'&&e.status!=='superseded'))episodes.push({id:id('life',e.id),roleId:r.id,domain:'real',kind:'life',containerId:e.id,at:e.at,until:e.lifeRecord?.until,sources:[],links:[]});
+ for(const e of r.events.filter(e=>e.kind==='life'&&(!e.lifeRecord?.timeline||['ended','interrupted'].includes(e.lifeRecord.timeline.state))&&e.at<=at&&(e.lifeRecord?.until??e.at)<=at&&e.status!=='retracted'&&e.status!=='superseded'))episodes.push({id:id('life',e.id),roleId:r.id,domain:'real',kind:'life',containerId:e.id,at:e.at,until:e.lifeRecord?.until,sources:[],links:[]});
  return episodes.sort((a,b)=>a.at-b.at||a.id.localeCompare(b.id));
 }
 export function syncRoleExperiences(r:RoleData,at:number):void{

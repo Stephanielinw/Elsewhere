@@ -1,3 +1,4 @@
+import type {ThoughtRecord,TimelineTicket} from './worldTimeline';
 import type {NovelDocument} from './novelDocument';
 import type {PersonalThread,PersonalTicket,PersonalSource} from './roleLife';
 import type {ProactiveState} from './proactiveChat';
@@ -18,6 +19,7 @@ export interface MessageQuote {
 }
 
 export interface ChatMessage {
+  privateThought?:ThoughtRecord;
   sceneReply?:SceneReplyTicket;
   id: string;
   speaker: 'me' | 'char' | 'note';
@@ -103,6 +105,7 @@ export type DiaryTaskStatus =
   | 'failed';
 
 export interface DiaryGenerationTask {
+  cutoffAt?:number;
   id: string;
   roleId: string;
   dateKey: string; // YYYY-MM-DD local calendar date
@@ -183,7 +186,8 @@ export interface SceneData {
   where: string;
   entryPhase?: EncounterPhase;
   agreement?: MeetingPlan;
-  locationEvidence?: {origin:'agreement'|'generated'|'movement'|'unknown'|'manual';at:number;sources:MeetingPlan['sources'];contextIds?:string[]};
+  locationEvidence?: {origin:'agreement'|'generated'|'movement'|'unknown'|'manual'|'life';lifeEventId?:string;at:number;sources:MeetingPlan['sources'];contextIds?:string[]};
+  lifeEntry?:{eventId:string;label:string;startedAt:number};
   draft?: string;
   opening?: {roundId:string;entry:'scheduled'|'immediate';status:'unsent'|'unknown'|'archived'};
   novelAttempt?:NovelAttempt;
@@ -244,6 +248,7 @@ export interface ChatTimingState {
 }
 
 export interface PendingReplyJob {
+  timelineReply?: {ticket:TimelineTicket;payload:string;publicText:string};
   personalReply?: {ticket:PersonalTicket;payload:string};
   proactiveId?: string;
   sceneReply?:SceneReplyTicket;
@@ -581,6 +586,7 @@ export interface ApiSettings {
 export interface AppData {
   version: number;
   diaryWorldId?: string;
+  worldTimeZone?:string;
   draftWorldId?: string;
   theme: ThemeName;
   font: 'system' | 'serif';

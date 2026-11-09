@@ -15,7 +15,8 @@ async function main(extraCases){
  const deadline=setTimeout(()=>{console.error('Novel lifecycle suite deadline');void browser.close();setTimeout(()=>process.exit(1),1000);},240000),results=[];
  async function run(label,options,check){
   if(process.env.TEST_CASE&&!label.includes(process.env.TEST_CASE))return;
-  const ctx=await browser.newContext({viewport:{width:options.width||390,height:844},timezoneId:'America/Los_Angeles',serviceWorkers:'block',ignoreHTTPSErrors:true,isMobile:true,hasTouch:true});
+  const at=options.at??Date.parse('2026-11-06T22:00:00Z');
+  const ctx=await browser.newContext({viewport:{width:options.width||390,height:844},timezoneId:options.zone||'America/Los_Angeles',serviceWorkers:'block',ignoreHTTPSErrors:true,isMobile:true,hasTouch:true});
   const posts=[],errors=[];let boot=true,release;const held=new Promise(r=>release=r);
   try{
    await ctx.addInitScript(({endpoint,fault,refuseReply,refuseCurtain})=>{
@@ -34,7 +35,7 @@ async function main(extraCases){
     if(req.url()===endpoint+'/chat/completions'){const headers={'access-control-allow-origin':'*','access-control-allow-headers':'*','access-control-allow-methods':'POST'};if(req.method()==='OPTIONS')return route.fulfill({status:204,headers});posts.push(req.postDataJSON());if(options.fault==='headers'||options.hold)await held;
      const content=options.response?options.response(req.postDataJSON(),posts.length):options.content??(options.fruit?'<content>合成有效小说正文。</content>':'合成有效小说正文。');return route.fulfill({status:options.status||200,headers,json:{choices:[{finish_reason:options.finish||'stop',message:{role:'assistant',content,...(options.refusal?{refusal:'synthetic blocked'}:{})}}]}}).catch(()=>{});
     }if(req.url()===new URL('novel-away',url).href)return route.fulfill({contentType:'text/html',body:'<!doctype html><title>Novel away</title>'});if(req.method()==='GET'&&(u.protocol==='file:'||u.origin===new URL(url).origin))return route.continue();return route.abort();});
-   const world=defaults(),r=createRole('合成小说角色','','记录者','谨慎','合成港口');Object.assign(r,{theme:options.theme||'blue',id:'novel-role',chats:[],events:[],lifeAt:at,lastDiaryCheckDay:'2026-11-06',firstMessageState:{status:'ready',updatedAt:at}});r.diaries=Array.from({length:8},(_,i)=>({id:'diary'+i,speaker:'char',source:'manual',text:'合成既有日记',at:at-i*86400000,dateKey:new Date(at-i*86400000).toISOString().slice(0,10)}));
+   const world=defaults(),r=createRole('合成小说角色','','记录者','谨慎','合成港口');Object.assign(r,{theme:options.theme||'blue',id:'novel-role',chats:[],events:[],lifeAt:at,lastDiaryCheckDay:new Date(at-8*3600000).toISOString().slice(0,10),firstMessageState:{status:'ready',updatedAt:at}});r.diaries=Array.from({length:8},(_,i)=>({id:'diary'+i,speaker:'char',source:'manual',text:'合成既有日记',at:at-i*86400000,dateKey:new Date(at-i*86400000).toISOString().slice(0,10)}));
    if(options.play||options.both)r.play={id:'synthetic-play',title:'合成戏剧',world:'独立戏内世界',user:'旅人',char:'演员',startedAt:at-1000,messages:[]};if(!options.play&&!options.phoneFirst)r.scene={id:'synthetic-scene',where:'合成庭院',startedAt:at-1000,messages:[]};
    if(options.opening){r.chats=[{id:'opening-phone',speaker:'me',text:'合成原始手机消息',at:at-900,status:'active'}];r.scene.messages=[{...r.chats[0],id:'opening-bridge',sourceMessageId:'opening-phone',kind:'scene'}];r.scene.opening={roundId:'synthetic-round',entry:'scheduled',status:'unsent'};}
    if(options.regen)(r.scene||r.play).messages.push({id:'prior-user',speaker:'me',text:'合成已保存的原话',at:at-800},{id:'prior-char',speaker:'char',text:'合成旧回复',at:at-700,replyTo:'prior-user'});

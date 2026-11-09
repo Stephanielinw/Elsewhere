@@ -1,3 +1,4 @@
+import {worldDate,worldHour} from './worldClock';
 import {messageSourceIndex} from './messageProvenance';
 import {uiIcon} from '../uiIcons';
 import type {
@@ -318,7 +319,11 @@ export function renderSafeFootprintArtifact(artifact: FootprintArtifact): string
 export function artifactForLifeEvent(role:RoleData,event:EventRecord,at:number):FootprintArtifact|null {
  if(!collectRoleLife(role,at).events.some(e=>e.id===event.id))return null;
  let raw:FootprintArtifact|undefined;
- if(event.lifeRecord?.version===2){
+ if(event.lifeRecord?.version===3){
+  const record=event.lifeRecord;
+  if(record.timeline?.state!=='ended'||!['shop','travel'].includes(record.action))return null;
+  raw={kind:record.action==='shop'?'receipt':'ticket',paperStyle:record.action==='shop'?'thermal':'ticket',header:event.title,bodyText:event.detail,groundedInEventIds:[event.id]};
+ }else if(event.lifeRecord?.version===2){
   const step=role.lifePlans?.find(p=>p.id===event.lifeRecord!.planId)?.intents.find(s=>s.id===event.lifeRecord!.stepId);
   if(!step?.artifact)return null;
   raw={kind:step.artifact,paperStyle:step.artifact==='list'?'craft':'parchment',header:event.title,bodyText:event.detail,groundedInEventIds:[event.id],...(step.artifact==='list'?{items:[{name:step.focus||event.title,checked:true}]}:{})};
@@ -345,12 +350,22 @@ export function normalizeInnerMonologue(role:RoleData,value:unknown,fallback:str
 }
 
 /** Derived views never write events, thoughts or legacy AI caches. */
-export function buildGroundedDailyFootprints(role:RoleData,dateKey:string,nowTs=Date.now()):DailyFootprintsArchive {
- const facts=collectDailyDiaryFacts(role,dateKey,true,nowTs),cutoff=Math.min(nowTs,facts.endMs),userLabel=role.userAlias||'对方';
+export function buildGroundedDailyFootprints(role:RoleData,dateKey:string,nowTs=Date.now(),zone?:string):DailyFootprintsArchive {
+ const facts=collectDailyDiaryFacts(role,dateKey,true,nowTs,zone),cutoff=Math.min(nowTs,facts.endMs),userLabel=role.userAlias||'对方';
  const transcript=(messages:ChatMessage[])=>messages.filter(m=>m.speaker!=='note').map(m=>({
   speaker:m.speaker,speakerLabel:m.speaker==='me'?userLabel:role.name,text:formatMessageContentForModel(m,role.name,userLabel),at:m.at,
  }));
- const items:DailyFootprintItem[]=collectRoleLife(role,cutoff).events.filter(e=>e.at>=facts.startMs).map(e=>({id:'fp_life_'+e.id,dateKey,timestamp:e.at,timeLabel:formatNaturalTimeLabel(e.at),icon:'leaf',category:'life',title:e.title,summary:e.detail,where:e.where,sourceEventIds:[e.id],sourceMessageIds:e.messageId?[e.messageId]:[],rawTranscript:[{speaker:'note',speakerLabel:e.lifeRecord?'生活模拟记录':'已确认事件',text:e.detail,at:e.at}],origin:'grounded'}));
+ const items:DailyFootprintItem[]=collectRoleLife(role,cutoff).events.filter(e=>e.at>=facts.startMs||(e.lifeRecord?.until??0)>facts.startMs).map(e=>{
+  const timestamp=Math.max(e.at,facts.startMs),record=e.lifeRecord;
+  const hours:string[]=[];
+  if(zone&&record?.timeline){
+   const end=Math.min(cutoff,record.until);
+   for(let hour=facts.startMs+Math.floor((timestamp-facts.startMs)/3600000)*3600000;hour<=end&&hour<record.until;hour+=3600000)hours.push(worldHour(hour,zone));
+  }
+  return {id:'fp_life_'+e.id,dateKey,timestamp,timeLabel:formatNaturalTimeLabel(timestamp),icon:'leaf',category:'life',title:e.title,summary:e.detail,where:e.where,
+   ...(hours.length?{durationLabel:(record?.timeline?.state==='running'&&record.until>nowTs?'进行中 · ':record?.timeline?.state==='interrupted'?'已中断 · ':'')+hours.join(' / ')}:{}),
+   sourceEventIds:[e.id],sourceMessageIds:e.messageId?[e.messageId]:[],rawTranscript:[{speaker:'note',speakerLabel:e.lifeRecord?'生活模拟记录':'已确认事件',text:e.detail,at:e.at}],origin:'grounded'};
+ });
  // One hidden source index retains full quotation provenance; ordinary chat is not a life footprint.
  const chat=getActiveMessages(facts.chatMessages).filter(m=>m.at<=cutoff&&m.speaker!=='note');
  if(chat.length)items.push({id:'fp_chat_'+dateKey,dateKey,timestamp:chat.at(-1)!.at,timeLabel:formatNaturalTimeLabel(chat.at(-1)!.at),icon:'chat',category:'interaction',title:'手机交谈来源',summary:'',sourceEventIds:[],sourceMessageIds:chat.map(m=>m.id),rawTranscript:transcript(chat),origin:'grounded'});
@@ -363,19 +378,21 @@ export function buildGroundedDailyFootprints(role:RoleData,dateKey:string,nowTs=
  for(const play of facts.playBlocks){const messages=[...play.messages,...play.intermissionMessages].filter(m=>m.at<=cutoff).sort((a,b)=>a.at-b.at);if(messages.length)items.push({id:'fp_play_'+play.id,dateKey,timestamp:messages.at(-1)!.at,timeLabel:formatNaturalTimeLabel(messages.at(-1)!.at),icon:'drama',category:'drama',title:'一段排演',summary:`${role.name}参与了《${play.title}》的排演；戏内经历不属于现实人生。`,sourceMessageIds:messages.map(m=>m.id),sourceEventIds:[],rawTranscript:transcript(messages),origin:'grounded'});}
  return {dateKey,updatedAt:nowTs,sourceSignature:JSON.stringify(items.map(i=>[i.id,i.timestamp,i.summary,i.sourceEventIds,i.sourceMessageIds])),items,calmDayNote:items.some(i=>i.category!=='interaction')?undefined:'没有已归档的独立生活记录；这不代表已经确认整天无事发生。'};
 }
-export function getOrBuildDailyFootprints(role:RoleData,dateKey:string,nowTs=Date.now()):DailyFootprintsArchive {return buildGroundedDailyFootprints(role,dateKey,nowTs);}
+export function getOrBuildDailyFootprints(role:RoleData,dateKey:string,nowTs=Date.now(),zone?:string):DailyFootprintsArchive {return buildGroundedDailyFootprints(role,dateKey,nowTs,zone);}
 
 /**
  * Lists all YYYY-MM-DD dates up to `nowTs` that have any footprints, messages, or events for the Footprint Calendar.
  */
-export function listFootprintActiveDates(role: RoleData, nowTs = Date.now()): Set<string> {
+export function listFootprintActiveDates(role: RoleData, nowTs = Date.now(),zone?:string): Set<string> {
+  const key=(at:number)=>zone?worldDate(at,zone):toLocalDateKey(at);
   const dates = new Set<string>();
-  dates.add(toLocalDateKey(nowTs));
+  dates.add(key(nowTs));
 
-  for (const m of messageSourceIndex(role,nowTs,true).values()) dates.add(toLocalDateKey(m.at));
+  for (const m of messageSourceIndex(role,nowTs,true).values()) dates.add(key(m.at));
   for (const ev of getActiveEvents(role.events || [])) {
-    if (ev.at <= nowTs && ev.kind !== 'diary') {
-      dates.add(toLocalDateKey(ev.at));
+    if (ev.at<=nowTs&&ev.kind!=='diary'&&!['pending','expired'].includes(ev.lifeRecord?.timeline?.state||'')) {
+      dates.add(key(ev.at));
+      if(ev.lifeRecord?.until)dates.add(key(Math.min(nowTs,ev.lifeRecord.until-1)));
     }
   }
   if (role.footprintsByDate) {
@@ -400,7 +417,7 @@ export function buildFootprintCalendarMonth(
   year: number,
   month: number, // 1-12
   selectedDateKey: string,
-  nowTs = Date.now()
+  nowTs = Date.now(),zone?:string
 ): {
   year: number;
   month: number;
@@ -408,8 +425,8 @@ export function buildFootprintCalendarMonth(
   leadingEmptyDays: number;
   cells: FootprintCalendarCell[];
 } {
-  const activeDates = listFootprintActiveDates(role, nowTs);
-  const todayKey = toLocalDateKey(nowTs);
+  const activeDates = listFootprintActiveDates(role, nowTs,zone);
+  const todayKey = zone?worldDate(nowTs,zone):toLocalDateKey(nowTs);
   const firstDayOfWeek = new Date(year, month - 1, 1).getDay(); // 0 (Sun) - 6 (Sat)
   const daysInMonth = new Date(year, month, 0).getDate();
 
@@ -441,9 +458,9 @@ export function applyAiDailyFootprints(role:RoleData,dateKey:string,_raw:string,
 
 export function resolveSafeMonitorDateKey(
   candidate: string | undefined,
-  nowTs = Date.now()
+  nowTs = Date.now(),zone?:string
 ): string {
-  const todayKey = toLocalDateKey(nowTs);
+  const todayKey = zone?worldDate(nowTs,zone):toLocalDateKey(nowTs);
   if (!candidate || !parseDateKeyParts(candidate)) return todayKey;
   return candidate > todayKey ? todayKey : candidate;
 }

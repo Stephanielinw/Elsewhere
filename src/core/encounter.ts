@@ -1,4 +1,5 @@
-import {phoneMessagesAt,sceneMessagesAt} from './messageProvenance';
+import {timelineState,timelineEvidence} from './worldTimeline';
+import {phoneMessagesAt,sceneMessagesAt,scenePlaceAt} from './messageProvenance';
 import type {ChatMessage,EncounterPhase,MeetingPlan,RoleData,SceneData} from './types';
 import {getActiveEvents,getActiveMessages,makeUid} from './revisions';
 import {structuredMeetingPlan,sceneDecisionStillValid,arrivalEvidence,scenePhoneWords as ownWords,phoneEncounterPresence,PHONE_ENCOUNTER_CONTEXT_MS,explicitArrivalPlace,arrivalPlaceMatches,type SceneDecision,type SceneObservation} from './sceneState';
@@ -118,6 +119,11 @@ const entryDescription:Record<EncounterPhase,string>={
 
 export function encounterEntryContext(r:RoleData,at:number):string|undefined {
   const scene=r.scene;
+  if(scene?.lifeEntry){
+    const entry=scene.lifeEntry,record=r.events.find(e=>e.id===entry.eventId);
+    if(record&&record.title===entry.label&&record.at===entry.startedAt&&timelineEvidence(r,record,at)&&record.lifeRecord!.until>=scene.startedAt)
+      return `见面开始时角色在${scenePlaceAt(r,scene,at)}，当时活动：${entry.label}（开始于 ${new Date(entry.startedAt).toISOString()}）。现在由见面接管此时段。`;
+  }
   if(!scene?.entryPhase||!structuredMeetingPlan({...r,meetingPlan:scene.agreement},at))return;
   return `进入场景时：${entryDescription[scene.entryPhase]} 续写以最近有效场景行动为准，不把尚未发生的走近、接触或用户行动写成已发生。`;
 }
@@ -126,10 +132,13 @@ export function createEncounter(r:RoleData,arrival:ChatMessage|null,at:number,id
   const semantic=decision&&sceneDecisionStillValid(r,decision)&&decision.action==='arrive'&&decision.arrival?.id===arrival?.id;
   if(r.scene||r.play||arrival&&(!getActiveMessages(r.chats).some(m=>m.id===arrival.id&&m.speaker==='me'&&m.text===arrival.text&&m.at===arrival.at)||!semantic&&!isArrival(r,arrival.text,at)))return null;
   const plan=semantic?decision.plan:meetingPlan(r,at),confirmed=plan?.status==='confirmed'&&(semantic||plan.scheduledAt===undefined||at>=plan.scheduledAt-30*60000&&at<=(plan.expiresAt??-Infinity));
-  const where=semantic?decision.location!.name:confirmed&&plan.where?plan.where:'地点待确认';
+  const plannedWhere=semantic?decision.location!.name:confirmed&&plan.where?plan.where:undefined;
+  const current=timelineState(r,at);
+  if(current?.where==='途中'||current?.where&&plannedWhere&&current.where!==plannedWhere)return null;
+  const where=plannedWhere||current?.where||'地点待确认';
   const entryPhase=semantic?decision.entryPhase:undefined;
   const opening=entryPhase?entryDescription[entryPhase]:arrival?entryDescription.nearby:'你们开始当面交谈。';
-  return {id,startedAt:at,where,...(entryPhase?{entryPhase}:{}),...(confirmed?{agreement:structuredClone(plan),locationEvidence:{origin:'agreement' as const,at,sources:structuredClone(plan.sources)}}:{}),messages:[
+  return {id,startedAt:at,where,...(current?.where?{lifeEntry:{eventId:current.sourceId,label:current.label,startedAt:current.at}}:{}),...(current?.where&&!confirmed?{locationEvidence:{origin:'life' as const,lifeEventId:current.sourceId,at,sources:[]}}:{}),...(entryPhase?{entryPhase}:{}),...(confirmed?{agreement:structuredClone(plan),locationEvidence:{origin:'agreement' as const,at,sources:structuredClone(plan.sources)}}:{}),messages:[
     {id:id+':start',speaker:'note',text:`${where}。${opening}`,at,status:'active'},
     ...(arrival?[{...arrival,id:id+':arrival',sourceMessageId:arrival.id,kind:'scene'}]:[]),
   ]};

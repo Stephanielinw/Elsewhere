@@ -1,3 +1,4 @@
+import {timelineEvidence,latestReplyThought} from './worldTimeline';
 import type {ChatMessage,DiaryEntry,EventRecord,RoleData} from './types';
 import {getActiveEvents,getActiveMessages} from './revisions';
 import {messageSourceIndex,phoneMessagesAt} from './messageProvenance';
@@ -20,7 +21,7 @@ function messageRef(m:ChatMessage):PersonalSource{return {kind:'message',id:m.id
 function diaryRef(d:DiaryEntry):PersonalSource{return {kind:'diary',id:d.id,at:d.at,version:version([d.speaker,d.text,d.at,d.sourceMessageIds,d.sourceEventIds,d.sourceMessageRevisions,d.memoryState])};}
 function eventRef(e:EventRecord):PersonalSource{
  const fields:unknown[]=[e.kind,e.title,e.detail,e.at,e.source,e.knownBy,e.messageId,e.lifeEvidence];
- if(e.lifeRecord)fields.push(e.where,[e.lifeRecord.version,e.lifeRecord.roleId,e.lifeRecord.taskId,e.lifeRecord.origin,e.lifeRecord.action,e.lifeRecord.until,Array.isArray(e.lifeRecord.sources)?e.lifeRecord.sources.map(s=>s&&[s.kind,s.id,s.at]):null],...(e.lifeRecord.version===2?[[e.lifeRecord.planId,e.lifeRecord.stepId,e.lifeRecord.artifact]]:[]));
+ if(e.lifeRecord)fields.push(e.where,[e.lifeRecord.version,e.lifeRecord.roleId,e.lifeRecord.taskId,e.lifeRecord.origin,e.lifeRecord.action,e.lifeRecord.until,Array.isArray(e.lifeRecord.sources)?e.lifeRecord.sources.map(s=>s&&[s.kind,s.id,s.at]):null],...(e.lifeRecord.version===3?[[e.lifeRecord.timeline]]:[]),...(e.lifeRecord.version===2?[[e.lifeRecord.planId,e.lifeRecord.stepId,e.lifeRecord.artifact]]:[]));
  return {kind:'event',id:e.id,at:e.at,version:version(fields)};
 }
 function archivedProfileValid(r:RoleData,s:PersonalSource,taskAt:number):boolean {
@@ -43,7 +44,12 @@ function referenceValid(r:RoleData,s:PersonalSource,at:number,seen=new Set<strin
   const e=getActiveEvents(matches).find(e=>e.at===s.at&&e.at<=at&&e.knownBy?.includes(r.id)&&e.kind!=='drama'&&e.kind!=='diary');
   const life=e?.lifeRecord;
   if(!life&&e?.source?.startsWith('autonomous-life-v1:'))return false;
-  if(life){
+  if(life?.version===3){
+  if(!e||!timelineEvidence(r,e,at))return false;
+  if(life.sources[0].version!==profile(r))historical.add(e.id);
+  return eventRef(e).version===s.version;
+ }
+ if(life){
    const tasks=Array.isArray(r.lifeTasks)?r.lifeTasks.filter(t=>t?.id===life.taskId):[],task=tasks[0];
    if(!e||![1,2].includes(life.version)||life.roleId!==r.id||life.origin!=='simulation'||tasks.length!==1||
     task.roleId!==r.id||task.status!=='completed'||dateDayNumber(task.dateKey)===null||
@@ -108,6 +114,8 @@ export function personalDiaries(r:RoleData,at:number):DiaryEntry[] {
 }
 export function personalContext(r:RoleData,at:number,compact?:{query?:string;excludeEvents?:Set<string>}):string {
  const {events,threads,historicalProfileEventIds}=collectRoleLife(r,at);
+ const privateThought=latestReplyThought(r,at);
+ const thoughtNote=privateThought?'\n最近的角色私下心声（主观材料；对方不知道，不是已公开对白）：'+privateThought:'';
  const historyNote=historicalProfileEventIds.size?'\n旧档案历史仅说明归档时语境，当前身份、地点和关系以当前档案为准。':'';
  if(compact){
   const query=compact.query||'',rank=<T extends {at:number}>(items:T[],text:(t:T)=>string)=>[...items].sort((a,b)=>memoryRelevance(text(b),query)-memoryRelevance(text(a),query)||b.at-a.at);
@@ -118,7 +126,7 @@ export function personalContext(r:RoleData,at:number,compact?:{query?:string;exc
   ];
   const firstLife=items.findIndex(t=>t.prefix.startsWith('[生活记录 '));
   if(firstLife>1)items.splice(1,0,items.splice(firstLife,1)[0]);
-  return '角色自身生活材料（不是必须公开的话题）：\n私人关注/日记是主观文字，计划不是已发生的外部事实。'+historyNote+'\n'+selectMemoryItems(items,t=>t.text,210,4).map(t=>t.prefix+t.text).join('\n');
+  return '角色自身生活材料（不是必须公开的话题）：\n私人关注/日记是主观文字，计划不是已发生的外部事实。'+historyNote+thoughtNote+'\n'+selectMemoryItems(items,t=>t.text,210,4).map(t=>t.prefix+t.text).join('\n');
  }
  return `角色自身生活材料（不是必须公开的话题）：${historyNote}\n`+
   events.slice(-6).map(e=>`[生活记录 ${e.id} · ${new Date(e.at).toISOString()}] ${historicalProfileEventIds.has(e.id)?'（旧档案历史）':''}${e.title}：${e.detail.slice(0,400)}`).join('\n')+

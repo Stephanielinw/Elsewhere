@@ -1,3 +1,4 @@
+import {timelineState} from './worldTimeline';
 import type {RoleData} from './types';
 import {compactRoleMemory,relationshipContext} from './memory';
 import {collectRoleLife,personalContext,lifeSourcesValid} from './roleLife';
@@ -8,6 +9,7 @@ import {lifeActivity,lifePlanShape} from './lifeExecution';
 export function roleCurrentState(r:RoleData,at:number,life=collectRoleLife(r,at)){
  const observed=observedRoleState(r,at),plans=(Array.isArray(r.lifePlans)?r.lifePlans:[]).filter(p=>lifePlanShape(r,p)&&p.acceptedAt<=at&&p.expiresAt>at&&lifeSourcesValid(r,p.sources,at)),running=plans.flatMap(p=>p.intents).find(s=>s.status==='running'&&s.startedAt!<=at&&s.until!>at);
  if(observed.kind!=='unknown')return observed;
+ const current=timelineState(r,at);if(current)return current;
  if(running)return {kind:'life' as const,label:lifeActivity(running.action,r.name,running.focus,running.person,running.where)[0],where:running.where||'地点未记录',sourceId:running.id,at:running.startedAt!};
  const scenes=[...(r.meetings||[]),...(r.scene?[r.scene]:[])],plays=[...(r.plays||[]),...(r.play?[r.play]:[])];
  const lastAttendanceEnd=(stage:typeof scenes[number]|typeof plays[number])=>Array.isArray(stage.attendance)?stage.attendance.at(-1)?.to:undefined;
@@ -25,5 +27,5 @@ export function readRoleMemory(r:RoleData,at:number,query='',options:EpisodeOpti
   experienceIds:roleEpisodes(r,at).map(e=>e.id),privateText:personalContext(r,at,{query})};
 }
 export function roleMemoryText(r:RoleData,at:number,query='',options:EpisodeOptions&{includeEpisodes?:boolean;includePrivate?:boolean}={},view=readRoleMemory(r,at,query,options)){
- return `[角色级四层记忆 · ${r.id}]\n当前身份：${r.name}；${r.job}。当前关系：${view.relationship}。\n当前状态：${view.state.kind==='recent'?'当前活动和地点未确认。'+view.state.label+'；'+view.state.where:view.state.label+'；'+view.state.where}。\n未完事项（计划不是已发生事实）：${view.pending.map(p=>p.text).join('；')||'没有可验证的明确计划'}。\n现实经历与表演经历保持各自语境；结束见面不推断谁离开，角色主张不是外部事实证实。\n${options.includeEpisodes===false?'':view.episodes.facts.map(f=>f.text).join('\n')}\n${options.includePrivate===false?'':view.privateText}`;
+ return `[角色级四层记忆 · ${r.id}]\n当前身份：${r.name}；${r.job}。当前关系：${view.relationship}。\n当前状态：${view.state.kind==='recent'?'当前活动和地点未确认。'+view.state.label+'；'+view.state.where:view.state.label+'；'+view.state.where+(view.state.kind==='life'?'；开始 '+new Date(view.state.at).toISOString():'')}。\n未完事项（计划不是已发生事实）：${view.pending.map(p=>p.text).join('；')||'没有可验证的明确计划'}。\n现实经历与表演经历保持各自语境；结束见面不推断谁离开，角色主张不是外部事实证实。\n${options.includeEpisodes===false?'':view.episodes.facts.map(f=>f.text).join('\n')}\n${options.includePrivate===false?'':view.privateText}`;
 }

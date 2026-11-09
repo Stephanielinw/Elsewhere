@@ -1,3 +1,4 @@
+import type {TimelineEntry} from './worldTimeline';
 import type {AppData,EventRecord,RoleData} from './types';
 import type {PersonalSource,PersonalTicket} from './roleLife';
 import {collectRoleLife,preparePersonalReply,personalTicketValid,applyPersonalReply} from './roleLife';
@@ -11,7 +12,7 @@ import {roleMemoryText} from './roleMemoryView';
 export const LIFE_JOURNAL_KEY='elsewhere-life-budget-v1',LIFE_MAX_OUTPUT=2400;
 const day=86400000;
 export interface LifeTask {id:string;roleId:string;dateKey:string;at:number;from:number;to:number;status:'attempted'|'completed'|'quiet'|'failed'|'cancelled';error?:string;eventIds?:string[];planId?:string;outputTokenLimit?:number;dispatchedAt?:number;transport?:'not-sent'|'unknown'|'returned';usage?:{input?:number;output?:number}}
-export interface LifeRecord {version:1|2;roleId:string;taskId:string;origin:'simulation';action:string;until:number;sources:PersonalSource[];planId?:string;stepId?:string;artifact?:import('./types').FootprintArtifact}
+export interface LifeRecord {version:1|2|3;timeline?:TimelineEntry;roleId:string;taskId:string;origin:'simulation';action:string;until:number;sources:PersonalSource[];planId?:string;stepId?:string;artifact?:import('./types').FootprintArtifact}
 type Store=Pick<Storage,'getItem'|'setItem'>;
 export function readLifeJournal(store:Store):LifeTask[] {
  const raw=store.getItem(LIFE_JOURNAL_KEY);if(!raw)return [];

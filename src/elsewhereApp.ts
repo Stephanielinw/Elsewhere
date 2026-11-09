@@ -9,7 +9,7 @@ import {logsForDay,logDays,logTimestamp} from './core/systemLogs';
 import {meetingPlan,createEncounter,isFarewell,encounterHistory,updateEncounterLocation,commitSceneDecision} from './core/encounter';
 import {createSceneObservation,sceneStateKey} from './core/sceneState';
 import {prepareSceneReply,splitSceneReply,sceneReplyMatches,resolveSceneReply} from './core/sceneReply';
-import {phoneMessagesAt,messageSourceIndex,stageMessagesAt} from './core/messageProvenance';
+import {phoneMessagesAt,messageSourceIndex,stageMessagesAt,scenePlaceAt} from './core/messageProvenance';
 import {identityName,identityContext,buildNativeContext,compileNativeConversation,compileNovelConversation,compileOpeningPrompt,type NativePromptOptions} from './core/prompt';
 import {ConversationCompileError,requestMessages,promptStructure,type ConversationCompilation} from './core/conversationPrompt';
 import {loadRequestPreset} from './core/fruit/library';
@@ -26,7 +26,9 @@ import {preparePersonalReply,splitPersonalReply,applyPersonalReply,personalTicke
 import {syncLifeBudget,reserveLifeAttempt} from './core/lifeBudget';
 import {diaryRequestKey,diarySourceHash,readDiaryReceipt,replaceDiaryReceipt,type DiaryReceipt} from './core/diaryRequests';
 import {claimLifeTask,prepareLifeTask,commitLifeTask,readLifeJournal,writeLifeJournal,lifeTaskState,LIFE_MAX_OUTPUT,type LifeTask} from './core/autonomousLife';
-import {roleMemoryText} from './core/roleMemoryView';
+import {roleMemoryText,roleCurrentState} from './core/roleMemoryView';
+import {validWorldZone,worldDate,worldHour} from './core/worldClock';
+import {prepareTimeline,withTimeline,increaseLimit,splitTimelineReply,timelinePayload,applyTimeline,advanceTimeline,timelineState,attachThoughts,replyThought,resolveDiaryLife} from './core/worldTimeline';
 import {advanceLifePlans,lifeStageOccupied,updateStageAttendance} from './core/lifeExecution';
 import {lifeSourcesValid} from './core/roleLife';
 import {syncRoleMemory} from './core/memory';
@@ -179,7 +181,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if(nextKey!==token||previous.endpoint!==settings.endpoint||previous.model!==settings.model
       ||previous.mode!==settings.mode||previous.temperature!==settings.temperature||previous.maxTokens!==settings.maxTokens)apiConnectionVersion++;
     token=nextKey;
-    for(const item of data.roles)syncRoleDiaryTasks(item,data.settings,now());
+    for(const item of data.roles)syncRoleDiaryTasks(item,data.settings,now(),{zone:activeWorldZone()});
     if(canUseRealModel(data.settings))void processDiaryQueue();
   }});
   const terminalAppearance=createTerminalAppearance({data:()=>data,role:()=>role(),save:()=>save(),saveError:()=>saveError(),apply:()=>applyTerminalAppearance(),notify:message=>notify(message)});
@@ -309,10 +311,10 @@ export function initElsewhereApp(saveSession:SaveSession): void {
 
   // Daily AI Diary sequential queue state & local calendar day watcher
   let diaryQueueBusy = false;
-  let lastObservedLocalDay = toLocalDateKey(now());
+  let lastObservedLocalDay = roleDate(now());
 
   // Track A state: Monitor Daily Footprints date, tab, calendar drawer, and AI enrichment state
-  let monitorDateKey = toLocalDateKey(now());
+  let monitorDateKey = roleDate(now());
   let showFootprintCalendar = false;
   let footprintCalYear = new Date(now()).getFullYear();
   let footprintCalMonth = new Date(now()).getMonth() + 1;
@@ -1353,8 +1355,11 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     return Boolean(f.companion && f.ownerId === r.id);
   }
 
+  function activeWorldZone(){return validWorldZone(data.worldTimeZone)?data.worldTimeZone:Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC';}
+  function roleDate(at:number){return worldDate(at,activeWorldZone());}
+  function roleTime(at:number){return roleDate(at)+' '+worldHour(at,activeWorldZone());}
   function activity(r: RoleData, t: number) {
-    const raw = routine(r, t),a=raw.label==='当前活动未确认'?{...raw,label:'还没有新的生活记录',where:'',doing:'空白的时段暂不推测；有记录时会留在监控里。'}:raw;
+    const raw = routine(r, t),a=raw.label==='当前活动未确认'?{...raw,label:'还没有新的生活记录',where:'',doing:'等待生活更新'}:raw;
     if(awaitingNainOpening(r))return {...a,label:'等待首条消息',where:r.place,doing:'尚未开始正式互动'};
     const f = activeFocus();
     if (
@@ -1437,7 +1442,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     return false;
   }
   const save = (world=data): boolean => {
-    const originalId=world.draftWorldId,memories=world.roles.map(r=>[r,r.memory] as const);
+    const originalId=world.draftWorldId,originalZone=world.worldTimeZone,memories=world.roles.map(r=>[r,r.memory] as const);
     let assigned=false,confirmed=false;
     try {
       if(!draftNamespace(world)&&saveSession.hasWriter()){
@@ -1447,6 +1452,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         world.draftWorldId=candidate;
         assigned=true;
       }
+      if(!validWorldZone(world.worldTimeZone)&&saveSession.hasWriter())world.worldTimeZone=Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC';
       for(const r of world.roles)syncRoleMemory(r,now());
       if(!saveSession.write(JSON.stringify(world))){notify(saveError());refreshSaveAccess();return false;}
       confirmed=true;
@@ -1458,7 +1464,10 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       notify('存档无法序列化，未写入。');
       return false;
     } finally {
-      if(!confirmed)for(const [r,memory]of memories)r.memory=memory;
+      if(!confirmed){
+        for(const [r,memory]of memories)r.memory=memory;
+        world.worldTimeZone=originalZone;
+      }
       if(assigned&&!confirmed){
         if(originalId===undefined)delete world.draftWorldId;
         else world.draftWorldId=originalId;
@@ -1736,17 +1745,17 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     }
   }
 
-  async function requestPhoneReply(r:RoleData,messages:{role:string;content:string}[],signal:AbortSignal,task:'chat'|'first-message'='chat',onDispatch?:()=>void):Promise<string> {
+  async function requestPhoneReply(r:RoleData,messages:{role:string;content:string}[],signal:AbortSignal,task:'chat'|'first-message'='chat',onDispatch?:()=>void,extra=0):Promise<string> {
       const settings={...data.settings};
       const pendingResponse=postModel(settings.endpoint.trim().replace(/\/+$/,'')+'/chat/completions',{
         method:'POST',signal,
         headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},
-        body:JSON.stringify({model:settings.model,messages,stream:false,temperature:+settings.temperature,...completionLimit(settings,task)}),
+        body:JSON.stringify({model:settings.model,messages,stream:false,temperature:+settings.temperature,...(extra?increaseLimit(settings,'chat',extra):completionLimit(settings,task))}),
       },onDispatch);
       const trace=promptTraces.get(r.id);if(trace?.mode==='chat')trace.sentAt=now();
       chatTyping.add(r.id);
       if(view==='chat'&&role()?.id===r.id)patchDynamicRegionsOnTick();
-      return readChatResponse(await pendingResponse);
+      return extra?parseChatResponse(await readChatResponseBody(await pendingResponse),true):readChatResponse(await pendingResponse);
   }
 
   async function runChatBatch(r:RoleData,batch:ChatBatch):Promise<void> {
@@ -1760,7 +1769,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if(prepared)includeScenePromptTrace(r);
       const usedIds=new Set(compiled.value?.messages.flatMap(m=>m.sourceIds||[])||[]);
       const personal=preparePersonalReply(r,prepared?.messages||messages,now(),batch.id,'',r.chats.filter(m=>usedIds.has(m.id)),'chat',true);
-      const privateReply=splitPersonalReply(await requestPhoneReply(r,personal.messages,controller.signal));
+      const timeline=prepareTimeline(data,r,now(),batch.id,'chat');
+      const privateReply=splitTimelineReply(await readModelBeforeDeadline(signal=>requestPhoneReply(r,withTimeline(personal.messages,timeline?.instruction),signal,'chat',undefined,timeline?.extra),controller.signal));
       const extracted=splitSceneReply(privateReply.text),text=extracted.text;
       if(!data.roles.includes(r)||!chatBatchValid(r,batch)){
         if(r.chatTiming?.inFlight?.id===batch.id){reviseChatTiming(r,now());save();}
@@ -1771,7 +1781,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       const timingBefore=structuredClone(r.chatTiming),outboxBefore=r.pendingReplies;
       if(!completeChatBatch(r,batch))return;
       const turnId=makeUid('turn'),base=now();
-      r.pendingReplies=[...(r.pendingReplies||[]),...bubbles.map((bubble,i)=>({id:uid(),replyTo:batch.sources.at(-1)!.id,replyTurnId:turnId,bubbles:[bubble],dueAt:base+i*240,sources:batch.sources,chatBatchId:batch.id,...(i===bubbles.length-1&&privateReply.payload?{personalReply:{ticket:personal.ticket,payload:privateReply.payload}}:{}),...(prepared&&extracted.payload&&i===bubbles.length-1?{sceneReply:{...prepared.ticket,payload:extracted.payload}}:{})}))];
+      r.pendingReplies=[...(r.pendingReplies||[]),...bubbles.map((bubble,i)=>({id:uid(),replyTo:batch.sources.at(-1)!.id,replyTurnId:turnId,bubbles:[bubble],dueAt:base+i*240,sources:batch.sources,chatBatchId:batch.id,...(i===bubbles.length-1&&privateReply.payload?{personalReply:{ticket:personal.ticket,payload:privateReply.payload}}:{}),...(timeline&&privateReply.payload&&i===bubbles.length-1?{timelineReply:{ticket:timeline.ticket,payload:privateReply.payload,publicText:text}}:{}),...(prepared&&extracted.payload&&i===bubbles.length-1?{sceneReply:{...prepared.ticket,payload:extracted.payload}}:{})}))];
       if(!save()){r.chatTiming=timingBefore;r.pendingReplies=outboxBefore;offerUnstoredReply(bubbles.join('\n'));throw new Error('回复已返回，保存未确认；重新发送可能再次计费');}
       deliverPending(r);
     }catch(error){
@@ -1865,16 +1875,25 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     const stored=JSON.parse(localStorage.getItem(STORAGE_KEY)||'null') as AppData|null;
     const r=stored?.roles?.find(r=>r.id===id);if(!r)throw Error('生活来源已变化');return lifeVersion(r);
   }
+  function timelineFocusSpans(r:RoleData,at:number):[number,number][] {
+    const completed=(data.focus?.completed||[]).filter(f=>f.participantRoleIds?.includes(r.id)||f.companion&&f.ownerId===r.id);
+    const spans=completed.map((f):[number,number]=>[f.startedAt,f.finishedAt]);
+    const current=activeFocus();
+    if(current&&isRoleInActiveFocus(r,current))spans.push([current.startedAt,at+1]);
+    return spans;
+  }
   function pumpLifeExecution():void {
     if(document.hidden||modelPageHidden||!saveSession.current())return;
     for(const r of data.roles){
-      if(!r.lifePlans?.length)continue;
-      const before={plans:structuredClone(r.lifePlans),events:r.events.slice(),tasks:r.lifeTasks?structuredClone(r.lifeTasks):undefined};
-      const allowed=lifeEnabled()&&!isRoleInActiveFocus(r)&&!activeChatRequests.has(r.id)&&!novelTasks.has(r.id);
-      if(!advanceLifePlans(r,now(),allowed,sources=>lifeSourcesValid(r,sources,now())))continue;
+      if(!r.lifePlans?.length&&!r.events.some(e=>['pending','running'].includes(e.lifeRecord?.timeline?.state||'')))continue;
+      const before={plans:structuredClone(r.lifePlans),events:structuredClone(r.events),tasks:structuredClone(r.lifeTasks)};
+      const available=lifeEnabled()&&!isRoleInActiveFocus(r)&&!novelTasks.has(r.id);
+      const current=now(),timelineChanged=advanceTimeline(r,current,available,timelineFocusSpans(r,current));
+      const legacyChanged=advanceLifePlans(r,current,available&&!activeChatRequests.has(r.id)&&!timelineState(r,current),sources=>lifeSourcesValid(r,sources,current));
+      if(!timelineChanged&&!legacyChanged)continue;
       if(!save()){r.lifePlans=before.plans;r.events=before.events;r.lifeTasks=before.tasks;return;}
       if(role()===r){
-        if(view==='monitor')render(false);
+        if(view==='monitor'||view==='location')render(false);
         else if(view==='home')patchDynamicRegionsOnTick();
       }
     }
@@ -2405,6 +2424,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   function deliverPending(r?:RoleData):boolean {
     if(!r?.pendingReplies?.length||!data.roles.includes(r))return false;
     const before=r.pendingReplies,chats=r.chats.length,events=r.events.length,firstMessage=r.firstMessageState,planBefore=r.meetingPlan,privateBefore=r.personalThreads,memoryBefore=r.memory,proactiveBefore=r.proactive?structuredClone(r.proactive):undefined;
+    const previousThoughts=new Map<ChatMessage,ChatMessage['privateThought']>();
     const remaining=[];let changed=false;
     for(const job of before){
       const contact=job.proactiveId?r.proactive?.attempts.find(t=>t.id===job.proactiveId):undefined;
@@ -2419,13 +2439,20 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         if(r.firstMessageState?.status!=='ready')r.firstMessageState={status:'ready',updatedAt:at};
       }
       if(contact)recordProactiveDelivery(r,contact);
+      if(job.timelineReply){
+        const {ticket,payload,publicText}=job.timelineReply,aux=timelinePayload(payload);
+        const bubbles=r.chats.filter(m=>m.replyTurnId===turnId&&m.speaker==='char');
+        for(const message of bubbles)previousThoughts.set(message,message.privateThought);
+        attachThoughts(r,bubbles,aux,ticket.id);
+        if(lifeEnabled()&&ticket.zone===data.worldTimeZone)applyTimeline(r,ticket,aux,now(),timelineFocusSpans(r,now()),publicText);
+      }
       if(job.personalReply)applyPersonalReply(r,job.personalReply.ticket,job.personalReply.payload,now(),r.chats.filter(m=>m.replyTurnId===turnId));
       if(contact&&before.filter(other=>other.proactiveId===contact.id).at(-1)===job)finishProactive(r,contact,'sent');
       changed=true;
     }
     r.pendingReplies=remaining;
     if(changed){r.meetingPlan=meetingPlan(r,now());syncRoleMemory(r,now());}
-    if(changed&&!save()){r.pendingReplies=before;r.chats.length=chats;r.events.length=events;r.firstMessageState=firstMessage;r.meetingPlan=planBefore;r.personalThreads=privateBefore;r.memory=memoryBefore;r.proactive=proactiveBefore;return false;}
+    if(changed&&!save()){for(const [message,thought]of previousThoughts)message.privateThought=thought;r.pendingReplies=before;r.chats.length=chats;r.events.length=events;r.firstMessageState=firstMessage;r.meetingPlan=planBefore;r.personalThreads=privateBefore;r.memory=memoryBefore;r.proactive=proactiveBefore;return false;}
     if(changed)resumeLocalSceneReplies(r);
     return changed;
   }
@@ -2437,7 +2464,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if (end <= r.lifeAt) return;
     // Elapsed time advances without fabricating hourly life events or proactive messages.
     r.lifeAt = end;
-    syncRoleDiaryTasks(r, data.settings, end);
+    syncRoleDiaryTasks(r, data.settings, end,{zone:activeWorldZone()});
     if (canUseRealModel(data.settings)) {
       void processDiaryQueue();
     }
@@ -2453,9 +2480,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     )}</h1></div>${right}${back!=='home'?`<button type="button" class="icon-btn mobile-home" data-action="home" aria-label="返回手机桌面">${uiIcon('home')}</button>`:''}</div>`;
 
   const appTile = (id: string, name: string): string =>
-    `<button class="app-icon" data-action="view" data-view="${id}" aria-label="打开${name}"><span class="tile tile-${id}">${glyph(
-      id
-    )}</span><span class="app-name">${name}</span></button>`;
+    `<button class="app-icon" data-action="view" data-view="${id}" aria-label="打开${name}"><span class="tile tile-${id}">${glyph(id==='location'?'map':id)}</span><span class="app-name">${name}</span></button>`;
 
   const dock = (): string =>
     `<nav class="dock" aria-label="常用应用">${[
@@ -2886,11 +2911,12 @@ export function initElsewhereApp(saveSession:SaveSession): void {
  <div class="home-apps">${[
    ['diary', '日记'],
    ['monitor', '监控'],
+   ['location', '定位'],
    ['presets', '预设'],
  ]
    .map(([id, name]) => appTile(id, name))
    .join('')}</div>
- </div></section></div></div><nav class="page-dots" aria-label="桌面分页"><button type="button" data-home-page="0" aria-label="第一页：时钟与任务"><span></span></button><button type="button" data-home-page="1" aria-label="第二页：日记、监控与预设"><span></span></button></nav>`
+ </div></section></div></div><nav class="page-dots" aria-label="桌面分页"><button type="button" data-home-page="0" aria-label="第一页：时钟与任务"><span></span></button><button type="button" data-home-page="1" aria-label="第二页：日记、监控、定位与预设"><span></span></button></nav>`
     );
   }
 
@@ -3143,7 +3169,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         }<div class="message ${
           m.speaker === 'me' ? 'mine' : 'theirs'
         }" data-chat-key="message:${esc(m.id)}" data-msg-id="${esc(m.id)}">${
-          m.speaker === 'char' ? `${avatarTag(r, 'avatar sm')}` : ''
+          m.speaker === 'char' ? `<button type="button" class="thought-avatar" data-action="reply-thought" data-role-id="${esc(r.id)}" data-id="${esc(m.id)}" aria-label="查看${esc(r.name)}的心声">${avatarTag(r,'avatar sm')}</button>` : ''
         }<div class="message-inner"><div class="bubble ${
           m.kind && m.kind !== 'chat' ? 'bubble-' + esc(m.kind) : ''
         }">${bubbleContent(m, r)}</div>
@@ -3259,7 +3285,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
 
   function screenDiary(): string {
     const r = role()!;
-    syncRoleDiaryTasks(r, data.settings, now());
+    syncRoleDiaryTasks(r, data.settings, now(),{zone:activeWorldZone()});
     const entries = [...r.diaries]
       .filter((x) => x.speaker === diaryTab && !(x.speaker === 'char' && x.source === 'life'))
       .sort((a, b) => {
@@ -3293,16 +3319,17 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       }">我的日记</button></div>${
         diaryTab === 'me'
           ? `<form id="diary-form"><textarea name="text" class="field" placeholder="写下今天的事。你的私人日记默认完全私密，只有点击「分享」后角色才会知晓。" required></textarea><button class="btn small" style="margin-top:8px">保存私人日记</button></form>`
-          : `<div class="hint">每天当地时间 00:00，系统会基于前一天真实发生的聊天、见面、共同专注与角色生活，由 AI 以 ${esc(
+          : `<div class="hint">每天世界时间 00:00，系统会基于前一天真实发生的聊天、见面、共同专注与角色生活，由 AI 以 ${esc(
               r.name
             )} 的第一人称归档一篇私人日记。你读过日记，不等于角色知道你读过。</div>`
-      }${
+      }${diaryTab==='char'&&!hasCharacterDiaryForDate(r,roleDate(now()))&&!pendingTasks.some(t=>t.dateKey===roleDate(now()))?
+        `<button type="button" class="btn small secondary" data-action="retrydiary" data-date="${esc(roleDate(now()))}" ${diaryQueueBusy?'disabled':''}>生成今日日记 · 截至此刻</button>`:''}${
         diaryTab === 'char' && pendingTasks.length
           ? `<div class="section">待补写与生成状态 · ${pendingTasks.length} 篇</div>
              <div class="diary-task-list" data-testid="diary-task-list">
                ${pendingTasks
                  .map((t) => {
-                   const bounds = getLocalDayBounds(t.dateKey);
+                   const bounds = getLocalDayBounds(t.dateKey,activeWorldZone());
                    const sum =
                      t.factSummary || collectDailyDiaryFacts(r, t.dateKey).summary;
                    const factText = sum.hasUserInteraction
@@ -3444,7 +3471,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
               diaryTab === 'char'
                 ? `还没有已归档的${esc(
                     r.name
-                  )}私人日记。系统会在每天当地时间 00:00 自动为刚结束的前一天生成日记。`
+                  )}私人日记。系统会在每天世界时间 00:00 自动为刚结束的前一天生成日记。`
                 : '还没有私人日记。写下的内容默认仅你自己可见。'
             }</p></div>`
       }</div>`
@@ -3458,9 +3485,9 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       footprintCalYear,
       footprintCalMonth,
       selectedDateKey,
-      now()
+      now(),activeWorldZone()
     );
-    const todayKey = toLocalDateKey(now());
+    const todayKey = roleDate(now());
     const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
     const emptyCells = Array.from({ length: cal.leadingEmptyDays })
       .map(() => `<span class="fp-cal-empty"></span>`)
@@ -3511,16 +3538,24 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     </section>`;
   }
 
+  function screenLocation():string {
+    const r=role()!,at=now(),current=roleCurrentState(r,at),shown=activity(r,at);
+    return shell(`${header('定位','home')}<div class="viewport"><div class="card" data-testid="role-location">
+      <h2>${esc(r.name)}</h2><p>${esc(shown.label)}</p>${shown.where?`<p>${esc(shown.where)}</p>`:''}
+      ${current.kind==='life'?`<time>开始于 ${esc(worldHour(current.at,activeWorldZone()))}</time>`:''}</div></div>`);
+  }
+
   function screenMonitor(): string {
-    const r=role()!,at=now(),today=toLocalDateKey(at);
-    monitorDateKey=resolveSafeMonitorDateKey(monitorDateKey,at);
-    const bounds=getLocalDayBounds(monitorDateKey),cutoff=Math.min(at,bounds.endMs);
-    const archive=getOrBuildDailyFootprints(r,monitorDateKey,at);
-    const items=monitorItemsForDisplay(r,data.user,archive.items,at),life=collectRoleLife(r,cutoff);
+    const r=role()!,at=now(),today=roleDate(at);
+    monitorDateKey=resolveSafeMonitorDateKey(monitorDateKey,at,activeWorldZone());
+    const bounds=getLocalDayBounds(monitorDateKey,activeWorldZone()),cutoff=Math.min(at,bounds.endMs);
+    const archive=getOrBuildDailyFootprints(r,monitorDateKey,at,activeWorldZone());
+    const items=monitorItemsForDisplay(r,data.user,archive.items,at,activeWorldZone()),life=collectRoleLife(r,cutoff);
     let state=lifeJournalError;
     if(!state)try{state=lifeTaskState(data.roles,r,at,Boolean(token.trim())&&canUseRealModel(data.settings),data.settings.autonomousLife!==false,[...readLifeJournal(localStorage),...lifeClaims.map(t=>data.roles.find(r=>r.id===t.roleId)?.lifeTasks?.find(x=>x.id===t.id)||t)],lifeBusy&&Boolean(lifeController));}catch{state='生活调用额度记录无法核验，自动推进已暂停。';}
     const list=items.map(item=>`<article class="footprint-card life-timeline-item" data-testid="footprint-item" data-fp-category="${esc(item.category)}" data-fp-id="${esc(item.id)}">
-      <time class="fp-time-badge">${esc(hm(item.timestamp))}</time><div class="life-timeline-content"><button type="button" class="life-record-open" data-action="monitor-detail" data-id="${esc(item.id)}" data-role-id="${esc(r.id)}" aria-label="查看${esc(item.title)}"><h3>${esc(item.title)}</h3><p class="life-narrative">${esc(item.summary)}</p>${item.where?`<span class="tiny muted">${uiIcon('pin')}${esc(item.where)}</span>`:''}</button>
+      <time class="fp-time-badge">${esc(worldHour(item.timestamp,activeWorldZone()))}</time><div class="life-timeline-content"><button type="button" class="life-record-open" data-action="monitor-detail" data-id="${esc(item.id)}" data-role-id="${esc(r.id)}" aria-label="查看${esc(item.title)}"><h3>${esc(item.title)}</h3><p class="life-narrative">${esc(item.summary)}</p>${item.where?`<span class="tiny muted">${uiIcon('map')}${esc(item.where)}</span>`:''}</button>
+      ${item.durationLabel?`<p class="tiny muted life-hours">${esc(item.durationLabel)}</p>`:''}
       ${item.artifact?`<button type="button" class="fp-artifact-trigger" data-action="monitor-detail" data-id="${esc(item.id)}" data-role-id="${esc(r.id)}" aria-label="查看${item.artifact.kind==='list'?'手写清单':'生活物件'}：${esc(item.artifact.header)}">${renderSafeFootprintArtifact(item.artifact)}<small>展开物件</small></button>`:''}</div></article>`).join('');
     const thoughts=life.threads.filter(t=>t.at<=cutoff).slice(0,3);
     const tokenCount = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : '未提供';
@@ -3532,21 +3567,21 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         <button class="fp-date-display" data-action="togglefootprintcal" data-testid="monitor-date-display"><strong>${esc(bounds.label)}</strong><small>${esc(monitorDateKey)} · ${monitorDateKey===today?'今天':'历史归档'} ▾</small></button>
         <button class="btn small secondary fp-nav-btn" data-action="monitordate" data-date="${esc(shiftDateKey(monitorDateKey,1))}" data-testid="monitor-next-day" ${monitorDateKey<today?'':'disabled'} aria-label="后一天">后一天 ›</button>
       </div>${renderFootprintCalendarDrawer(r,monitorDateKey)}
-      <div class="footprints-list" data-testid="footprints-list">${list||`<div class="fp-empty-card" data-testid="footprint-calm-empty">${uiIcon('leaf')}<h3>这一天还没有留下记录</h3><p>空白不代表什么都没做；有依据的经历会留在这里。</p></div>`}</div>
-      ${thoughts.length?`<details class="life-private" data-testid="life-private"><summary>随手记下的话</summary><p class="tiny muted">这是${esc(r.name)}自己记下的想法、计划或判断，不等于外部事实，也不表示已经告诉了你。</p>${thoughts.map(t=>`<p>${esc(t.text)}<br><time class="tiny muted">${esc(dt(t.at))}</time></p>`).join('')}</details>`:''}
-      <details class="life-settings" data-testid="life-settings"><summary>生活设置与记录</summary><p data-testid="life-state">${esc(state)}</p><p class="tiny muted">网页打开且条件合适时执行生活意图；错过或中断的活动不会补写成已完成。每角色每天及最近 24 小时最多 1 次生活请求，全应用每天及最近 24 小时最多 2 次；失败计入额度，不自动重试。每次生活输出上限 2400 token（原为 1200，单次可能更贵），不增加请求次数。普通聊天、日记额度保持原规则。</p>${(r.lifeTasks||[]).filter(t=>t&&typeof t==='object').slice(-3).map(t=>`<p class="tiny muted life-cost-row">${esc(t.dateKey)} · ${t.transport==='not-sent'?'确定未发送':t.transport==='returned'?'正文已返回':t.status==='attempted'||t.transport==='unknown'?'发送或结果未确认':'既有调用记录'} · 输出上限 ${tokenCount(t.outputTokenLimit??1200)} token${t.usage?` · 服务商实报：输入 ${tokenCount(t.usage.input)} / 输出 ${tokenCount(t.usage.output)}`:' · 服务商未提供实际用量'}；计费以服务商为准。</p>`).join('')}<button class="btn small secondary" data-action="toggleautonomouslife">${data.settings.autonomousLife===false?'恢复自动推进':'暂停自动推进'}</button></details>
+      <div class="footprints-list" data-testid="footprints-list">${list||`<div class="fp-empty-card" data-testid="footprint-calm-empty">${uiIcon('leaf')}<h3>这一天还没有留下记录</h3></div>`}</div>
+      ${thoughts.length?`<details class="life-private" data-testid="life-private"><summary>随手记下的话</summary><p class="tiny muted">这是${esc(r.name)}自己记下的想法、计划或判断，不等于外部事实，也不表示已经告诉了你。</p>${thoughts.map(t=>`<p>${esc(t.text)}<br><time class="tiny muted">${esc(roleTime(t.at))}</time></p>`).join('')}</details>`:''}
+      <details class="life-settings" data-testid="life-settings"><summary>生活设置与记录</summary><p data-testid="life-state">${esc(state)}</p><p class="tiny muted">网页打开且条件合适时执行生活意图；错过或中断的活动不会补写成已完成。每角色每天及最近 24 小时最多 1 次生活请求，全应用每天及最近 24 小时最多 2 次；失败计入额度，不自动重试。每次生活输出上限 2400 token（原为 1200，单次可能更贵），不增加请求次数。手机和日记可在同次请求补录生活；补录与已保存计划的执行不占独立生活次数。</p>${(r.lifeTasks||[]).filter(t=>t&&typeof t==='object').slice(-3).map(t=>`<p class="tiny muted life-cost-row">${esc(t.dateKey)} · ${t.transport==='not-sent'?'确定未发送':t.transport==='returned'?'正文已返回':t.status==='attempted'||t.transport==='unknown'?'发送或结果未确认':'既有调用记录'} · 输出上限 ${tokenCount(t.outputTokenLimit??1200)} token${t.usage?` · 服务商实报：输入 ${tokenCount(t.usage.input)} / 输出 ${tokenCount(t.usage.output)}`:' · 服务商未提供实际用量'}；计费以服务商为准。</p>`).join('')}<button class="btn small secondary" data-action="toggleautonomouslife">${data.settings.autonomousLife===false?'恢复自动推进':'暂停自动推进'}</button></details>
     </div>`);
   }
 
   function openMonitorDetail(id:string):void {
     const r=role(),world=data;if(!r||view!=='monitor')return;
-    const at=now(),date=resolveSafeMonitorDateKey(monitorDateKey,at),item=monitorItemsForDisplay(r,data.user,getOrBuildDailyFootprints(r,date,at).items,at).find(i=>i.id===id);if(!item)return;
+    const at=now(),date=resolveSafeMonitorDateKey(monitorDateKey,at,activeWorldZone()),item=monitorItemsForDisplay(r,data.user,getOrBuildDailyFootprints(r,date,at,activeWorldZone()).items,at,activeWorldZone()).find(i=>i.id===id);if(!item)return;
     const dialog=document.createElement('dialog'),focus=document.activeElement;dialog.className='fruit-dialog monitor-detail';
     const scene=item.category==='scene'?r.meetings?.find(s=>item.id==='fp_scene_'+s.id):undefined;
-    const full=scene?meetingRecordHtml(r,scene).replace('id="scroll-area"','data-monitor-record-area'):((item.rawTranscript||[]).map(t=>`<p class="life-detail-text"><span class="tiny muted">${esc(t.speakerLabel)} · ${esc(hm(t.at))}</span><br>${esc(t.text)}</p>`).join('')||`<p class="life-detail-text">${esc(item.summary)}</p>`);
+    const full=scene?meetingRecordHtml(r,scene).replace('id="scroll-area"','data-monitor-record-area'):((item.rawTranscript||[]).map(t=>`<p class="life-detail-text"><span class="tiny muted">${esc(t.speakerLabel)} · ${esc(worldHour(t.at,activeWorldZone()))}</span><br>${esc(t.text)}</p>`).join('')||`<p class="life-detail-text">${esc(item.summary)}</p>`);
     const event=item.category==='life'?collectRoleLife(r,at).events.find(e=>e.id===item.sourceEventIds[0]):undefined;
     const thoughts=event?.lifeRecord?collectRoleLife(r,at).threads.filter(t=>t.requestId===event.lifeRecord!.taskId&&t.at<=event.at):[];
-    dialog.innerHTML=`<form method="dialog" class="fruit-dialog-body"><div class="row between"><h2>${esc(item.title)}</h2><button class="btn small ghost" aria-label="关闭记录">关闭</button></div><p class="tiny muted">${esc(dt(item.timestamp))}${item.where?' · '+esc(item.where):''}</p>${item.artifact?renderSafeFootprintArtifact(item.artifact):''}${full}${thoughts.length?`<details><summary>那次计划时记下的话 · 主观想法</summary>${thoughts.map(t=>`<p class="life-detail-text">${esc(t.text)}<br><time class="tiny muted">${esc(dt(t.at))}</time></p>`).join('')}</details>`:''}<details class="life-provenance"><summary>记录依据</summary><p class="tiny muted">${esc(item.category==='drama'?'这是现实中的排演参与记录，剧内剧情不是现实事实。':item.category==='scene'?'按原发言与叙述保留，不将主张视为外部证实；结束交互不推断双方告别或谁离开。':'来自有效的已保存记录。')}${event?.lifeRecord&&collectRoleLife(r,at).historicalProfileEventIds.has(event.id)?' 旧档案仅解释当时，不能证明当前职业、地点或关系。':''}</p><p class="tiny muted">${[...item.sourceEventIds,...item.sourceMessageIds].map(esc).join(' · ')}</p>${event?.lifeRecord?`<button type="button" class="btn small ghost" data-action="retractlife" data-id="${esc(event.id)}">撤回此模拟记录</button>`:''}</details></form>`;
+    dialog.innerHTML=`<form method="dialog" class="fruit-dialog-body"><div class="row between"><h2>${esc(item.title)}</h2><button class="btn small ghost" aria-label="关闭记录">关闭</button></div><p class="tiny muted">${esc(roleTime(item.timestamp))}${item.where?' · '+esc(item.where):''}</p>${item.artifact?renderSafeFootprintArtifact(item.artifact):''}${full}${thoughts.length?`<details><summary>那次计划时记下的话 · 主观想法</summary>${thoughts.map(t=>`<p class="life-detail-text">${esc(t.text)}<br><time class="tiny muted">${esc(roleTime(t.at))}</time></p>`).join('')}</details>`:''}<details class="life-provenance"><summary>记录依据</summary><p class="tiny muted">${esc(item.category==='drama'?'这是现实中的排演参与记录，剧内剧情不是现实事实。':item.category==='scene'?'按原发言与叙述保留，不将主张视为外部证实；结束交互不推断双方告别或谁离开。':'来自有效的已保存记录。')}${event?.lifeRecord&&collectRoleLife(r,at).historicalProfileEventIds.has(event.id)?' 旧档案仅解释当时，不能证明当前职业、地点或关系。':''}</p><p class="tiny muted">${[...item.sourceEventIds,...item.sourceMessageIds].map(esc).join(' · ')}</p>${event?.lifeRecord?`<button type="button" class="btn small ghost" data-action="retractlife" data-id="${esc(event.id)}">撤回此模拟记录</button>`:''}</details></form>`;
     dialog.addEventListener('click', event => {
       const target = (event.target as Element).closest<HTMLButtonElement>('[data-action=retractlife]');
       if (!target || data !== world || role() !== r || view !== 'monitor' || !checkWriteAccess()) return;
@@ -4192,7 +4227,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       ${renderRevisionsDrawer(r, scope)}
       <div class="novel" id="scroll-area"><div class="chapter">${
         isPlay ? 'theatre / act one' : 'a moment together'
-      }</div><h2 class="scene-title">${esc(title)}</h2>${!isPlay?`<div class="row between"><span data-scene-location>地点：${esc(r.scene!.where)}</span><details><summary>场景选项</summary><button type="button" class="btn small secondary" data-action="edit-meeting-place" data-role-id="${esc(r.id)}" data-scene-id="${esc(p.id)}">备用地点纠错</button></details></div>`:''}${activeMessages
+      }</div><h2 class="scene-title">${esc(title)}</h2>${!isPlay?`<div class="row between"><span data-scene-location>地点：${esc(r.scene!.locationEvidence?scenePlaceAt(r,r.scene!,now()):r.scene!.where)}</span><details><summary>场景选项</summary><button type="button" class="btn small secondary" data-action="edit-meeting-place" data-role-id="${esc(r.id)}" data-scene-id="${esc(p.id)}">备用地点纠错</button></details></div>`:''}${activeMessages
         .map((m) => {
           const isEditingThis =
             editingMessageId === m.id && editingMessageScope === scope;
@@ -4901,6 +4936,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         ? screenFocus()
         : view === 'monitor'
         ? screenMonitor()
+        : view === 'location'
+        ? screenLocation()
         : view === 'drama'
         ? screenDrama()
         : view === 'novel'
@@ -4965,7 +5002,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if(v!=='home')homeTasks.close();
     if(v==='landing'&&data.selected&&novelTasks.cancel(data.selected))busy=false;
     const preserveStage=(view==='novel'&&v==='intermission')||(view==='intermission'&&v==='novel');
-    if(['location','memories','profile'].includes(v))v='home';
+    if(['memories','profile'].includes(v))v='home';
     if(view==='presets'&&v!==view){
       if(leavingPresets)return;
       leavingPresets=true;void fruitManager.beforeLeave().then(ok=>{if(ok){view='home';go(v);}}).finally(()=>{leavingPresets=false;});return;
@@ -5262,11 +5299,22 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     const owned=()=>data===world&&world.roles.includes(r)&&world.roles.filter(item=>item.id===r.id).length===1;
     const valid=()=>owned()&&!modelPageHidden&&saveSession.current()&&!hasCharacterDiaryForDate(r,dateKey);
     if(!owned()||!saveSession.current()){if(manualTrigger)notify('请求尚未发送。'+saveError());return false;}
-    if(!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)||toLocalDateKey(getLocalDayBounds(dateKey).startMs)!==dateKey||dateKey>=toLocalDateKey(now())){if(manualTrigger)notify('这一天尚未结束，跨日后再归档。');return false;}
+    const zone=activeWorldZone(),today=roleDate(now()),isToday=dateKey===today;
+    let bounds:ReturnType<typeof getLocalDayBounds>;
+    try{bounds=getLocalDayBounds(dateKey,zone);}catch{return false;}
+    if(worldDate(bounds.startMs,zone)!==dateKey||dateKey>today||isToday&&!manualTrigger&&action!=='inspect')return false;
     if(hasCharacterDiaryForDate(r,dateKey)){if(manualTrigger)notify('这一天已有归档日记，原文保留。');return true;}
-    syncRoleDiaryTasks(r,world.settings,now());
-    const task=r.diaryTasks?.find(item=>item.dateKey===dateKey&&item.roleId===r.id);
+    syncRoleDiaryTasks(r,world.settings,now(),{zone});
+    let task=r.diaryTasks?.find(item=>item.dateKey===dateKey&&item.roleId===r.id);
+    if(!task&&isToday&&manualTrigger){
+      if(!token.trim()||!canUseRealModel(world.settings)){notify('请先在终端配置 API。');return false;}
+      const created=now();
+      task={id:uid(),roleId:r.id,dateKey,status:'pending',attempts:0,createdAt:created,updatedAt:created,cutoffAt:created};
+      (r.diaryTasks??=[]).push(task);
+      if(!save()){r.diaryTasks.pop();return false;}
+    }
     if(!task)return false;
+    const through=task.cutoffAt??Infinity;
     const status=(state:DiaryTaskStatus,message?:string)=>{
       if(!valid()||!r.diaryTasks?.includes(task))return false;
       if(task.status===state&&task.lastError===message)return true;
@@ -5313,11 +5361,11 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       const feeRisk=legacyRisk||!!receipt&&(receipt.state!=='claimed'||!!receipt.priorDispatch);
       if(!recovering&&feeRisk&&!window.confirm('此日期的日记此前可能已经计费。再次生成可能产生第二次费用。'+
         (receipt?.state==='ready'?'这会替换目前保留的未归档正文。':'')+'确定继续？'))return false;
-      const {messages,facts,personal}=buildCharacterDiaryPrompt(r,world.user,dateKey);
-      const memoryAt=Math.min(now(),getLocalDayBounds(dateKey).endMs),memoryStart=getLocalDayBounds(dateKey).startMs;
+      const {messages,facts,personal}=buildCharacterDiaryPrompt(r,world.user,dateKey,'',through,zone);
+      const memoryAt=Math.min(now(),facts.endMs),memoryStart=bounds.startMs;
       const memorySnapshot=()=>roleMemoryText(r,memoryAt,'',{since:memoryStart,includePrivate:false});
       const snapshot=JSON.stringify([world.user,facts,memorySnapshot()]);
-      const sourcesMatch=()=>snapshot===JSON.stringify([world.user,collectDailyDiaryFacts(r,dateKey,true),memorySnapshot()])&&personalTicketValid(r,personal);
+      const sourcesMatch=()=>snapshot===JSON.stringify([world.user,collectDailyDiaryFacts(r,dateKey,true,through,zone),memorySnapshot()])&&personalTicketValid(r,personal);
       const sourceHash=await diarySourceHash(JSON.stringify([snapshot,{...personal,id:''}]));
       if(!valid()||!recovering&&(epoch!==modelPageEpoch||!sourcesMatch()))return false;
       if(!recovering){
@@ -5337,6 +5385,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
           await replaceDiaryReceipt(key,sent,claim);
           return false;
         }
+        const timeline=prepareTimeline(world,r,now(),personal.id,'diary',dateKey,through);
         let text:string,payload:string|undefined;
         task.status='generating';
         syslog('diary',`请求生成角色每日日记 · ${r.name} · ${dateKey}`,{model:settings.model,dateKey,chatCount:facts.summary.chatCount,sceneCount:facts.summary.sceneCount});
@@ -5344,10 +5393,10 @@ export function initElsewhereApp(saveSession:SaveSession): void {
           const pending=readModelBeforeDeadline(async signal=>readChatResponseBody(await postModel(settings.endpoint.trim().replace(/\/+$/,'')+'/chat/completions',{
             method:'POST',signal,
             headers:{'Content-Type':'application/json',...(credential?{Authorization:'Bearer '+credential}:{})},
-            body:JSON.stringify({model:settings.model,messages,temperature:+settings.temperature||0.8,...completionLimit(settings,'diary')}),
+            body:JSON.stringify({model:settings.model,messages:withTimeline(messages,timeline?.instruction),temperature:+settings.temperature||0.8,...(timeline?.limit||completionLimit(settings,'diary'))}),
           })),undefined,true);
           safeRenderWhenNotTyping();
-          const result=splitPersonalReply(parseChatResponse(await pending));
+          const result=splitPersonalReply(parseChatResponse(await pending,!!timeline));
           text=cleanGeneratedDiaryText(result.text);payload=result.payload;
           if(!text)throw Error('empty diary');
         }catch(error){
@@ -5365,7 +5414,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
           return false;
         }
         wireResult=text;
-        receipt={...sent,state:'ready',result:{text,payload,sourceHash,requestId:personal.id}};
+        receipt={...sent,state:'ready',result:{text,payload,sourceHash,requestId:personal.id,...(timeline?{timeline:timeline.ticket}:{})}};
         await replaceDiaryReceipt(key,sent,receipt);
       }
       if(!receipt?.result)return false;
@@ -5386,9 +5435,16 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         status('ready','正文已生成，可以直接保存已有结果。自动补写已暂停。');
         return false;
       }
-      const before={diaries:structuredClone(r.diaries),diaryTasks:structuredClone(r.diaryTasks),diaryDay:r.diaryDay,personalThreads:r.personalThreads};
-      const applied=applyGeneratedCharacterDiary(r,dateKey,result.text,now());
-      if(!applied.ok)return false;
+      const before={diaries:structuredClone(r.diaries),diaryTasks:structuredClone(r.diaryTasks),diaryDay:r.diaryDay,personalThreads:r.personalThreads,events:r.events.slice()};
+      const aux=timelinePayload(result.payload);
+      const life=result.timeline&&result.timeline.zone===zone&&lifeEnabled()
+        ?applyTimeline(r,result.timeline,aux,now(),timelineFocusSpans(r,now())):{accepted:new Map<string,EventRecord>(),rejected:0};
+      const text=resolveDiaryLife(result.text,life,facts.endMs,!!aux&&Object.hasOwn(aux,'life'));
+      if(!text){
+        r.events=before.events;status('stale','日记引用无法确认，已保留草稿供核对。');copyResult(result.text,true);return false;
+      }
+      const applied=applyGeneratedCharacterDiary(r,dateKey,text,now(),through,zone);
+      if(!applied.ok){r.events=before.events;return false;}
       const ticket={...personal,id:result.requestId};
       if(applied.diary)applied.diary.continuitySources=ticket.sources;
       if(result.payload&&applied.diary)applyPersonalReply(r,ticket,result.payload,facts.endMs,[applied.diary]);
@@ -5432,7 +5488,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if(diaryQueueBusy||lifeBusy||modelPageHidden||!saveSession.current())return;
     const epoch=modelPageEpoch;
     for (const roleItem of data.roles) {
-      syncRoleDiaryTasks(roleItem, data.settings, now());
+      syncRoleDiaryTasks(roleItem, data.settings, now(),{zone:activeWorldZone()});
     }
     if (!token.trim()||!canUseRealModel(data.settings)) {
       save();
@@ -5842,7 +5898,10 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     try{
       const promptMessages=await compileRequest(r,'chat',options=>{regenerated.plan=buildPhoneRegeneration(data,r,id,now(),options);if(!regenerated.plan)throw new Error('有效来源不完整，原记录已保留');return regenerated.plan.compilation;},()=>data.roles.includes(r)&&chatRevisionKey(r)===revision&&r.scene===scene&&r.play===play);
       const plan=regenerated.plan;if(!plan)throw new Error('有效来源不完整');
-      const text=splitPersonalReply(await requestPhoneReply(r,promptMessages,controller.signal)).text;
+      const attempt=makeUid('thought');
+      const timeline=prepareTimeline(data,r,now(),attempt,'thought');
+      const response=splitTimelineReply(await readModelBeforeDeadline(signal=>requestPhoneReply(r,withTimeline(promptMessages,timeline?.instruction),signal,'chat',undefined,timeline?.extra),controller.signal));
+      const text=response.text;
       if(!data.roles.includes(r)||chatRevisionKey(r)!==revision||r.scene!==scene||r.play!==play||!getActiveMessages(r.chats).some(m=>m.id===id))return;
       const bubbles=splitChatBubbles(text,r);
       if(!bubbles.length)throw new Error('回复中没有有效的手机消息');
@@ -5851,6 +5910,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       const insertAt=Math.max(...plan.targetIds.map(target=>r.chats.findIndex(m=>m.id===target)))+1;
       if(!prepareRegenerateReply(r,'chat',id,now()).ok)return;
       const turnId=makeUid('turn'),messages=bubbles.map((bubble,i):ChatMessage=>({id:uid(),speaker:'char',kind:'chat',text:bubble,at:plan.targetAt+i,status:'active',replyTurnId:turnId,replyTo:plan.sourceIds.at(-1),replySourceIds:plan.sourceIds}));
+      if(timeline)attachThoughts(r,messages,response.aux,attempt);
       r.chats.splice(insertAt,0,...messages);
       for(const item of messages)eMemory(r,item.text,'char','chat',item.at,item.id);
       r.firstMessageState={status:'ready',updatedAt:now()};
@@ -6574,6 +6634,19 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if(act==='edit-meeting-place'){
       if(r&&r.id===b.dataset.roleId&&r.scene?.id===b.dataset.sceneId)editMeetingPlace();return;
     }
+    if(act==='reply-thought'){
+      if(view!=='chat'||!r||b.dataset.roleId!==r.id||!b.isConnected)return;
+      const message=phoneMessagesAt(r,now()).find(m=>m.id===b.dataset.id&&m.speaker==='char');
+      if(!message)return;
+      const thought=replyThought(r,message),dialog=document.createElement('dialog');
+      dialog.className='fruit-dialog reply-thought-dialog';dialog.setAttribute('aria-labelledby','reply-thought-title');
+      dialog.innerHTML=`<form method="dialog" class="fruit-dialog-body"><div class="row between"><h2 id="reply-thought-title">${esc(r.name)}的心声</h2><button class="btn small ghost" aria-label="关闭心声">关闭</button></div>
+        ${thought?.scope==='turn'?'<p class="tiny muted">这一轮回复的心声</p>':''}<p>${esc(thought?.text||'这条回复没有保存心声。')}</p></form>`;
+      dialog.addEventListener('click',event=>{if(event.target===dialog)dialog.close();});
+      dialog.addEventListener('close',()=>{dialog.remove();if(b.isConnected)b.focus({preventScroll:true});},{once:true});
+      document.body.append(dialog);dialog.showModal();
+      return;
+    }
     if(act==='monitor-detail'){
       if(view==='monitor'&&b.isConnected&&b.dataset.roleId===r?.id&&b.dataset.id)openMonitorDetail(b.dataset.id);return;
     }
@@ -6634,7 +6707,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     }
     if (act === 'monitordate') {
       const targetDate = b.dataset.date || '';
-      monitorDateKey = resolveSafeMonitorDateKey(targetDate, now());
+      monitorDateKey = resolveSafeMonitorDateKey(targetDate,now(),activeWorldZone());
       const parts = parseDateKeyParts(monitorDateKey);
       if (parts) {
         footprintCalYear = parts.year;
@@ -7517,7 +7590,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     for (const roleItem of data.roles) {
       recoverChatTiming(roleItem);
       recoverProactive(roleItem);
-      syncRoleDiaryTasks(roleItem, data.settings, now(), { resetGenerating: true });
+      syncRoleDiaryTasks(roleItem, data.settings, now(), { resetGenerating: true,zone:activeWorldZone() });
     }
     traceStorage('app-recovery-started',{scenes:data.roles.filter(r=>r.scene).length,tickets:data.roles.reduce((n,r)=>n+r.chats.filter(m=>m.sceneReply).length,0)});
     if(!save()){traceStorage('startup-save-failed');throw Error('startup-storage-unconfirmed');}
@@ -7570,12 +7643,13 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       update = completeFocusIfDue() || update;
 
       // Midnight (00:00) local calendar date rollover detection
-      const currentLocalDay = toLocalDateKey(now());
+      const currentLocalDay = roleDate(now());
       if (currentLocalDay !== lastObservedLocalDay) {
+        if(monitorDateKey===lastObservedLocalDay)monitorDateKey=currentLocalDay;
         lastObservedLocalDay = currentLocalDay;
         for (const roleItem of data.roles) {
           syncRoleDiaryTasks(roleItem, data.settings, now(), {
-            ensureYesterday: true,
+            ensureYesterday: true,zone:activeWorldZone(),
           });
         }
         syslog('diary', `跨日检测 (00:00)：已为各角色排入前一日私人日记生成队列`);

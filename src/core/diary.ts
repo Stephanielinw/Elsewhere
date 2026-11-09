@@ -1,3 +1,4 @@
+import {worldDate,worldDay} from './worldClock';
 import {roleMemoryText} from './roleMemoryView';
 import {publicUserText} from './roleExperience';
 import type {
@@ -43,12 +44,15 @@ export function parseDateKeyParts(dateKey: string): {
   return { year, month, day };
 }
 
-export function getLocalDayBounds(dateKey: string): {
+export function getLocalDayBounds(dateKey: string,zone?:string): {
   startMs: number;
   endMs: number;
   label: string;
   shortLabel: string;
 } {
+  if(zone){
+    try{return worldDay(dateKey,zone);}catch{return worldDay(worldDate(Date.now(),zone),zone);}
+  }
   const parts = parseDateKeyParts(dateKey);
   if (!parts) {
     const fallbackNow = new Date();
@@ -179,6 +183,7 @@ export function shareDiaryWithRole(
  */
 export function getRoleKnownEvents(role: RoleData): EventRecord[] {
   return getActiveEvents(role.events).filter((e) => {
+    if(e.lifeRecord?.timeline&&['pending','expired'].includes(e.lifeRecord.timeline.state))return false;
     if (e.kind === 'diary' && (!Array.isArray(e.knownBy) || !e.knownBy.includes(role.id))) {
       return false;
     }
@@ -252,9 +257,10 @@ export function collectDailyDiaryFacts(
   role: RoleData,
   dateKey: string,
   trustedLifeOnly = false,
-  through = Infinity
+  through = Infinity,
+  zone?:string
 ): DailyDiaryFacts {
-  const { startMs, endMs, label, shortLabel } = getLocalDayBounds(dateKey);
+  const { startMs, endMs, label, shortLabel } = getLocalDayBounds(dateKey,zone);
 
   const cutoff=Math.min(endMs,through);
   const onDay=(m:ChatMessage)=>m.at>=startMs;
@@ -294,7 +300,7 @@ export function collectDailyDiaryFacts(
 
   // Theatre can be cited as a rehearsal, with its own sources; it never enters the real memory index.
   const messageIndex=messageSourceIndex(role,cutoff,true);
-  const trustedLife=trustedLifeOnly?new Set(collectRoleLife(role,cutoff).events.map(e=>e.id)):undefined;
+  const trustedLife=trustedLifeOnly?new Set(collectRoleLife(role,cutoff).events.filter(e=>!e.lifeRecord?.timeline||['ended','interrupted'].includes(e.lifeRecord.timeline.state)&&e.lifeRecord.until<=cutoff).map(e=>e.id)):undefined;
   const rejected=trustedLifeOnly?projectRoleMemory(role,cutoff).supersededSources:undefined;
   const permittedEventsOnDay=getRoleKnownEvents(role).filter(e=>e.at>=startMs&&e.at<=cutoff&&
     eventSourceValid(role,e,cutoff,messageIndex,rejected)&&(!trustedLife||e.kind!=='life'||trustedLife.has(e.id)));
@@ -347,7 +353,7 @@ export function collectDailyDiaryFacts(
     dateLabel: label,
     shortLabel,
     startMs,
-    endMs,
+    endMs:cutoff,
     chatMessages,
     sceneBlocks,
     playBlocks,
@@ -376,13 +382,14 @@ export function buildCharacterDiaryPrompt(
   role: RoleData,
   user: UserProfileData,
   dateKey: string,
-  sharedTasksText = ''
+  sharedTasksText = '',
+  through=Infinity,zone?:string
 ): {
   messages: { role: string; content: string }[];
   facts: DailyDiaryFacts;
   personal: ReturnType<typeof preparePersonalReply>['ticket'];
 } {
-  const facts = collectDailyDiaryFacts(role, dateKey, true);
+  const facts = collectDailyDiaryFacts(role, dateKey, true, through, zone);
   const memory=compactRoleMemory(role,facts.endMs);
   const projected=Object.fromEntries(projectedUserFields(user,role,facts.endMs,memory).map(f=>[f.key,f.conflicts.length?'':f.text]));
   const userName = String(role.userAlias || projected.name || '你').trim() || '你';
@@ -538,10 +545,11 @@ ${sharedTasksText?`公开待办背景：${sharedTasksText.slice(0,500)}`:''}
 export function listMissingDiaryDateKeys(
   role: RoleData,
   nowTs = Date.now(),
-  maxBackfillDays = 7
+  maxBackfillDays = 7,
+  zone?:string
 ): string[] {
-  const todayKey = toLocalDateKey(nowTs);
-  const { startMs: todayStartMs } = getLocalDayBounds(todayKey);
+  const todayKey = zone?worldDate(nowTs,zone):toLocalDateKey(nowTs);
+  const { startMs: todayStartMs } = getLocalDayBounds(todayKey,zone);
   const yesterdayKey = shiftDateKey(todayKey, -1);
   const minAllowedKey = shiftDateKey(todayKey, -Math.max(1, maxBackfillDays));
 
@@ -579,7 +587,7 @@ export function listMissingDiaryDateKeys(
 
   if (pastTimestamps.length > 0) {
     const earliestTs = Math.min(...pastTimestamps);
-    const earliestKeyRaw = toLocalDateKey(earliestTs);
+    const earliestKeyRaw = zone?worldDate(earliestTs,zone):toLocalDateKey(earliestTs);
     let cursor = earliestKeyRaw < minAllowedKey ? minAllowedKey : earliestKeyRaw;
     let guard = 0;
     while (cursor <= yesterdayKey && guard < 14) {
@@ -597,7 +605,7 @@ export function listMissingDiaryDateKeys(
   }
 
   return Array.from(candidateDateKeys)
-    .filter((k) => k < todayKey && !hasCharacterDiaryForDate(role, k))
+    .filter(k=>Number.isFinite(Date.parse(k+'T00:00:00Z'))&&new Date(k+'T00:00:00Z').toISOString().slice(0,10)===k&&k<todayKey&&!hasCharacterDiaryForDate(role,k))
     .sort((a, b) => a.localeCompare(b));
 }
 
@@ -616,6 +624,7 @@ export function syncRoleDiaryTasks(
     resetGenerating?: boolean;
     ensureYesterday?: boolean;
     maxBackfillDays?: number;
+    zone?:string;
   } = {}
 ): DiaryGenerationTask[] {
   if(awaitingNainOpening(role))return role.diaryTasks||[];
@@ -624,12 +633,12 @@ export function syncRoleDiaryTasks(
     role.diaryTasks = [];
   }
 
-  const todayKey = toLocalDateKey(nowTs);
+  const todayKey = options.zone?worldDate(nowTs,options.zone):toLocalDateKey(nowTs);
   const yesterdayKey = shiftDateKey(todayKey, -1);
   const apiReady = canUseRealModel(settings);
 
   const missingKeys = new Set(
-    listMissingDiaryDateKeys(role, nowTs, options.maxBackfillDays ?? 7)
+    listMissingDiaryDateKeys(role, nowTs, options.maxBackfillDays ?? 7,options.zone)
   );
   if (options.ensureYesterday && !hasCharacterDiaryForDate(role, yesterdayKey)) {
     missingKeys.add(yesterdayKey);
@@ -673,7 +682,7 @@ export function syncRoleDiaryTasks(
   }
 
   for (const dateKey of Array.from(missingKeys).sort()) {
-    const facts = collectDailyDiaryFacts(role, dateKey);
+    const facts = collectDailyDiaryFacts(role, dateKey,false,Infinity,options.zone);
     const existing = byDate.get(dateKey);
     if (existing) {
       existing.factSummary = facts.summary;
@@ -718,7 +727,7 @@ export function applyGeneratedCharacterDiary(
   role: RoleData,
   dateKey: string,
   rawText: string,
-  nowTs = Date.now()
+  nowTs = Date.now(),through=Infinity,zone?:string
 ): {
   ok: boolean;
   reason?: string;
@@ -733,7 +742,7 @@ export function applyGeneratedCharacterDiary(
   if (!Array.isArray(role.diaries)) role.diaries = [];
   if (!Array.isArray(role.diaryTasks)) role.diaryTasks = [];
 
-  const facts = collectDailyDiaryFacts(role, dateKey, true);
+  const facts = collectDailyDiaryFacts(role, dateKey, true, through, zone);
   const wordCount = countDiaryChars(text);
 
   // Check if a formal character diary already exists for this dateKey

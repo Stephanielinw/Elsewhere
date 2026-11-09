@@ -1,3 +1,4 @@
+import {timelineEvidence} from './worldTimeline';
 import type {ChatMessage,MeetingPlan,RoleData,SceneData} from './types';
 
 export function getActiveMessages(messages:ChatMessage[]|null|undefined):ChatMessage[]{
@@ -76,6 +77,10 @@ export function scenePlaceAt(r:RoleData,scene:SceneData,at:number):string {
  const positions:{where:string;at:number}[]=[];
  const add=(state:Pick<SceneData,'where'|'locationEvidence'|'agreement'>)=>{
   const proof=state.locationEvidence;
+  if(proof?.origin==='life'){
+   const record=r.events.find(e=>e.id===proof.lifeEventId);
+   if(!record||record.where!==state.where||record.at>proof.at||!timelineEvidence(r,record,at)||record.lifeRecord!.until<proof.at)return;
+  }
   if(proof&&Number.isFinite(proof.at)&&proof.at>=scene.startedAt&&proof.at<=at&&valid(proof.sources)&&valid(state.agreement?.sources||[]))positions.push({where:state.where,at:proof.at});
  };
  const changes=r.events.filter(e=>e.sceneChange?.sceneId===scene.id);

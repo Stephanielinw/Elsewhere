@@ -2528,205 +2528,6 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
     return result;
   }
 
-  // src/core/roleLife.ts
-  var version = (value) => JSON.stringify(value);
-  var threadVersion = (t) => version([t.id, t.key, t.roleId, t.kind, t.text, t.at, t.status, t.shareable, t.requestId]);
-  var ledgerVersion = (r) => version((r.personalThreads || []).map(threadVersion));
-  var profile = (r) => version([r.name, r.job, r.traits, r.place, r.profile, r.relationship, r.canonNotes, r.notes]);
-  function messageRef(m) {
-    return { kind: "message", id: m.id, at: m.at, version: version([m.speaker, m.text, m.at, m.revisionCount || 0, m.quote || null]) };
-  }
-  function diaryRef(d) {
-    return { kind: "diary", id: d.id, at: d.at, version: version([d.speaker, d.text, d.at, d.sourceMessageIds, d.sourceEventIds, d.sourceMessageRevisions, d.memoryState]) };
-  }
-  function eventRef(e) {
-    const fields = [e.kind, e.title, e.detail, e.at, e.source, e.knownBy, e.messageId, e.lifeEvidence];
-    if (e.lifeRecord) fields.push(e.where, [e.lifeRecord.version, e.lifeRecord.roleId, e.lifeRecord.taskId, e.lifeRecord.origin, e.lifeRecord.action, e.lifeRecord.until, Array.isArray(e.lifeRecord.sources) ? e.lifeRecord.sources.map((s) => s && [s.kind, s.id, s.at]) : null], ...e.lifeRecord.version === 2 ? [[e.lifeRecord.planId, e.lifeRecord.stepId, e.lifeRecord.artifact]] : []);
-    return { kind: "event", id: e.id, at: e.at, version: version(fields) };
-  }
-  function archivedProfileValid(r, s, taskAt) {
-    if (!s || s.kind !== "profile" || s.id !== r.id || s.at !== taskAt || typeof s.version !== "string") return false;
-    try {
-      const fields = JSON.parse(s.version);
-      return Array.isArray(fields) && fields.length === 8 && typeof fields[0] === "string" && Boolean(fields[0].trim()) && fields.every((value) => value === null || typeof value === "string");
-    } catch {
-      return false;
-    }
-  }
-  function referenceValid(r, s, at, seen = /* @__PURE__ */ new Set(), memory = compactRoleMemory(r, at), historical = /* @__PURE__ */ new Set()) {
-    if (!s || typeof s.version !== "string" || !Number.isFinite(s.at) || s.at > at) return false;
-    if (s.kind === "profile") return s.id === r.id && s.version === profile(r);
-    if (s.kind === "message") {
-      const m = messageSourceIndex(r, at).get(s.id);
-      return Boolean(m && m.speaker !== "note" && messageRef(m).version === s.version && !memory.supersededSources.has(m.id));
-    }
-    if (s.kind === "event") {
-      if (seen.has("event:" + s.id)) return false;
-      const allEvents = Array.isArray(r.events) ? r.events : [];
-      const matches = allEvents.filter((e2) => e2?.id === s.id);
-      if (matches.length !== 1) return false;
-      const e = getActiveEvents(matches).find((e2) => e2.at === s.at && e2.at <= at && e2.knownBy?.includes(r.id) && e2.kind !== "drama" && e2.kind !== "diary");
-      const life = e?.lifeRecord;
-      if (!life && e?.source?.startsWith("autonomous-life-v1:")) return false;
-      if (life) {
-        const tasks = Array.isArray(r.lifeTasks) ? r.lifeTasks.filter((t2) => t2?.id === life.taskId) : [], task = tasks[0];
-        if (!e || ![1, 2].includes(life.version) || life.roleId !== r.id || life.origin !== "simulation" || tasks.length !== 1 || task.roleId !== r.id || task.status !== "completed" || dateDayNumber(task.dateKey) === null || task.id !== "life:" + encodeURIComponent(r.id) + ":" + task.dateKey || ![task.at, task.from, task.to].every(Number.isFinite) || task.to !== task.at || task.from > task.to || task.to > at || !Array.isArray(task.eventIds) || !task.eventIds.length || task.eventIds.length > (life.version === 1 ? 3 : 8) || life.version === 1 && !task.eventIds.every((id2, i) => id2 === task.id + ":event:" + i) || !task.eventIds.includes(e.id) || e.source !== `autonomous-life-v${life.version}:` + task.id || e.kind !== "life" || typeof e.title !== "string" || typeof e.detail !== "string" || e.at < task.from || e.status !== void 0 && e.status !== "active" || !Number.isFinite(life.until) || life.version === 1 && life.until > task.to || life.until > at || life.until <= e.at || !Number.isInteger((life.until - e.at) / 6e4) || life.until - e.at > (life.version === 1 ? 30 : 120) * 6e4 || !["rest", "walk", "read", "organize", "practice", "care", "social", ...life.version === 2 ? ["prepare-rest", "reminder"] : []].includes(life.action) || !Array.isArray(life.sources) || !life.sources.length || life.sources.filter((ref2) => ref2?.kind === "profile").length !== 1 || new Set(life.sources.map((ref2) => ref2?.kind + ":" + ref2?.id)).size !== life.sources.length || life.version === 2 && !lifeExecutionEvidence(r, e, at)) return false;
-        for (const ref2 of life.sources) {
-          if (ref2?.kind === "profile") {
-            if (!archivedProfileValid(r, ref2, task.to)) return false;
-          } else if (ref2?.kind !== "event" || ref2.at > e.at || !referenceValid(r, ref2, at, /* @__PURE__ */ new Set([...seen, "event:" + s.id]), memory, historical)) return false;
-        }
-        if (life.sources.some((ref2) => ref2.kind === "profile" ? ref2.version !== profile(r) : historical.has(ref2.id))) historical.add(e.id);
-      }
-      return Boolean(e && eventRef(e).version === s.version && eventSourceValid(r, e, at, messageSourceIndex(r, at), memory.supersededSources) && (e.kind !== "life" || e.lifeEvidence === "confirmed" && e.source));
-    }
-    if (s.kind === "diary") {
-      if (seen.has("diary:" + s.id)) return false;
-      const d = r.diaries.find((d2) => d2.id === s.id && d2.speaker === "char" && d2.source === "ai" && d2.at <= at);
-      const current = memory;
-      if (d && ((d.memoryState?.factIds || []).some((id2) => !current.facts.some((f) => f.id === id2) && !current.trace.some((t2) => t2.id === id2 && t2.reason === "same-current-fact")) || (d.sourceMessageIds || []).some((id2) => current.supersededSources.has(id2) && !d.memoryState?.ignoredMessageIds.includes(id2)))) return false;
-      const cutoff = Math.min(at, d?.at ?? at), sources = messageSourceIndex(r, cutoff, true);
-      return Boolean(d && d.generatedAt && d.generatedAt <= at && diaryRef(d).version === s.version && (d.sourceMessageIds || []).every((id2) => {
-        const m = sources.get(id2);
-        return m && (d.sourceMessageRevisions ? d.sourceMessageRevisions[id2] === (m.revisionCount || 0) : !m.editedAt && !m.revisionCount);
-      }) && (d.sourceEventIds || []).every((id2) => getActiveEvents(r.events).some((e) => e.id === id2 && e.knownBy?.includes(r.id) && eventSourceValid(r, e, cutoff, sources, current.supersededSources) && (e.kind !== "life" || referenceValid(r, eventRef(e), cutoff, /* @__PURE__ */ new Set([...seen, "diary:" + s.id]), memory, historical)))) && (!d.continuitySources || d.continuitySources.every((ref2) => referenceValid(r, ref2, at, /* @__PURE__ */ new Set([...seen, "diary:" + s.id]), memory, historical))));
-    }
-    const t = r.personalThreads?.find((t2) => t2.id === s.id);
-    if (!t || seen.has(t.id) || t.roleId !== r.id || t.at > at || s.version !== threadVersion(t)) return false;
-    return t.sources.length > 0 && t.sources.every((ref2) => referenceValid(r, ref2, at, /* @__PURE__ */ new Set([...seen, t.id]), memory, historical));
-  }
-  function lifeSourcesValid(r, sources, at) {
-    return Array.isArray(sources) && sources.length > 0 && sources.every((s) => referenceValid(r, s, at));
-  }
-  function collectRoleLife(r, at = Date.now()) {
-    const memory = compactRoleMemory(r, at), historical = /* @__PURE__ */ new Set();
-    const events = getActiveEvents(r.events).filter((e) => e.kind === "life" && e.lifeEvidence === "confirmed" && Boolean(e.source) && e.knownBy?.includes(r.id) && e.at <= at && referenceValid(r, eventRef(e), at, /* @__PURE__ */ new Set(), memory, historical)).sort((a, b) => a.at - b.at);
-    const latest = /* @__PURE__ */ new Map();
-    for (const t of r.personalThreads || []) {
-      if (t.origin !== "model-private" || t.roleId !== r.id || t.at > at || !t.sources?.length || !t.sources.every((s) => referenceValid(r, s, at, /* @__PURE__ */ new Set(), memory))) continue;
-      const old = latest.get(t.key);
-      if (!old || t.at >= old.at) latest.set(t.key, t);
-    }
-    const threads = [...latest.values()].filter((t) => t.status === "open").sort((a, b) => b.at - a.at).slice(0, 8);
-    return { events, threads, historicalProfileEventIds: new Set(events.filter((e) => historical.has(e.id)).map((e) => e.id)) };
-  }
-  function personalDiaries(r, at) {
-    const memory = compactRoleMemory(r, at);
-    return r.diaries.filter((d) => d.speaker === "char" && d.source === "ai" && d.at <= at && referenceValid(r, diaryRef(d), at, /* @__PURE__ */ new Set(), memory)).sort((a, b) => b.at - a.at).slice(0, 2);
-  }
-  function personalContext(r, at, compact) {
-    const { events, threads, historicalProfileEventIds } = collectRoleLife(r, at);
-    const historyNote = historicalProfileEventIds.size ? "\n\u65E7\u6863\u6848\u5386\u53F2\u4EC5\u8BF4\u660E\u5F52\u6863\u65F6\u8BED\u5883\uFF0C\u5F53\u524D\u8EAB\u4EFD\u3001\u5730\u70B9\u548C\u5173\u7CFB\u4EE5\u5F53\u524D\u6863\u6848\u4E3A\u51C6\u3002" : "";
-    if (compact) {
-      const query = compact.query || "", rank = (items2, text2) => [...items2].sort((a, b) => memoryRelevance(text2(b), query) - memoryRelevance(text2(a), query) || b.at - a.at);
-      const items = [
-        ...rank(threads, (t) => t.text).slice(0, 2).map((t) => ({ text: memoryExcerpt(t.text, query, 65), prefix: `[${t.id} \xB7 key=${t.key} \xB7 ${t.kind}] ` })),
-        ...rank(events.filter((e) => !compact.excludeEvents?.has(e.id)), (e) => e.detail).slice(0, 2).map((e) => ({ text: memoryExcerpt(e.detail, query, 70), prefix: `[\u751F\u6D3B\u8BB0\u5F55 ${e.id} \xB7 ${new Date(e.at).toISOString().slice(0, 10)}] ${historicalProfileEventIds.has(e.id) ? "\uFF08\u65E7\u6863\u6848\u5386\u53F2\uFF09" : ""}${e.title}\uFF1A` })),
-        ...personalDiaries(r, at).slice(0, 1).map((d) => ({ text: memoryExcerpt(d.text, query, 55), prefix: `[${d.id} \xB7 ${new Date(d.at).toISOString().slice(0, 10)}] \u79C1\u4EBA\u65E5\u8BB0\u77ED\u6458\uFF1A` }))
-      ];
-      const firstLife = items.findIndex((t) => t.prefix.startsWith("[\u751F\u6D3B\u8BB0\u5F55 "));
-      if (firstLife > 1) items.splice(1, 0, items.splice(firstLife, 1)[0]);
-      return "\u89D2\u8272\u81EA\u8EAB\u751F\u6D3B\u6750\u6599\uFF08\u4E0D\u662F\u5FC5\u987B\u516C\u5F00\u7684\u8BDD\u9898\uFF09\uFF1A\n\u79C1\u4EBA\u5173\u6CE8/\u65E5\u8BB0\u662F\u4E3B\u89C2\u6587\u5B57\uFF0C\u8BA1\u5212\u4E0D\u662F\u5DF2\u53D1\u751F\u7684\u5916\u90E8\u4E8B\u5B9E\u3002" + historyNote + "\n" + selectMemoryItems(items, (t) => t.text, 210, 4).map((t) => t.prefix + t.text).join("\n");
-    }
-    return `\u89D2\u8272\u81EA\u8EAB\u751F\u6D3B\u6750\u6599\uFF08\u4E0D\u662F\u5FC5\u987B\u516C\u5F00\u7684\u8BDD\u9898\uFF09\uFF1A${historyNote}
-` + events.slice(-6).map((e) => `[\u751F\u6D3B\u8BB0\u5F55 ${e.id} \xB7 ${new Date(e.at).toISOString()}] ${historicalProfileEventIds.has(e.id) ? "\uFF08\u65E7\u6863\u6848\u5386\u53F2\uFF09" : ""}${e.title}\uFF1A${e.detail.slice(0, 400)}`).join("\n") + "\n\u79C1\u4EBA\u6301\u7EED\u5173\u6CE8\uFF08\u6A21\u578B\u6B64\u524D\u5199\u4E0B\u7684\u60F3\u6CD5/\u6253\u7B97\uFF0C\u4E0D\u662F\u5DF2\u786E\u8BA4\u7684\u5916\u90E8\u4E8B\u4EF6\uFF1B\u4E0D\u5FC5\u544A\u8BC9\u5BF9\u65B9\uFF09\uFF1A\n" + (threads.map((t) => `[${t.id} \xB7 key=${t.key} \xB7 ${new Date(t.at).toISOString()} \xB7 ${t.kind}] ${t.text}`).join("\n") || "\u6682\u65E0\u5DF2\u8BB0\u5F55\u5173\u6CE8\u70B9") + "\n\u6B64\u524D\u79C1\u4EBA\u65E5\u8BB0\u77ED\u6458\uFF08\u672C\u4EBA\u7684\u4E3B\u89C2\u6587\u5B57\uFF0C\u4E0D\u81EA\u52A8\u4F5C\u4E3A\u5916\u90E8\u4E8B\u5B9E\uFF09\uFF1A\n" + personalDiaries(r, at).map((d) => `[${d.id} \xB7 ${new Date(d.at).toISOString()}] ${d.text.slice(0, 300)}`).join("\n");
-  }
-  function preparePersonalReply(r, messages, at, id2, extraTask = "", sourceMessages = getActiveMessages(r.chats).slice(-12), mode = "chat", visibleSourcesOnly = false) {
-    const life = collectRoleLife(r, at), memory = compactRoleMemory(r, at), visible = (marker) => !visibleSourcesOnly || messages.some((m) => m.content.includes(marker));
-    const requested = new Set(sourceMessages.map((m) => m.id));
-    const sources = [{ kind: "profile", id: r.id, at, version: profile(r) }, ...phoneMessagesAt(r, at).filter((m) => requested.has(m.id) && m.speaker !== "note" && !memory.supersededSources.has(m.id)).map(messageRef), ...life.events.slice(-6).filter((e) => visible("[\u751F\u6D3B\u8BB0\u5F55 " + e.id + " \xB7")).map(eventRef), ...personalDiaries(r, at).filter((d) => visible("[" + d.id + " \xB7")).map(diaryRef), ...life.threads.filter((t) => visible("[" + t.id + " \xB7")).map((t) => ({ kind: "thread", id: t.id, at: t.at, version: threadVersion(t) }))];
-    const ticket = { id: id2, roleId: r.id, at, sceneId: r.scene?.id || null, playId: r.play?.id || null, sources, threadVersion: ledgerVersion(r), memoryVersion: memoryVersion(r, at), mode };
-    const control = `[Elsewhere Private Continuity v1]
-\u4FDD\u6301\u539F\u6709${mode === "diary" ? "\u65E5\u8BB0\u6B63\u6587" : "\u624B\u673A\u6B63\u6587\u4E0E\u5168\u90E8\u573A\u666F\u4E8B\u4EF6\u534F\u8BAE"}\u3002${extraTask}
-\u53EF\u5728\u6B63\u6587\u540E\u6309\u9700\u9644\u52A0 <elsewhere_private_state>{"requestId":${JSON.stringify(id2)},"roleId":${JSON.stringify(r.id)},"updates":[{"kind":"concern|opinion|plan|observation|relationship","text":"\u7B80\u77ED\u7684\u79C1\u4EBA\u5173\u6CE8/\u5224\u65AD/\u6253\u7B97","sources":["kind:id"],"shareable":false}]}</elsewhere_private_state>\u3002\u65E0\u503C\u5F97\u6301\u7EED\u8BB0\u5F55\u7684\u53D8\u5316\u5C31\u7701\u7565\uFF1B\u81F3\u591A3\u9879\uFF0C\u6BCF\u9879200\u5B57\u3002\u5DF2\u6709\u5173\u6CE8\u7528 key=\u539F\u5173\u6CE8key \u66F4\u65B0\uFF0Cstatus=open\u6216resolved\u3002\u4E0D\u5199\u63A8\u7406\u8FC7\u7A0B\uFF0C\u4E0D\u603B\u7ED3\u7528\u6237\u6BCF\u53E5\u8BDD\uFF0C\u4E0D\u8BB0\u5F55\u672A\u7ECF\u8BC1\u5B9E\u7684\u91CD\u5927\u5916\u90E8\u4E8B\u4EF6\u3002\u5141\u8BB8\u7B26\u5408\u8EAB\u4EFD\u7684\u5E73\u5E38\u79C1\u4EBA\u89C2\u5BDF\u4E0E\u60F3\u6CD5\uFF0C\u6807\u4E3A\u4E2A\u4EBA\u60F3\u6CD5\u800C\u975ECanon\uFF1B\u89C2\u70B9\u53EF\u4EE5\u6539\u53D8\u6216\u7EA0\u6B63\u3002shareable\u4EC5\u8868\u793A\u672C\u4EBA\u613F\u610F\u4EE5\u540E\u4E3B\u52A8\u8C08\u53CA\uFF0C\u4E0D\u8981\u6C42\u5728\u672C\u8F6E\u516C\u5F00\u3002\u5143\u6570\u636E\u4E0D\u662F\u804A\u5929\u3001\u573A\u666F\u4E8B\u4EF6\u6216\u6B63\u5F0F\u8BB0\u5FC6\uFF1B\u4E0D\u5F97\u653E\u5165\u5BF9\u767D\u6216\u5176\u4ED6\u6807\u7B7E\u3002
-\u53EF\u5F15\u7528\u7684\u6765\u6E90\uFF1A${JSON.stringify(sources.map((s) => ({ id: s.kind + ":" + s.id, at: s.at, ...s.kind === "thread" ? { key: life.threads.find((t) => t.id === s.id)?.key } : {} })))}`;
-    const copy = messages.map((m) => ({ ...m })), first = copy.find((m) => m.role === "system");
-    if (first) first.content += "\n\n" + control;
-    else copy.unshift({ role: "system", content: control });
-    return { messages: copy, ticket };
-  }
-  function splitPersonalReply(raw) {
-    const lower = raw.replace(/[A-Z]/g, (c) => c.toLowerCase()), open2 = "<elsewhere_private_state>", close2 = "</elsewhere_private_state>";
-    let cursor = 0, text2 = "", payload, count = 0;
-    while (cursor < raw.length) {
-      const tag = /<\/?elsewhere_private_state\b/ig;
-      tag.lastIndex = cursor;
-      const match = tag.exec(raw);
-      if (!match) {
-        text2 += raw.slice(cursor);
-        break;
-      }
-      text2 += raw.slice(cursor, match.index);
-      count++;
-      const end = raw.indexOf(">", tag.lastIndex), next = raw.indexOf("<", tag.lastIndex);
-      if (end < 0 || next >= 0 && next < end) break;
-      if (match[0].startsWith("</")) {
-        cursor = end + 1;
-        continue;
-      }
-      const from = end + 1;
-      let quote = false, escape = false, depth = 1, stop = -1, nested = false;
-      for (let i = from; i < raw.length; i++) {
-        const c = raw[i];
-        if (escape) {
-          escape = false;
-          continue;
-        }
-        if (quote && c === "\\") {
-          escape = true;
-          continue;
-        }
-        if (c === '"') {
-          quote = !quote;
-          continue;
-        }
-        if (!quote) {
-          if (lower.startsWith(open2, i)) {
-            depth++;
-            nested = true;
-          }
-          if (lower.startsWith(close2, i) && --depth === 0) {
-            stop = i;
-            break;
-          }
-        }
-      }
-      if (stop < 0) break;
-      if (count === 1 && !nested && lower.slice(match.index, from) === open2 && stop - from <= 6e3) payload = raw.slice(from, stop);
-      cursor = stop + close2.length;
-    }
-    return { text: text2.trim(), ...count === 1 && payload ? { payload } : {} };
-  }
-  function personalTicketValid(r, ticket) {
-    return r.id === ticket.roleId && (r.scene?.id || null) === ticket.sceneId && (r.play?.id || null) === ticket.playId && ledgerVersion(r) === ticket.threadVersion && (!ticket.memoryVersion || ticket.memoryVersion === memoryVersion(r, ticket.mode === "diary" ? ticket.at : Math.max(Date.now(), ticket.at))) && ticket.sources.every((s) => referenceValid(r, s, Math.max(Date.now(), ticket.at), /* @__PURE__ */ new Set(), compactRoleMemory(r, ticket.mode === "diary" ? ticket.at : Math.max(Date.now(), ticket.at))));
-  }
-  function applyPersonalReply(r, ticket, payload, at, bindings = []) {
-    if (!personalTicketValid(r, ticket) || payload.length > 6e3 || (r.personalThreads || []).some((t) => t.requestId === ticket.id) || (r.personalThreads || []).filter((t) => t.at > at - 864e5).length >= 12) return false;
-    let data;
-    try {
-      data = JSON.parse(payload);
-    } catch {
-      return false;
-    }
-    if (!data || typeof data !== "object") return false;
-    const body = data;
-    if (body.roleId !== r.id || body.requestId !== ticket.id || !Array.isArray(body.updates) || body.updates.length > 3) return false;
-    const updates = [];
-    for (const [i, value] of body.updates.entries()) {
-      if (!value || typeof value !== "object") return false;
-      const u = value;
-      if (!["concern", "opinion", "plan", "observation", "relationship"].includes(String(u.kind)) || typeof u.text !== "string" || !u.text.trim() || u.text.length > 200 || !Array.isArray(u.sources) || !u.sources.length || u.sources.length > 3 || u.shareable !== true && u.shareable !== false || u.status !== void 0 && !["open", "resolved"].includes(String(u.status))) return false;
-      const refs = u.sources.map((key2) => ticket.sources.find((s) => s.kind + ":" + s.id === key2));
-      if (refs.some((s) => !s)) return false;
-      if (u.key !== void 0 && !collectRoleLife(r, ticket.at).threads.some((t) => t.key === u.key)) return false;
-      const dependencies = bindings.map((m) => "generatedAt" in m || r.diaries.some((d) => d.id === m.id) ? diaryRef(m) : messageRef(m));
-      updates.push({ id: ticket.id + ":" + i, key: typeof u.key === "string" ? u.key : ticket.id + ":" + i, roleId: r.id, kind: u.kind, text: u.text.trim(), at, status: u.status === "resolved" ? "resolved" : "open", shareable: u.shareable, sources: [...refs, ...dependencies], origin: "model-private", requestId: ticket.id });
-    }
-    if (!updates.length) return false;
-    r.personalThreads = [...r.personalThreads || [], ...updates];
-    return true;
-  }
-
   // src/core/lifeExecution.ts
   var LIFE_ACTIONS = ["rest", "walk", "read", "organize", "practice", "care", "social", "prepare-rest", "reminder"];
   function lifeActivity(action, name, focus, person, where) {
@@ -2760,10 +2561,16 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
     stage2.attendance.at(-1).to = at;
     return true;
   }
-  function lifeOrigin(r, at, historical = false) {
-    const profile2 = JSON.stringify([r.name, r.job, r.traits, r.place, r.profile, r.relationship, r.canonNotes, r.notes]), scenes = [...r.meetings || [], ...r.scene ? [r.scene] : []];
-    const entries = [...r.events.filter((e) => e.lifeRecord?.version === 2 && e.lifeRecord.until <= at && at - e.lifeRecord.until <= 864e5 && e.status === "active" && e.where && lifeExecutionEvidence(r, e, at) && (historical || e.lifeRecord.sources.find((s) => s.kind === "profile")?.version === profile2) && e.lifeRecord.sources.filter((s) => s.kind !== "profile").every((s) => lifeSourcesValid(r, [s], at))).map((e) => ({ where: e.where, at: e.lifeRecord.until, sourceId: e.id })), ...scenes.filter((s) => scenes.filter((x) => x.id === s.id).length === 1 && s.startedAt <= at).map((s) => ({ where: s.locationEvidence || s.agreement ? scenePlaceAt(r, s, at) : s.where, at: s.endedAt ?? s.attendance?.at(-1)?.to ?? s.startedAt, sourceId: s.id }))].filter((s) => s.where && !/未确认|未知/.test(s.where) && s.at <= at && at - s.at <= 864e5).sort((a, b) => b.at - a.at);
-    return entries[0];
+  function lifeOrigin(r, at) {
+    const scenes = [...r.meetings || [], ...r.scene ? [r.scene] : []];
+    return scenes.flatMap((scene) => {
+      if (scenes.filter((s) => s.id === scene.id).length !== 1 || scene.startedAt > at) return [];
+      const last = Array.isArray(scene.attendance) ? scene.attendance.at(-1) : void 0;
+      const observedAt = scene.endedAt ?? last?.to ?? scene.startedAt;
+      if (!Number.isFinite(observedAt) || observedAt < scene.startedAt || observedAt > at || at - observedAt > 864e5) return [];
+      const where = scene.locationEvidence || scene.agreement ? scenePlaceAt(r, scene, at) : scene.where;
+      return where && !/未确认|未知/.test(where) ? [{ where, at: observedAt, sourceId: scene.id }] : [];
+    }).sort((a, b) => b.at - a.at)[0];
   }
   function lifePlanShape(r, plan) {
     if (!plan || typeof plan !== "object" || !Array.isArray(r.lifeTasks)) return false;
@@ -2795,7 +2602,7 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
     if (!["rest", "walk", "social"].includes(step.action) && (!step.focus || !sourceText.includes(step.focus)) || step.action === "social") return;
     const [title, detail] = lifeActivity(step.action, name, step.focus, step.person, step.where);
     if (e.title !== title || e.detail !== detail) return;
-    if (step.where && lifeOrigin(r, e.at, true)?.where !== step.where) return;
+    if (step.where && lifeOrigin(r, e.at)?.where !== step.where) return;
     return plan;
   }
   function overlaps(r, from, to) {
@@ -4038,6 +3845,205 @@ ${msg.text}`;
         tx.onabort = tx.onerror = fail3;
       };
     });
+  }
+
+  // src/core/roleLife.ts
+  var version = (value) => JSON.stringify(value);
+  var threadVersion = (t) => version([t.id, t.key, t.roleId, t.kind, t.text, t.at, t.status, t.shareable, t.requestId]);
+  var ledgerVersion = (r) => version((r.personalThreads || []).map(threadVersion));
+  var profile = (r) => version([r.name, r.job, r.traits, r.place, r.profile, r.relationship, r.canonNotes, r.notes]);
+  function messageRef(m) {
+    return { kind: "message", id: m.id, at: m.at, version: version([m.speaker, m.text, m.at, m.revisionCount || 0, m.quote || null]) };
+  }
+  function diaryRef(d) {
+    return { kind: "diary", id: d.id, at: d.at, version: version([d.speaker, d.text, d.at, d.sourceMessageIds, d.sourceEventIds, d.sourceMessageRevisions, d.memoryState]) };
+  }
+  function eventRef(e) {
+    const fields = [e.kind, e.title, e.detail, e.at, e.source, e.knownBy, e.messageId, e.lifeEvidence];
+    if (e.lifeRecord) fields.push(e.where, [e.lifeRecord.version, e.lifeRecord.roleId, e.lifeRecord.taskId, e.lifeRecord.origin, e.lifeRecord.action, e.lifeRecord.until, Array.isArray(e.lifeRecord.sources) ? e.lifeRecord.sources.map((s) => s && [s.kind, s.id, s.at]) : null], ...e.lifeRecord.version === 2 ? [[e.lifeRecord.planId, e.lifeRecord.stepId, e.lifeRecord.artifact]] : []);
+    return { kind: "event", id: e.id, at: e.at, version: version(fields) };
+  }
+  function archivedProfileValid(r, s, taskAt) {
+    if (!s || s.kind !== "profile" || s.id !== r.id || s.at !== taskAt || typeof s.version !== "string") return false;
+    try {
+      const fields = JSON.parse(s.version);
+      return Array.isArray(fields) && fields.length === 8 && typeof fields[0] === "string" && Boolean(fields[0].trim()) && fields.every((value) => value === null || typeof value === "string");
+    } catch {
+      return false;
+    }
+  }
+  function referenceValid(r, s, at, seen = /* @__PURE__ */ new Set(), memory = compactRoleMemory(r, at), historical = /* @__PURE__ */ new Set()) {
+    if (!s || typeof s.version !== "string" || !Number.isFinite(s.at) || s.at > at) return false;
+    if (s.kind === "profile") return s.id === r.id && s.version === profile(r);
+    if (s.kind === "message") {
+      const m = messageSourceIndex(r, at).get(s.id);
+      return Boolean(m && m.speaker !== "note" && messageRef(m).version === s.version && !memory.supersededSources.has(m.id));
+    }
+    if (s.kind === "event") {
+      if (seen.has("event:" + s.id)) return false;
+      const allEvents = Array.isArray(r.events) ? r.events : [];
+      const matches = allEvents.filter((e2) => e2?.id === s.id);
+      if (matches.length !== 1) return false;
+      const e = getActiveEvents(matches).find((e2) => e2.at === s.at && e2.at <= at && e2.knownBy?.includes(r.id) && e2.kind !== "drama" && e2.kind !== "diary");
+      const life = e?.lifeRecord;
+      if (!life && e?.source?.startsWith("autonomous-life-v1:")) return false;
+      if (life) {
+        const tasks = Array.isArray(r.lifeTasks) ? r.lifeTasks.filter((t2) => t2?.id === life.taskId) : [], task = tasks[0];
+        if (!e || ![1, 2].includes(life.version) || life.roleId !== r.id || life.origin !== "simulation" || tasks.length !== 1 || task.roleId !== r.id || task.status !== "completed" || dateDayNumber(task.dateKey) === null || task.id !== "life:" + encodeURIComponent(r.id) + ":" + task.dateKey || ![task.at, task.from, task.to].every(Number.isFinite) || task.to !== task.at || task.from > task.to || task.to > at || !Array.isArray(task.eventIds) || !task.eventIds.length || task.eventIds.length > (life.version === 1 ? 3 : 8) || life.version === 1 && !task.eventIds.every((id2, i) => id2 === task.id + ":event:" + i) || !task.eventIds.includes(e.id) || e.source !== `autonomous-life-v${life.version}:` + task.id || e.kind !== "life" || typeof e.title !== "string" || typeof e.detail !== "string" || e.at < task.from || e.status !== void 0 && e.status !== "active" || !Number.isFinite(life.until) || life.version === 1 && life.until > task.to || life.until > at || life.until <= e.at || !Number.isInteger((life.until - e.at) / 6e4) || life.until - e.at > (life.version === 1 ? 30 : 120) * 6e4 || !["rest", "walk", "read", "organize", "practice", "care", "social", ...life.version === 2 ? ["prepare-rest", "reminder"] : []].includes(life.action) || !Array.isArray(life.sources) || !life.sources.length || life.sources.filter((ref2) => ref2?.kind === "profile").length !== 1 || new Set(life.sources.map((ref2) => ref2?.kind + ":" + ref2?.id)).size !== life.sources.length || life.version === 2 && !lifeExecutionEvidence(r, e, at)) return false;
+        for (const ref2 of life.sources) {
+          if (ref2?.kind === "profile") {
+            if (!archivedProfileValid(r, ref2, task.to)) return false;
+          } else if (ref2?.kind !== "event" || ref2.at > e.at || !referenceValid(r, ref2, at, /* @__PURE__ */ new Set([...seen, "event:" + s.id]), memory, historical)) return false;
+        }
+        if (life.sources.some((ref2) => ref2.kind === "profile" ? ref2.version !== profile(r) : historical.has(ref2.id))) historical.add(e.id);
+      }
+      return Boolean(e && eventRef(e).version === s.version && eventSourceValid(r, e, at, messageSourceIndex(r, at), memory.supersededSources) && (e.kind !== "life" || e.lifeEvidence === "confirmed" && e.source));
+    }
+    if (s.kind === "diary") {
+      if (seen.has("diary:" + s.id)) return false;
+      const d = r.diaries.find((d2) => d2.id === s.id && d2.speaker === "char" && d2.source === "ai" && d2.at <= at);
+      const current = memory;
+      if (d && ((d.memoryState?.factIds || []).some((id2) => !current.facts.some((f) => f.id === id2) && !current.trace.some((t2) => t2.id === id2 && t2.reason === "same-current-fact")) || (d.sourceMessageIds || []).some((id2) => current.supersededSources.has(id2) && !d.memoryState?.ignoredMessageIds.includes(id2)))) return false;
+      const cutoff = Math.min(at, d?.at ?? at), sources = messageSourceIndex(r, cutoff, true);
+      return Boolean(d && d.generatedAt && d.generatedAt <= at && diaryRef(d).version === s.version && (d.sourceMessageIds || []).every((id2) => {
+        const m = sources.get(id2);
+        return m && (d.sourceMessageRevisions ? d.sourceMessageRevisions[id2] === (m.revisionCount || 0) : !m.editedAt && !m.revisionCount);
+      }) && (d.sourceEventIds || []).every((id2) => getActiveEvents(r.events).some((e) => e.id === id2 && e.knownBy?.includes(r.id) && eventSourceValid(r, e, cutoff, sources, current.supersededSources) && (e.kind !== "life" || referenceValid(r, eventRef(e), cutoff, /* @__PURE__ */ new Set([...seen, "diary:" + s.id]), memory, historical)))) && (!d.continuitySources || d.continuitySources.every((ref2) => referenceValid(r, ref2, at, /* @__PURE__ */ new Set([...seen, "diary:" + s.id]), memory, historical))));
+    }
+    const t = r.personalThreads?.find((t2) => t2.id === s.id);
+    if (!t || seen.has(t.id) || t.roleId !== r.id || t.at > at || s.version !== threadVersion(t)) return false;
+    return t.sources.length > 0 && t.sources.every((ref2) => referenceValid(r, ref2, at, /* @__PURE__ */ new Set([...seen, t.id]), memory, historical));
+  }
+  function lifeSourcesValid(r, sources, at) {
+    return Array.isArray(sources) && sources.length > 0 && sources.every((s) => referenceValid(r, s, at));
+  }
+  function collectRoleLife(r, at = Date.now()) {
+    const memory = compactRoleMemory(r, at), historical = /* @__PURE__ */ new Set();
+    const events = getActiveEvents(r.events).filter((e) => e.kind === "life" && e.lifeEvidence === "confirmed" && Boolean(e.source) && e.knownBy?.includes(r.id) && e.at <= at && referenceValid(r, eventRef(e), at, /* @__PURE__ */ new Set(), memory, historical)).sort((a, b) => a.at - b.at);
+    const latest = /* @__PURE__ */ new Map();
+    for (const t of r.personalThreads || []) {
+      if (t.origin !== "model-private" || t.roleId !== r.id || t.at > at || !t.sources?.length || !t.sources.every((s) => referenceValid(r, s, at, /* @__PURE__ */ new Set(), memory))) continue;
+      const old = latest.get(t.key);
+      if (!old || t.at >= old.at) latest.set(t.key, t);
+    }
+    const threads = [...latest.values()].filter((t) => t.status === "open").sort((a, b) => b.at - a.at).slice(0, 8);
+    return { events, threads, historicalProfileEventIds: new Set(events.filter((e) => historical.has(e.id)).map((e) => e.id)) };
+  }
+  function personalDiaries(r, at) {
+    const memory = compactRoleMemory(r, at);
+    return r.diaries.filter((d) => d.speaker === "char" && d.source === "ai" && d.at <= at && referenceValid(r, diaryRef(d), at, /* @__PURE__ */ new Set(), memory)).sort((a, b) => b.at - a.at).slice(0, 2);
+  }
+  function personalContext(r, at, compact) {
+    const { events, threads, historicalProfileEventIds } = collectRoleLife(r, at);
+    const historyNote = historicalProfileEventIds.size ? "\n\u65E7\u6863\u6848\u5386\u53F2\u4EC5\u8BF4\u660E\u5F52\u6863\u65F6\u8BED\u5883\uFF0C\u5F53\u524D\u8EAB\u4EFD\u3001\u5730\u70B9\u548C\u5173\u7CFB\u4EE5\u5F53\u524D\u6863\u6848\u4E3A\u51C6\u3002" : "";
+    if (compact) {
+      const query = compact.query || "", rank = (items2, text2) => [...items2].sort((a, b) => memoryRelevance(text2(b), query) - memoryRelevance(text2(a), query) || b.at - a.at);
+      const items = [
+        ...rank(threads, (t) => t.text).slice(0, 2).map((t) => ({ text: memoryExcerpt(t.text, query, 65), prefix: `[${t.id} \xB7 key=${t.key} \xB7 ${t.kind}] ` })),
+        ...rank(events.filter((e) => !compact.excludeEvents?.has(e.id)), (e) => e.detail).slice(0, 2).map((e) => ({ text: memoryExcerpt(e.detail, query, 70), prefix: `[\u751F\u6D3B\u8BB0\u5F55 ${e.id} \xB7 ${new Date(e.at).toISOString().slice(0, 10)}] ${historicalProfileEventIds.has(e.id) ? "\uFF08\u65E7\u6863\u6848\u5386\u53F2\uFF09" : ""}${e.title}\uFF1A` })),
+        ...personalDiaries(r, at).slice(0, 1).map((d) => ({ text: memoryExcerpt(d.text, query, 55), prefix: `[${d.id} \xB7 ${new Date(d.at).toISOString().slice(0, 10)}] \u79C1\u4EBA\u65E5\u8BB0\u77ED\u6458\uFF1A` }))
+      ];
+      const firstLife = items.findIndex((t) => t.prefix.startsWith("[\u751F\u6D3B\u8BB0\u5F55 "));
+      if (firstLife > 1) items.splice(1, 0, items.splice(firstLife, 1)[0]);
+      return "\u89D2\u8272\u81EA\u8EAB\u751F\u6D3B\u6750\u6599\uFF08\u4E0D\u662F\u5FC5\u987B\u516C\u5F00\u7684\u8BDD\u9898\uFF09\uFF1A\n\u79C1\u4EBA\u5173\u6CE8/\u65E5\u8BB0\u662F\u4E3B\u89C2\u6587\u5B57\uFF0C\u8BA1\u5212\u4E0D\u662F\u5DF2\u53D1\u751F\u7684\u5916\u90E8\u4E8B\u5B9E\u3002" + historyNote + "\n" + selectMemoryItems(items, (t) => t.text, 210, 4).map((t) => t.prefix + t.text).join("\n");
+    }
+    return `\u89D2\u8272\u81EA\u8EAB\u751F\u6D3B\u6750\u6599\uFF08\u4E0D\u662F\u5FC5\u987B\u516C\u5F00\u7684\u8BDD\u9898\uFF09\uFF1A${historyNote}
+` + events.slice(-6).map((e) => `[\u751F\u6D3B\u8BB0\u5F55 ${e.id} \xB7 ${new Date(e.at).toISOString()}] ${historicalProfileEventIds.has(e.id) ? "\uFF08\u65E7\u6863\u6848\u5386\u53F2\uFF09" : ""}${e.title}\uFF1A${e.detail.slice(0, 400)}`).join("\n") + "\n\u79C1\u4EBA\u6301\u7EED\u5173\u6CE8\uFF08\u6A21\u578B\u6B64\u524D\u5199\u4E0B\u7684\u60F3\u6CD5/\u6253\u7B97\uFF0C\u4E0D\u662F\u5DF2\u786E\u8BA4\u7684\u5916\u90E8\u4E8B\u4EF6\uFF1B\u4E0D\u5FC5\u544A\u8BC9\u5BF9\u65B9\uFF09\uFF1A\n" + (threads.map((t) => `[${t.id} \xB7 key=${t.key} \xB7 ${new Date(t.at).toISOString()} \xB7 ${t.kind}] ${t.text}`).join("\n") || "\u6682\u65E0\u5DF2\u8BB0\u5F55\u5173\u6CE8\u70B9") + "\n\u6B64\u524D\u79C1\u4EBA\u65E5\u8BB0\u77ED\u6458\uFF08\u672C\u4EBA\u7684\u4E3B\u89C2\u6587\u5B57\uFF0C\u4E0D\u81EA\u52A8\u4F5C\u4E3A\u5916\u90E8\u4E8B\u5B9E\uFF09\uFF1A\n" + personalDiaries(r, at).map((d) => `[${d.id} \xB7 ${new Date(d.at).toISOString()}] ${d.text.slice(0, 300)}`).join("\n");
+  }
+  function preparePersonalReply(r, messages, at, id2, extraTask = "", sourceMessages = getActiveMessages(r.chats).slice(-12), mode = "chat", visibleSourcesOnly = false) {
+    const life = collectRoleLife(r, at), memory = compactRoleMemory(r, at), visible = (marker) => !visibleSourcesOnly || messages.some((m) => m.content.includes(marker));
+    const requested = new Set(sourceMessages.map((m) => m.id));
+    const sources = [{ kind: "profile", id: r.id, at, version: profile(r) }, ...phoneMessagesAt(r, at).filter((m) => requested.has(m.id) && m.speaker !== "note" && !memory.supersededSources.has(m.id)).map(messageRef), ...life.events.slice(-6).filter((e) => visible("[\u751F\u6D3B\u8BB0\u5F55 " + e.id + " \xB7")).map(eventRef), ...personalDiaries(r, at).filter((d) => visible("[" + d.id + " \xB7")).map(diaryRef), ...life.threads.filter((t) => visible("[" + t.id + " \xB7")).map((t) => ({ kind: "thread", id: t.id, at: t.at, version: threadVersion(t) }))];
+    const ticket = { id: id2, roleId: r.id, at, sceneId: r.scene?.id || null, playId: r.play?.id || null, sources, threadVersion: ledgerVersion(r), memoryVersion: memoryVersion(r, at), mode };
+    const control = `[Elsewhere Private Continuity v1]
+\u4FDD\u6301\u539F\u6709${mode === "diary" ? "\u65E5\u8BB0\u6B63\u6587" : "\u624B\u673A\u6B63\u6587\u4E0E\u5168\u90E8\u573A\u666F\u4E8B\u4EF6\u534F\u8BAE"}\u3002${extraTask}
+\u53EF\u5728\u6B63\u6587\u540E\u6309\u9700\u9644\u52A0 <elsewhere_private_state>{"requestId":${JSON.stringify(id2)},"roleId":${JSON.stringify(r.id)},"updates":[{"kind":"concern|opinion|plan|observation|relationship","text":"\u7B80\u77ED\u7684\u79C1\u4EBA\u5173\u6CE8/\u5224\u65AD/\u6253\u7B97","sources":["kind:id"],"shareable":false}]}</elsewhere_private_state>\u3002\u65E0\u503C\u5F97\u6301\u7EED\u8BB0\u5F55\u7684\u53D8\u5316\u5C31\u7701\u7565\uFF1B\u81F3\u591A3\u9879\uFF0C\u6BCF\u9879200\u5B57\u3002\u5DF2\u6709\u5173\u6CE8\u7528 key=\u539F\u5173\u6CE8key \u66F4\u65B0\uFF0Cstatus=open\u6216resolved\u3002\u4E0D\u5199\u63A8\u7406\u8FC7\u7A0B\uFF0C\u4E0D\u603B\u7ED3\u7528\u6237\u6BCF\u53E5\u8BDD\uFF0C\u4E0D\u8BB0\u5F55\u672A\u7ECF\u8BC1\u5B9E\u7684\u91CD\u5927\u5916\u90E8\u4E8B\u4EF6\u3002\u5141\u8BB8\u7B26\u5408\u8EAB\u4EFD\u7684\u5E73\u5E38\u79C1\u4EBA\u89C2\u5BDF\u4E0E\u60F3\u6CD5\uFF0C\u6807\u4E3A\u4E2A\u4EBA\u60F3\u6CD5\u800C\u975ECanon\uFF1B\u89C2\u70B9\u53EF\u4EE5\u6539\u53D8\u6216\u7EA0\u6B63\u3002shareable\u4EC5\u8868\u793A\u672C\u4EBA\u613F\u610F\u4EE5\u540E\u4E3B\u52A8\u8C08\u53CA\uFF0C\u4E0D\u8981\u6C42\u5728\u672C\u8F6E\u516C\u5F00\u3002\u5143\u6570\u636E\u4E0D\u662F\u804A\u5929\u3001\u573A\u666F\u4E8B\u4EF6\u6216\u6B63\u5F0F\u8BB0\u5FC6\uFF1B\u4E0D\u5F97\u653E\u5165\u5BF9\u767D\u6216\u5176\u4ED6\u6807\u7B7E\u3002
+\u53EF\u5F15\u7528\u7684\u6765\u6E90\uFF1A${JSON.stringify(sources.map((s) => ({ id: s.kind + ":" + s.id, at: s.at, ...s.kind === "thread" ? { key: life.threads.find((t) => t.id === s.id)?.key } : {} })))}`;
+    const copy = messages.map((m) => ({ ...m })), first = copy.find((m) => m.role === "system");
+    if (first) first.content += "\n\n" + control;
+    else copy.unshift({ role: "system", content: control });
+    return { messages: copy, ticket };
+  }
+  function splitPersonalReply(raw) {
+    const lower = raw.replace(/[A-Z]/g, (c) => c.toLowerCase()), open2 = "<elsewhere_private_state>", close2 = "</elsewhere_private_state>";
+    let cursor = 0, text2 = "", payload, count = 0;
+    while (cursor < raw.length) {
+      const tag = /<\/?elsewhere_private_state\b/ig;
+      tag.lastIndex = cursor;
+      const match = tag.exec(raw);
+      if (!match) {
+        text2 += raw.slice(cursor);
+        break;
+      }
+      text2 += raw.slice(cursor, match.index);
+      count++;
+      const end = raw.indexOf(">", tag.lastIndex), next = raw.indexOf("<", tag.lastIndex);
+      if (end < 0 || next >= 0 && next < end) break;
+      if (match[0].startsWith("</")) {
+        cursor = end + 1;
+        continue;
+      }
+      const from = end + 1;
+      let quote = false, escape = false, depth = 1, stop = -1, nested = false;
+      for (let i = from; i < raw.length; i++) {
+        const c = raw[i];
+        if (escape) {
+          escape = false;
+          continue;
+        }
+        if (quote && c === "\\") {
+          escape = true;
+          continue;
+        }
+        if (c === '"') {
+          quote = !quote;
+          continue;
+        }
+        if (!quote) {
+          if (lower.startsWith(open2, i)) {
+            depth++;
+            nested = true;
+          }
+          if (lower.startsWith(close2, i) && --depth === 0) {
+            stop = i;
+            break;
+          }
+        }
+      }
+      if (stop < 0) break;
+      if (count === 1 && !nested && lower.slice(match.index, from) === open2 && stop - from <= 6e3) payload = raw.slice(from, stop);
+      cursor = stop + close2.length;
+    }
+    return { text: text2.trim(), ...count === 1 && payload ? { payload } : {} };
+  }
+  function personalTicketValid(r, ticket) {
+    return r.id === ticket.roleId && (r.scene?.id || null) === ticket.sceneId && (r.play?.id || null) === ticket.playId && ledgerVersion(r) === ticket.threadVersion && (!ticket.memoryVersion || ticket.memoryVersion === memoryVersion(r, ticket.mode === "diary" ? ticket.at : Math.max(Date.now(), ticket.at))) && ticket.sources.every((s) => referenceValid(r, s, Math.max(Date.now(), ticket.at), /* @__PURE__ */ new Set(), compactRoleMemory(r, ticket.mode === "diary" ? ticket.at : Math.max(Date.now(), ticket.at))));
+  }
+  function applyPersonalReply(r, ticket, payload, at, bindings = []) {
+    if (!personalTicketValid(r, ticket) || payload.length > 6e3 || (r.personalThreads || []).some((t) => t.requestId === ticket.id) || (r.personalThreads || []).filter((t) => t.at > at - 864e5).length >= 12) return false;
+    let data;
+    try {
+      data = JSON.parse(payload);
+    } catch {
+      return false;
+    }
+    if (!data || typeof data !== "object") return false;
+    const body = data;
+    if (body.roleId !== r.id || body.requestId !== ticket.id || !Array.isArray(body.updates) || body.updates.length > 3) return false;
+    const updates = [];
+    for (const [i, value] of body.updates.entries()) {
+      if (!value || typeof value !== "object") return false;
+      const u = value;
+      if (!["concern", "opinion", "plan", "observation", "relationship"].includes(String(u.kind)) || typeof u.text !== "string" || !u.text.trim() || u.text.length > 200 || !Array.isArray(u.sources) || !u.sources.length || u.sources.length > 3 || u.shareable !== true && u.shareable !== false || u.status !== void 0 && !["open", "resolved"].includes(String(u.status))) return false;
+      const refs = u.sources.map((key2) => ticket.sources.find((s) => s.kind + ":" + s.id === key2));
+      if (refs.some((s) => !s)) return false;
+      if (u.key !== void 0 && !collectRoleLife(r, ticket.at).threads.some((t) => t.key === u.key)) return false;
+      const dependencies = bindings.map((m) => "generatedAt" in m || r.diaries.some((d) => d.id === m.id) ? diaryRef(m) : messageRef(m));
+      updates.push({ id: ticket.id + ":" + i, key: typeof u.key === "string" ? u.key : ticket.id + ":" + i, roleId: r.id, kind: u.kind, text: u.text.trim(), at, status: u.status === "resolved" ? "resolved" : "open", shareable: u.shareable, sources: [...refs, ...dependencies], origin: "model-private", requestId: ticket.id });
+    }
+    if (!updates.length) return false;
+    r.personalThreads = [...r.personalThreads || [], ...updates];
+    return true;
   }
 
   // src/core/novelDocument.ts
@@ -18845,6 +18851,7 @@ channel.onmessage=async({data:job})=>{
       <time class="fp-time-badge">${esc(hm(item.timestamp))}</time><div class="life-timeline-content"><button type="button" class="life-record-open" data-action="monitor-detail" data-id="${esc(item.id)}" data-role-id="${esc(r.id)}" aria-label="\u67E5\u770B${esc(item.title)}"><h3>${esc(item.title)}</h3><p class="life-narrative">${esc(item.summary)}</p>${item.where ? `<span class="tiny muted">${uiIcon("pin")}${esc(item.where)}</span>` : ""}</button>
       ${item.artifact ? `<button type="button" class="fp-artifact-trigger" data-action="monitor-detail" data-id="${esc(item.id)}" data-role-id="${esc(r.id)}" aria-label="\u67E5\u770B${item.artifact.kind === "list" ? "\u624B\u5199\u6E05\u5355" : "\u751F\u6D3B\u7269\u4EF6"}\uFF1A${esc(item.artifact.header)}">${renderSafeFootprintArtifact(item.artifact)}<small>\u5C55\u5F00\u7269\u4EF6</small></button>` : ""}</div></article>`).join("");
       const thoughts = life.threads.filter((t) => t.at <= cutoff).slice(0, 3);
+      const tokenCount = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : "\u672A\u63D0\u4F9B";
       return shell(`${header("\u751F\u6D3B\u76D1\u63A7", "home")}<div class="viewport monitor-life">
       <div class="row between"><div><div class="label">DAILY FOOTPRINTS</div><h2>\u65E5\u5E38\u8DB3\u8FF9</h2></div>${avatarTag(r, "avatar large")}</div>
       <p class="sub life-current-status" data-testid="role-life-status">${esc(activity(r, at).label)}${activity(r, at).where ? " \xB7 " + esc(activity(r, at).where) : ""}</p>
@@ -18855,7 +18862,7 @@ channel.onmessage=async({data:job})=>{
       </div>${renderFootprintCalendarDrawer(r, monitorDateKey)}
       <div class="footprints-list" data-testid="footprints-list">${list || `<div class="fp-empty-card" data-testid="footprint-calm-empty">${uiIcon("leaf")}<h3>\u8FD9\u4E00\u5929\u8FD8\u6CA1\u6709\u7559\u4E0B\u8BB0\u5F55</h3><p>\u7A7A\u767D\u4E0D\u4EE3\u8868\u4EC0\u4E48\u90FD\u6CA1\u505A\uFF1B\u6709\u4F9D\u636E\u7684\u7ECF\u5386\u4F1A\u7559\u5728\u8FD9\u91CC\u3002</p></div>`}</div>
       ${thoughts.length ? `<details class="life-private" data-testid="life-private"><summary>\u968F\u624B\u8BB0\u4E0B\u7684\u8BDD</summary><p class="tiny muted">\u8FD9\u662F${esc(r.name)}\u81EA\u5DF1\u8BB0\u4E0B\u7684\u60F3\u6CD5\u3001\u8BA1\u5212\u6216\u5224\u65AD\uFF0C\u4E0D\u7B49\u4E8E\u5916\u90E8\u4E8B\u5B9E\uFF0C\u4E5F\u4E0D\u8868\u793A\u5DF2\u7ECF\u544A\u8BC9\u4E86\u4F60\u3002</p>${thoughts.map((t) => `<p>${esc(t.text)}<br><time class="tiny muted">${esc(dt(t.at))}</time></p>`).join("")}</details>` : ""}
-      <details class="life-settings" data-testid="life-settings"><summary>\u751F\u6D3B\u8BBE\u7F6E\u4E0E\u8BB0\u5F55</summary><p data-testid="life-state">${esc(state2)}</p><p class="tiny muted">\u7F51\u9875\u6253\u5F00\u4E14\u6761\u4EF6\u5408\u9002\u65F6\u6267\u884C\u751F\u6D3B\u610F\u56FE\uFF1B\u9519\u8FC7\u6216\u4E2D\u65AD\u7684\u6D3B\u52A8\u4E0D\u4F1A\u8865\u5199\u6210\u5DF2\u5B8C\u6210\u3002\u6BCF\u89D2\u8272\u6BCF\u5929\u53CA\u6700\u8FD1 24 \u5C0F\u65F6\u6700\u591A 1 \u6B21\u751F\u6D3B\u8BF7\u6C42\uFF0C\u5168\u5E94\u7528\u6BCF\u5929\u53CA\u6700\u8FD1 24 \u5C0F\u65F6\u6700\u591A 2 \u6B21\uFF1B\u5931\u8D25\u8BA1\u5165\u989D\u5EA6\uFF0C\u4E0D\u81EA\u52A8\u91CD\u8BD5\u3002\u6BCF\u6B21\u751F\u6D3B\u8F93\u51FA\u4E0A\u9650 2400 token\uFF08\u539F\u4E3A 1200\uFF0C\u5355\u6B21\u53EF\u80FD\u66F4\u8D35\uFF09\uFF0C\u4E0D\u589E\u52A0\u8BF7\u6C42\u6B21\u6570\u3002\u666E\u901A\u804A\u5929\u3001\u65E5\u8BB0\u989D\u5EA6\u4FDD\u6301\u539F\u89C4\u5219\u3002</p>${(r.lifeTasks || []).slice(-3).map((t) => `<p class="tiny muted life-cost-row">${esc(t.dateKey)} \xB7 ${t.transport === "not-sent" ? "\u786E\u5B9A\u672A\u53D1\u9001" : t.transport === "returned" ? "\u6B63\u6587\u5DF2\u8FD4\u56DE" : t.status === "attempted" || t.transport === "unknown" ? "\u53D1\u9001\u6216\u7ED3\u679C\u672A\u786E\u8BA4" : "\u65E2\u6709\u8C03\u7528\u8BB0\u5F55"} \xB7 \u8F93\u51FA\u4E0A\u9650 ${t.outputTokenLimit || 1200} token${t.usage ? ` \xB7 \u670D\u52A1\u5546\u5B9E\u62A5\uFF1A\u8F93\u5165 ${t.usage.input ?? "\u672A\u63D0\u4F9B"} / \u8F93\u51FA ${t.usage.output ?? "\u672A\u63D0\u4F9B"}` : " \xB7 \u670D\u52A1\u5546\u672A\u63D0\u4F9B\u5B9E\u9645\u7528\u91CF"}\uFF1B\u8BA1\u8D39\u4EE5\u670D\u52A1\u5546\u4E3A\u51C6\u3002</p>`).join("")}<button class="btn small secondary" data-action="toggleautonomouslife">${data.settings.autonomousLife === false ? "\u6062\u590D\u81EA\u52A8\u63A8\u8FDB" : "\u6682\u505C\u81EA\u52A8\u63A8\u8FDB"}</button></details>
+      <details class="life-settings" data-testid="life-settings"><summary>\u751F\u6D3B\u8BBE\u7F6E\u4E0E\u8BB0\u5F55</summary><p data-testid="life-state">${esc(state2)}</p><p class="tiny muted">\u7F51\u9875\u6253\u5F00\u4E14\u6761\u4EF6\u5408\u9002\u65F6\u6267\u884C\u751F\u6D3B\u610F\u56FE\uFF1B\u9519\u8FC7\u6216\u4E2D\u65AD\u7684\u6D3B\u52A8\u4E0D\u4F1A\u8865\u5199\u6210\u5DF2\u5B8C\u6210\u3002\u6BCF\u89D2\u8272\u6BCF\u5929\u53CA\u6700\u8FD1 24 \u5C0F\u65F6\u6700\u591A 1 \u6B21\u751F\u6D3B\u8BF7\u6C42\uFF0C\u5168\u5E94\u7528\u6BCF\u5929\u53CA\u6700\u8FD1 24 \u5C0F\u65F6\u6700\u591A 2 \u6B21\uFF1B\u5931\u8D25\u8BA1\u5165\u989D\u5EA6\uFF0C\u4E0D\u81EA\u52A8\u91CD\u8BD5\u3002\u6BCF\u6B21\u751F\u6D3B\u8F93\u51FA\u4E0A\u9650 2400 token\uFF08\u539F\u4E3A 1200\uFF0C\u5355\u6B21\u53EF\u80FD\u66F4\u8D35\uFF09\uFF0C\u4E0D\u589E\u52A0\u8BF7\u6C42\u6B21\u6570\u3002\u666E\u901A\u804A\u5929\u3001\u65E5\u8BB0\u989D\u5EA6\u4FDD\u6301\u539F\u89C4\u5219\u3002</p>${(r.lifeTasks || []).filter((t) => t && typeof t === "object").slice(-3).map((t) => `<p class="tiny muted life-cost-row">${esc(t.dateKey)} \xB7 ${t.transport === "not-sent" ? "\u786E\u5B9A\u672A\u53D1\u9001" : t.transport === "returned" ? "\u6B63\u6587\u5DF2\u8FD4\u56DE" : t.status === "attempted" || t.transport === "unknown" ? "\u53D1\u9001\u6216\u7ED3\u679C\u672A\u786E\u8BA4" : "\u65E2\u6709\u8C03\u7528\u8BB0\u5F55"} \xB7 \u8F93\u51FA\u4E0A\u9650 ${tokenCount(t.outputTokenLimit ?? 1200)} token${t.usage ? ` \xB7 \u670D\u52A1\u5546\u5B9E\u62A5\uFF1A\u8F93\u5165 ${tokenCount(t.usage.input)} / \u8F93\u51FA ${tokenCount(t.usage.output)}` : " \xB7 \u670D\u52A1\u5546\u672A\u63D0\u4F9B\u5B9E\u9645\u7528\u91CF"}\uFF1B\u8BA1\u8D39\u4EE5\u670D\u52A1\u5546\u4E3A\u51C6\u3002</p>`).join("")}<button class="btn small secondary" data-action="toggleautonomouslife">${data.settings.autonomousLife === false ? "\u6062\u590D\u81EA\u52A8\u63A8\u8FDB" : "\u6682\u505C\u81EA\u52A8\u63A8\u8FDB"}</button></details>
     </div>`);
     }
     function openMonitorDetail(id2) {

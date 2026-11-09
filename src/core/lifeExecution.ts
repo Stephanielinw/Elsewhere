@@ -1,6 +1,5 @@
 import type {EventRecord,FootprintArtifact,RoleData,SceneData,PlayData} from './types';
 import type {PersonalSource} from './roleLife';
-import {lifeSourcesValid} from './roleLife';
 import {scenePlaceAt} from './messageProvenance';
 import {dateDayNumber} from './homeTasks';
 export type LifeAction='rest'|'walk'|'read'|'organize'|'practice'|'care'|'social'|'prepare-rest'|'reminder';
@@ -30,10 +29,17 @@ export function updateStageAttendance(stage:SceneData|PlayData,active:boolean,at
  if(last?.to!==undefined)return false;
  stage.attendance=[...(stage.attendance||[{from:stage.startedAt}])];stage.attendance.at(-1)!.to=at;return true;
 }
-export function lifeOrigin(r:RoleData,at:number,historical=false):RoleLifePlan['origin']{
- const profile=JSON.stringify([r.name,r.job,r.traits,r.place,r.profile,r.relationship,r.canonNotes,r.notes]),scenes=[...(r.meetings||[]),...(r.scene?[r.scene]:[])];
- const entries=[...r.events.filter(e=>e.lifeRecord?.version===2&&e.lifeRecord.until<=at&&at-e.lifeRecord.until<=86400000&&e.status==='active'&&e.where&&lifeExecutionEvidence(r,e,at)&&(historical||e.lifeRecord.sources.find(s=>s.kind==='profile')?.version===profile)&&e.lifeRecord.sources.filter(s=>s.kind!=='profile').every(s=>lifeSourcesValid(r,[s],at))).map(e=>({where:e.where!,at:e.lifeRecord!.until,sourceId:e.id})),...scenes.filter(s=>scenes.filter(x=>x.id===s.id).length===1&&s.startedAt<=at).map(s=>({where:s.locationEvidence||s.agreement?scenePlaceAt(r,s,at):s.where,at:s.endedAt??s.attendance?.at(-1)?.to??s.startedAt,sourceId:s.id}))].filter(s=>s.where&&!/未确认|未知/.test(s.where)&&s.at<=at&&at-s.at<=86400000).sort((a,b)=>b.at-a.at);
- return entries[0];
+export function lifeOrigin(r:RoleData,at:number):RoleLifePlan['origin']{
+ const scenes=[...(r.meetings||[]),...(r.scene?[r.scene]:[])];
+ // Simulated activities keep their historical place but cannot refresh an observed location.
+ return scenes.flatMap(scene=>{
+  if(scenes.filter(s=>s.id===scene.id).length!==1||scene.startedAt>at)return [];
+  const last=Array.isArray(scene.attendance)?scene.attendance.at(-1):undefined;
+  const observedAt=scene.endedAt??last?.to??scene.startedAt;
+  if(!Number.isFinite(observedAt)||observedAt<scene.startedAt||observedAt>at||at-observedAt>86400000)return [];
+  const where=scene.locationEvidence||scene.agreement?scenePlaceAt(r,scene,at):scene.where;
+  return where&&!/未确认|未知/.test(where)?[{where,at:observedAt,sourceId:scene.id}]:[];
+ }).sort((a,b)=>b.at-a.at)[0];
 }
 export function lifePlanShape(r:RoleData,plan:RoleLifePlan):boolean {
  if(!plan||typeof plan!=='object'||!Array.isArray(r.lifeTasks))return false;
@@ -53,7 +59,7 @@ export function lifeExecutionEvidence(r:RoleData,e:EventRecord,at:number):RoleLi
  if(!['rest','walk','social'].includes(step.action)&&(!step.focus||!sourceText.includes(step.focus))||step.action==='social')return;
  const [title,detail]=lifeActivity(step.action,name,step.focus,step.person,step.where);
  if(e.title!==title||e.detail!==detail)return;
- if(step.where&&lifeOrigin(r,e.at,true)?.where!==step.where)return;
+ if(step.where&&lifeOrigin(r,e.at)?.where!==step.where)return;
  return plan;
 }
 function overlaps(r:RoleData,from:number,to:number){return [...(r.meetings||[]),...(r.plays||[]),...(r.scene?[r.scene]:[]),...(r.play?[r.play]:[])].some(s=>stageIntervals(s,to).some(w=>from<w.to&&to>w.from));}

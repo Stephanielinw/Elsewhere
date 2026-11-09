@@ -18,3 +18,16 @@ test('safe old data can lack plans; corrupt new metadata fails closed without cl
 test('an unfinished but paused real Scene does not permanently occupy the actor',()=>{const {r}=setup();r.scene={id:'unfinished',where:'庭院',startedAt:at-2*minute,messages:[],attendance:[{from:at-2*minute,to:at-minute}]};assert.equal(lifeStageOccupied(r),false);assert.deepEqual(stageIntervals(r.scene,at),[{from:at-2*minute,to:at-minute}]);advance(r,at+minute);assert.equal(r.lifePlans![0].intents[0].status,'running');r.scene.attendance!.push({from:at+2*minute});advance(r,at+3*minute);assert.equal(r.lifePlans![0].intents[0].status,'interrupted');});
 test('source-backed current activity appears in actual native request and fictional theatre stays isolated',()=>{const {r,d}=setup();advance(r,at+minute);const text=requestMessages(compileNativeConversation(d,r,'chat','你好',{nowTs:at+2*minute})).map(m=>m.content).join('\n');assert.ok(text.includes('当前状态：整理手头物件'));assert.ok(text.includes('条件未满足，不是事实')||readRoleMemory(r,at+2*minute).pending.length===0);});
 test('attendance changes do not rewrite an earlier known state or fill a paused gap',()=>{const {r}=setup();r.scene={id:'same',startedAt:at-4*minute,where:'庭院',messages:[],attendance:[{from:at-4*minute,to:at-3*minute},{from:at-minute,to:at+minute}]};assert.equal(readRoleMemory(r,at-3.5*minute).state.kind,'meeting');assert.equal(readRoleMemory(r,at-2*minute).state.kind,'unknown');assert.equal(readRoleMemory(r,at).state.kind,'meeting');assert.equal(readRoleMemory(r,at+2*minute).state.kind,'unknown');});
+test('same-place daily activities do not indefinitely renew an observed location',()=>{
+ const {r,d}=setup();
+ r.meetings=[{id:'observed',where:'合成庭院',startedAt:at-2*minute,endedAt:at-minute,messages:[{id:'here',speaker:'char',text:'在庭院。',at:at-2*minute}]}];
+ advance(r,at+minute);advance(r,at+6*minute);
+ assert.equal(collectRoleLife(r,at+6*minute).events[0].where,'合成庭院');
+ const tomorrow=at+86400000,task=claimLifeTask([r],r,tomorrow,true)!,prepared=prepareLifeTask(r,d.user,task);
+ commitLifeTask(r,task,prepared,JSON.stringify({requestId:task.id,roleId:r.id,intents:[{notBefore:tomorrow,expiresAt:tomorrow+minute,durationMinutes:1,action:'rest'}]}),tomorrow);
+ advance(r,tomorrow);advance(r,tomorrow+minute);
+ const events=collectRoleLife(r,tomorrow+minute).events;
+ assert.equal(events.length,2);
+ assert.equal(events[0].where,'合成庭院');
+ assert.equal(events[1].where,undefined);
+});

@@ -26,6 +26,7 @@ export function getScopeMessages(role: RoleData, scope: RevisionScope): ChatMess
   if (scope === 'chat') return role.chats;
   if (scope === 'scene') return role.scene?.messages || [];
   if (scope === 'play') return role.play?.messages || [];
+  if (scope === 'intermission') return role.play?.intermissionMessages || [];
   return [];
 }
 
@@ -45,11 +46,14 @@ function findLinkedEvents(role: RoleData, msg: ChatMessage): EventRecord[] {
 
 function invalidateChatSource(role:RoleData,msg:ChatMessage,nowTs:number):void {
   role.pendingReplies=(role.pendingReplies||[]).filter(job=>!job.sources?.some(source=>source.id===msg.id)&&!(msg.replyTurnId&&job.replyTurnId===msg.replyTurnId));
+  invalidateDependentReplies(role,'chat',msg,nowTs);
+}
+function invalidateDependentReplies(role:RoleData,scope:'chat'|'intermission',msg:ChatMessage,nowTs:number):void {
   if(msg.speaker!=='me')return;
-  for(const reply of getActiveMessages(role.chats).filter(m=>m.replySourceIds?.includes(msg.id))){
+  for(const reply of getActiveMessages(getScopeMessages(role,scope)).filter(m=>m.replySourceIds?.includes(msg.id))){
     const events=findLinkedEvents(role,reply);reply.status='retracted';reply.editedAt=nowTs;
     for(const event of events)event.status='superseded';
-    ensureRevisionsList(role).push({id:makeUid('rev'),scope:'chat',targetMessageId:reply.id,action:'retract',speaker:'char',previousText:reply.text,at:nowTs,reason:'该回复的聚合来源已修改或撤回',supersededEventIds:events.map(event=>event.id)});
+    ensureRevisionsList(role).push({id:makeUid('rev'),scope,targetMessageId:reply.id,action:'retract',speaker:'char',previousText:reply.text,at:nowTs,reason:'该回复的聚合来源已修改或撤回',supersededEventIds:events.map(event=>event.id)});
   }
 }
 
@@ -102,6 +106,7 @@ export function editMessage(
   msg.revisionCount = (msg.revisionCount || 0) + 1;
 
   if(scope==='chat')invalidateChatSource(role,msg,nowTs);
+  else if(scope==='intermission')invalidateDependentReplies(role,scope,msg,nowTs);
 
   // Also update any quote snapshots referencing this message so UI stays coherent
   for (const m of list) {
@@ -156,6 +161,7 @@ export function retractMessage(
   msg.status = 'retracted';
   msg.editedAt = nowTs;
   if(scope==='chat')invalidateChatSource(role,msg,nowTs);
+  else if(scope==='intermission')invalidateDependentReplies(role,scope,msg,nowTs);
 
   // Cancel any pending delayed reply that was triggered by this message
   if (scope === 'chat' && Array.isArray(role.pendingReplies)) {

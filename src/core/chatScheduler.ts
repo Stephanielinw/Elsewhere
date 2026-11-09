@@ -11,7 +11,10 @@ export function setChatFocused(r:RoleData,focused:boolean):void {
   state.focused=focused;delete state.replyDueAt;
 }
 export function sourceStillValid(r:RoleData,source:ChatMessage):boolean {
-  return getActiveMessages(r.chats).some(m=>m.id===source.id&&m.speaker==='me'&&m.text===source.text&&m.at===source.at&&(m.revisionCount||0)===(source.revisionCount||0)&&JSON.stringify(m.quote||null)===JSON.stringify(source.quote||null));
+  return messageStillValid(r.chats,source);
+}
+export function messageStillValid(messages:ChatMessage[],source:ChatMessage):boolean {
+  return getActiveMessages(messages).some(m=>m.id===source.id&&m.speaker==='me'&&m.text===source.text&&m.at===source.at&&(m.revisionCount||0)===(source.revisionCount||0)&&JSON.stringify(m.quote||null)===JSON.stringify(source.quote||null));
 }
 const validIds=(r:RoleData,ids:string[])=>[...new Set(ids)].filter(id=>getActiveMessages(r.chats).some(m=>m.id===id&&m.speaker==='me'));
 export function enqueueChat(r:RoleData,id:string,at:number):void {

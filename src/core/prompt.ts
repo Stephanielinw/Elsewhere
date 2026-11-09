@@ -130,12 +130,10 @@ export function buildNativeContext(
 ): ConversationContext {
   const nowTs = options.nowTs ?? Date.now();
   const isFocused = Boolean(options.isFocused);
-  const memoryRole=options.currentInputs?.length?{...r,chats:[...r.chats,...options.currentInputs.filter(m=>!r.chats.some(old=>old.id===m.id))]}:r;
+  const memoryRole=kind==='chat'&&options.currentInputs?.length?{...r,chats:[...r.chats,...options.currentInputs.filter(m=>!r.chats.some(old=>old.id===m.id))]}:r;
   const memory=kind==='chat'?compactRoleMemory(memoryRole,nowTs):projectRoleMemory(kind==='play'?{...r,chats:[],scene:null,meetings:[],play:null,plays:[],memory:undefined}:memoryRole,nowTs);
   const past=kind==='chat'&&asksPastExperience(input),ownContext=kind==='chat'?personalContext(memoryRole,nowTs,{query:input}):'';
   const userIdentity=identityContext(data,memoryRole,nowTs,memory);
-  const sharedMemory=kind!=='play'?readRoleMemory(memoryRole,nowTs,input,{excludeStage:kind==='scene'?r.scene?.id:kind==='intermission'?r.play?.id:undefined}):undefined;
-  const continuity=sharedMemory?.episodes||{facts:[],messageIds:new Set<string>()};
   let base = '';
   let facts = '';
   let recalled:EventRecord[]=[];
@@ -147,21 +145,18 @@ export function buildNativeContext(
   const userName=String(r.userAlias||projectedUserFields(data.user,memoryRole,nowTs,memory).find(f=>f.key==='name')?.text||'用户');
   const safeContent=(m:ChatMessage)=>formatMessageContentForModel(m,kind==='play'?r.play!.char:r.name,kind==='play'?r.play!.user:userName);
   const recentMessages=(kind==='scene'?encounterHistory(r,raw,nowTs):stageMessagesAt(raw,nowTs)).filter(m=>m.speaker!=='note').slice(kind==='chat'&&!past?-16:-30);
-  const history=recentMessages.map(m=>({id:m.id,role:m.speaker==='me'?'user' as const:'assistant' as const,text:safeContent(m),knownBy:[r.id],at:m.at,scope,active:true,revisionValid:true}));
+  const inputIds=new Set((options.currentInputs||[]).map(m=>m.id));
+  const episodeOptions={excludeStage:kind==='scene'?r.scene?.id:kind==='intermission'?r.play?.id:undefined,
+    excludeMessageIds:new Set([...inputIds,...recentMessages.flatMap(m=>m.sourceMessageId?[m.id,m.sourceMessageId]:[m.id])]),preferredPlayId:kind==='intermission'?r.play?.id:options.preferredPlayId,phoneRelevantOnly:kind==='chat'};
+  const history=recentMessages.filter(m=>!inputIds.has(m.id)).map(m=>({id:m.id,role:m.speaker==='me'?'user' as const:'assistant' as const,text:safeContent(m),knownBy:[r.id],at:m.at,scope,active:true,revisionValid:true}));
+  const archivedMessageIds=new Set((r.meetings||[]).flatMap(s=>s.messages.map(m=>m.id)));
   const shownPhoneSources=new Map((kind==='chat'?recentMessages:[]).map(m=>[m.id,m]));
 
   if (kind === 'intermission') {
     const p = r.play!;
-    const activePlayMsgs = stageMessagesAt(p.messages,nowTs);
-    base = `你是戏外真实角色${r.name}，而不是戏内角色。你的身份:${r.job}，性格:${r.traits}，完整人设:${r.profile}。用户身份:${userIdentity}。你现在与用户一起排演《${p.title}》，你知道你扮演的角色设定:${p.char}；剧内世界:${p.world}；用户扮演:${p.user}。你知道已经演过的内容，但不能预知未发生的故事。此刻是幕间讨论，戏内情节冻结，只进行戏外自然交谈、交流对戏与修订想法。不要替用户决定，也不在这一轮推进戏内剧情。剧中人格不能覆盖戏外自我。以下为已演片段：${activePlayMsgs
-      .slice(-18)
-      .map((m) => m.speaker + '：' + m.text)
-      .join(' / ')
-      .slice(0, 8000)}；此前尝试过的废弃片段:${(p.revisions || [])
-      .slice(-3)
-      .map((v) => v.messages.map((m) => m.text).join(' / '))
-      .join(' / ')
-      .slice(0, 2000)}。`;
+    base = `你是戏外角色${r.name}本人。你的身份：${r.job}，性格：${r.traits}，人设：${r.profile}。用户身份：${userIdentity}。你们在排演《${p.title}》。你的戏内角色：${p.char}；剧本设定：${p.world}；用户的戏内角色：${p.user}。只有已经演过的片段是表演经历，剧本设定不证明未来剧情已经发生。`;
+    const trials=(Array.isArray(p.revisions)?p.revisions:[]).filter(v=>v?.kind==='rollback'&&v.at<=nowTs).slice(-2).flatMap(v=>stageMessagesAt(v.messages,v.at).filter(m=>m.speaker!=='note').slice(-2).map(m=>`[${p.id}/${v.id}/${m.id}] ${memoryExcerpt(m.text,input,120)}`));
+    if(trials.length)base+='\n仅供演员讨论的回退尝试（已废弃，不属于正式剧情）：\n'+trials.join('\n');
   } else if (kind === 'play') {
     const p = r.play!;
     base = `你正在参与一段独立、封闭的虚构戏剧。仅作为剧中角色行动，不知道剧外的手机、聊天、角色本人真实身份、用户真实身份、日记或其他生活记录。剧名：${p.title}。世界规则与开场：${p.world}。用户在剧内的身份：${p.user}。你在剧内的身份：${p.char}。推进场景、表现人物心理与自身动作，不代替用户做出选择。剧内角色之间的关系仅以剧本及本场对白为准。`;
@@ -172,7 +167,7 @@ export function buildNativeContext(
       const message=e.messageId?shownPhoneSources.get(e.messageId):undefined;
       // Only omit a verbatim record of the same visible source; summaries and facts remain candidates.
       const duplicate=e.kind==='chat'&&message&&e.detail===message.text&&e.at===message.at&&(!e.speaker||e.speaker===message.speaker)&&(!e.source||e.source==='chat');
-      if(e.kind==='scene'&&(continuity.messageIds.has(e.messageId||'')||!e.messageId&&e.title==='这次见面结束'))return false;
+      if(e.kind==='scene'&&(archivedMessageIds.has(e.messageId||'')||!e.messageId&&e.title==='这次见面结束'))return false;
       if(e.kind==='life')return false; // Read trusted life once through the shared private projection.
       return eventSourceValid(memoryRole,e,nowTs,messageIndex,memory.supersededSources)&&!duplicate&&e.kind!=='drama'&&e.at<=nowTs&&(!e.messageId||!bridgedIds.has(e.messageId));
     });
@@ -208,11 +203,14 @@ export function buildNativeContext(
     base += `\n\n可检索的剧外经历（并非保证完整，剧内虚构剧情不等于现实历史）：\n${facts || '暂无'}`;
     if(kind==='chat'){
       base+='\n\n'+ownContext;
-      if(continuity.facts.length)base+='\n\n最近结束的真实见面原文节选（不是戏中戏，也不是新的客观总结）：结束交互不证明双方告别或离开；按原文分清行动主体。角色可以辩解、隐瞒或撒谎，但不要把缺失历史或个人主张当成证据；用户未表达的内心与未经确认的行动不是角色知识。';
+      if(r.meetings?.length)base+='\n\n最近结束的真实见面原文节选（不是戏中戏，也不是新的客观总结）：结束交互不证明双方告别或离开；按原文分清行动主体。角色可以辩解、隐瞒或撒谎，但不要把缺失历史或个人主张当成证据；用户未表达的内心与未经确认的行动不是角色知识。';
     }
   }
 
-  const sharedText=kind==='play'?'':roleMemoryText(memoryRole,nowTs,input,{excludeStage:kind==='scene'?r.scene?.id:kind==='intermission'?r.play?.id:undefined,includePrivate:kind!=='chat'});
+  for(const e of recalled)if(e.kind==='chat'&&e.messageId&&messageIndex.get(e.messageId)?.text===r.events.find(old=>old.id===e.id)?.detail)episodeOptions.excludeMessageIds.add(e.messageId);
+  const sharedMemory=kind!=='play'?readRoleMemory(memoryRole,nowTs,input,episodeOptions):undefined;
+  const continuity=sharedMemory?.episodes||{facts:[],messageIds:new Set<string>()};
+  const sharedText=sharedMemory?roleMemoryText(memoryRole,nowTs,input,{...episodeOptions,includePrivate:kind!=='chat'},sharedMemory):'';
   if(sharedText)base+='\n\n'+sharedText;
   const memoryFragments:Record<string,string>={};
   if(kind!=='play'){
@@ -241,16 +239,15 @@ export function buildNativeContext(
     ...recalled.map(e=>({id:e.id,text:e.detail,layer:'episodic' as const,at:e.at,scope,knownBy:e.knownBy?.length?e.knownBy:[r.id],active:true,revisionValid:true})),
     ...episodeCandidates.filter(e=>!recalled.some(shown=>shown.id===e.id)).map(e=>({id:e.id,text:e.detail,layer:'episodic' as const,at:e.at,scope,knownBy:e.knownBy?.length?e.knownBy:[r.id],active:true,revisionValid:true})),
   ];
-  const inputIds=new Set((options.currentInputs||[]).map(m=>m.id));
-  const currentInputs=phoneMessagesAt(memoryRole,nowTs).filter(m=>inputIds.has(m.id)).map(m=>({id:m.id,role:'user' as const,text:`[消息 ID=${m.id}; createdAt=${new Date(m.at).toISOString()}; 本地发送时间=${new Date(m.at).toLocaleString('zh-CN',{hour12:false})}]\n${safeContent(m)}`,knownBy:[r.id],at:m.at,scope,active:m.speaker==='me'&&!['retracted','superseded','deleted'].includes(String(m.status)),revisionValid:true}));
+  const currentInputs=(kind==='intermission'?stageMessagesAt(raw,nowTs):phoneMessagesAt(memoryRole,nowTs)).filter(m=>inputIds.has(m.id)).map(m=>({id:m.id,role:'user' as const,text:`[消息 ID=${m.id}; createdAt=${new Date(m.at).toISOString()}; 本地发送时间=${new Date(m.at).toLocaleString('zh-CN',{hour12:false})}]\n${safeContent(m)}`,knownBy:[r.id],at:m.at,scope,active:m.speaker==='me'&&!['retracted','superseded','deleted'].includes(String(m.status)),revisionValid:true}));
   const factFragments=Object.fromEntries(factsForContext.filter(f=>Boolean(f.text)&&(f.layer!=='episodic'||recalled.some(e=>e.id===f.id)||continuity.facts.some(c=>c.id===f.id))&&base.includes(memoryFragments[f.id]||f.text)).map(f=>[f.id,memoryFragments[f.id]||f.text]));
-  const memoryTrace=[...memory.trace,...continuity.facts.map(f=>({id:f.id,layer:'episodic' as const,sourceIds:f.sourceIds,reason:'ended-meeting-original-excerpts'})),...projectedUserFields(data.user,memoryRole,nowTs,memory).filter(f=>f.conflicts.length).map(f=>({id:'user-profile:'+f.key,layer:'identity',sourceIds:f.conflicts,reason:'profile-field-corrected'}))];
+  const memoryTrace=[...memory.trace,...continuity.facts.map(f=>({id:f.id,layer:'episodic' as const,sourceIds:f.sourceIds,reason:f.id.startsWith('meeting:')?'ended-meeting-original-excerpts':'role-experience-original-excerpts'})),...projectedUserFields(data.user,memoryRole,nowTs,memory).filter(f=>f.conflicts.length).map(f=>({id:'user-profile:'+f.key,layer:'identity',sourceIds:f.conflicts,reason:'profile-field-corrected'}))];
   for(const e of r.events){
     const m=e.messageId?shownPhoneSources.get(e.messageId):undefined;
     let reason='outside-retrieval-budget';
     if(e.messageId&&memory.supersededSources.has(e.messageId))reason='explicitly-corrected-source';
     else if(!eventSourceValid(memoryRole,e,nowTs,messageIndex,memory.supersededSources))reason='source-or-permission-invalid';
-    else if(kind==='chat'&&e.kind==='scene'&&(continuity.messageIds.has(e.messageId||'')||!e.messageId&&e.title==='这次见面结束'))reason='separate-meeting-original-projection';
+    else if(kind==='chat'&&e.kind==='scene'&&(archivedMessageIds.has(e.messageId||'')||!e.messageId&&e.title==='这次见面结束'))reason='separate-meeting-original-projection';
     else if(e.kind==='drama')reason='world-excluded';
     else if(m&&e.kind==='chat'&&e.detail===m.text&&e.at===m.at)reason='already-in-recent-history';
     else if(recalled.some(f=>f.id===e.id))reason='selected';
@@ -261,7 +258,7 @@ export function buildNativeContext(
     const life=collectRoleLife(memoryRole,nowTs);
     memoryTrace.push({id:'personal-state:'+r.id,layer:'currentState',sourceIds:[...new Set([...life.events.filter(e=>ownContext.includes('[生活记录 '+e.id+' ·')).map(e=>e.id),...life.threads.filter(t=>ownContext.includes('['+t.id+' ·')).flatMap(t=>[t.id,...t.sources.map(s=>s.id)]),...personalDiaries(memoryRole,nowTs).filter(d=>ownContext.includes('['+d.id+' ·')).map(d=>d.id)])],reason:'current-state-projection'});
   }
-  const context:ConversationContext={source:'native-live',mode,memoryDenied:kind!=='play'?memory.denied.map(f=>({id:f.id,value:f.value})):[],actorId:r.id,scope,now:nowTs,user:values.user,char:values.char,facts:factsForContext,history,examples:[],capabilities:{keywordRetrieval:true,semanticRetrieval:false,completeRevisionChain:false},native:{factFragments,memoryTrace,protectedText:options.openingTask?base+'\n'+options.openingTask:base,values,legacy:options.skipLegacyOnce?null:(r.preset||data.preset),currentInputs,suffix:kind==='intermission'?'这里是幕间讨论。你是戏外演员本人；不推进戏内剧情，不擅自操控用户。':undefined}};
+  const context:ConversationContext={source:'native-live',mode,memoryDenied:kind!=='play'?memory.denied.map(f=>({id:f.id,value:f.value})):[],actorId:r.id,scope,now:nowTs,user:values.user,char:values.char,facts:factsForContext,history,examples:[],capabilities:{keywordRetrieval:true,semanticRetrieval:false,completeRevisionChain:false},native:{factFragments,memoryTrace,protectedText:options.openingTask?base+'\n'+options.openingTask:base,values,legacy:options.skipLegacyOnce?null:(r.preset||data.preset),currentInputs,suffix:kind==='intermission'?'你一直是同一个戏外角色本人，刚才只是在和对方玩角色扮演。你记得已经演过的内容。现在直接用普通消息聊天，可以吐槽、开玩笑、表示不满、聊共同的现实经历或换话题。无需解释幕间、出戏、恢复意识或人格转换。不要写小说旁白、舞台动作或固定开场。戏内剧情继续冻结，不替用户决定。':undefined}};
   return context;
 }
 export function compileNativeConversation(data:AppData,r:RoleData,kind:'chat'|'scene'|'play'|'intermission',input:string,options:NativePromptOptions={}):ConversationCompilation {
@@ -270,10 +267,10 @@ export function compileNativeConversation(data:AppData,r:RoleData,kind:'chat'|'s
 }
 export function compileNovelConversation(data:AppData,r:RoleData,kind:'scene'|'play',input:string,options:NativePromptOptions&{preset:FruitPreset}):ConversationCompilation {
   if(isNativePreset(options.preset))return compileNativeConversation(data,r,kind,input,options);
-  const context=createLiveNovelContext(data,r,kind,buildNativeContext(data,r,kind,input,options));
+  const context=createLiveNovelContext(data,r,kind,buildNativeContext(data,r,kind,input,options),input);
   return compileConversationPrompt(options.preset,options.profile||createFruitState().profiles.meeting,context,{purpose:'request'});
 }
-export interface NativePromptOptions {isFocused?:boolean;nowTs?:number;profile?:FruitProfile;currentInputs?:ChatMessage[];skipLegacyOnce?:boolean;openingTask?:string}
+export interface NativePromptOptions {isFocused?:boolean;nowTs?:number;profile?:FruitProfile;currentInputs?:ChatMessage[];skipLegacyOnce?:boolean;openingTask?:string;preferredPlayId?:string}
 export function compileOpeningPrompt(data:AppData,r:RoleData,at:number,options:NativePromptOptions={}){
  const copy={...r,chats:[],events:[]};
  return compileNativeConversation(data,copy,'chat','',{...options,nowTs:at,openingTask:`所在区域/世界观：${r.place||'以角色设定为准'}。\n向对方发送第一条手机消息，由你主动发出。必须严格符合性格、关系起点和已有前史，不假装已经有过未发生的对话。采用自然的纯手机消息格式，按本人的打字习惯决定是否分条，不写环境旁白或动作括号，不使用千篇一律的客服寒暄。`});

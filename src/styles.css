@@ -2054,23 +2054,14 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
 #fruit-preset-root>.terminal-library-status{position:sticky;top:0;z-index:6;padding:8px 12px;border:1px solid var(--glass-stroke);border-radius:12px;background:color-mix(in srgb,var(--surface) 92%,transparent);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
 #fruit-preset-root>.terminal-library-status[data-save-state="failed"]{color:var(--danger);border-color:#c47f7a66}
 
-/* Theatre stays on stage while backstage is a separate conversation. */
-.theatre-layout{display:flex;flex:1;min-height:0;min-width:0;position:relative;gap:12px}
-.theatre-main{display:flex;flex:1;flex-direction:column;min-height:0;min-width:0}
-.intermission-panel{display:flex;flex-direction:column;flex:0 0 clamp(320px,32vw,410px);min-height:0;min-width:0;margin:8px 12px 8px 0;overflow:hidden;border:1px solid var(--glass-stroke);border-radius:24px;background:color-mix(in srgb,var(--surface) 83%,transparent);box-shadow:0 12px 36px #53435a16;backdrop-filter:blur(28px);-webkit-backdrop-filter:blur(28px)}
-.intermission-panel-top{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:16px 14px 10px;flex-shrink:0}
-.intermission-panel-top h2{font-size:15px;margin:4px 0 0}.intermission-panel-top small{font-size:9px;letter-spacing:1.2px;color:var(--muted)}
-.intermission-hint{font-size:11px;line-height:1.7;color:var(--muted);padding:0 14px 10px;margin:0;border-bottom:1px solid var(--surface2);flex-shrink:0}
-.intermission-panel .intermission-history{padding:14px;gap:12px}.intermission-panel .offstage-message{max-width:88%}
-.intermission-panel .intermission-tools{margin:0 10px 8px;max-height:35dvh}.intermission-panel .intermission-tools>summary{font-size:11px;padding:10px}
-.intermission-compose{padding:10px;gap:6px;align-items:flex-end}.intermission-compose textarea{min-width:0;flex:1;min-height:38px}.intermission-compose .btn{font-size:11px;padding:10px;flex:none}
-.intermission-compose .intermission-paw{display:flex;align-items:center;flex-direction:column;gap:1px;padding:5px 8px}.intermission-paw .cat-paw-svg{height:24px;width:24px}.intermission-paw span{font-size:9px;white-space:nowrap}
+.theatre-layout,.theatre-main,.intermission-conversation{display:flex;flex:1;flex-direction:column;min-height:0;min-width:0}
+.intermission-conversation .intermission-history{padding:14px;gap:12px}
+.intermission-conversation .offstage-message{max-width:88%}
+.intermission-conversation .message-meta-row{flex-wrap:wrap;gap:4px}
+.intermission-status{margin:0;padding:4px 14px;color:var(--muted);font-size:11px}
+.intermission-compose textarea{min-width:0;flex:1}
 .sticker-grid img{height:64px;width:64px;object-fit:contain}.legacy-sticker-note{font-size:12px;color:var(--muted);padding:10px}
 .nain-preflight .btn{margin:5px 5px 0 0}
-@media(max-width:760px){.has-backstage .intermission-panel{position:absolute;right:7px;top:5px;bottom:4px;margin:0;width:min(390px,89vw);z-index:12;box-shadow:-12px 0 40px #413a532b}.theatre-layout{gap:0}.intermission-panel-top{padding:12px}.intermission-panel .intermission-empty{font-size:12px;padding:16px}}
-@media(prefers-reduced-transparency:reduce){.intermission-panel{background:var(--surface);backdrop-filter:none;-webkit-backdrop-filter:none}}
-.intermission-compose button.btn{width:auto;min-width:46px;height:42px;min-height:42px;border-radius:13px;white-space:nowrap}
-.intermission-compose button.intermission-paw{min-width:54px}.intermission-paw .cat-paw-svg{height:21px;width:21px}
 
 /* Touch/standalone surfaces use system safe areas. */
 @media (any-pointer:coarse), (display-mode:standalone) {

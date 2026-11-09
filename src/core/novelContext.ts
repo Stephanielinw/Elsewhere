@@ -11,7 +11,7 @@ const authorized=new WeakSet<ConversationContext>();
 export const isLiveNovelContext=(context:ConversationContext)=>authorized.has(context);
 
 /** Adapt already retrieved candidates against their actual role/scene records; flags alone confer no authority. */
-export function createLiveNovelContext(data:AppData,r:RoleData,kind:'scene'|'play',base:ConversationContext):ConversationContext {
+export function createLiveNovelContext(data:AppData,r:RoleData,kind:'scene'|'play',base:ConversationContext,query=''):ConversationContext {
  const p=kind==='play'?r.play:r.scene,mode=kind==='play'?'theatre':'meeting';
  if(!p||p.endedAt||('paused'in p&&p.paused)||!data.roles.some(role=>role.id===r.id)||base.source!=='native-live'||base.mode!==mode||base.actorId!==r.id||!Number.isFinite(base.now))throw new Error('小说上下文归属无效，请重新打开当前场景');
  const at=base.now,scope=kind==='play'?'play:'+p.id:'real:'+r.id,knownBy=[r.id,'user'];
@@ -36,7 +36,6 @@ export function createLiveNovelContext(data:AppData,r:RoleData,kind:'scene'|'pla
   const entry=encounterEntryContext(r,at);
   add('state:'+r.id,'currentState','scenario',`本次见面地点：${r.scene!.locationEvidence||r.scene!.agreement?scenePlaceAt(r,r.scene!,at):r.scene!.where}；当前时间：${new Date(at).toISOString()}${entry?'\n'+entry:''}`);
   facts.push({id:'role-memory:'+r.id,text:roleMemoryText(r,at,'',{excludeStage:p.id,includeEpisodes:false}),layer:'currentState',marker:'scenario',at,scope,knownBy:[r.id],active:true,revisionValid:true});
-  for(const f of readRoleMemory(r,at,'',{excludeStage:p.id}).episodes.facts)add(f.id,'episodic','worldInfoAfter',f.text);
   const active=messageSourceIndex(r,at);
   for(const candidate of base.facts.filter(f=>f.layer==='episodic')){
    const e=r.events.find(e=>e.id===candidate.id),message=e?.messageId?active.get(e.messageId):undefined;
@@ -44,8 +43,10 @@ export function createLiveNovelContext(data:AppData,r:RoleData,kind:'scene'|'pla
    if(!e||e.at>at||e.status==='retracted'||e.status==='superseded'||e.kind==='drama'||(e.messageId&&(!message||message.text!==e.detail)))continue;
    if(e.knownBy?.length?!e.knownBy.includes(r.id):!message)continue;
    if(!e.messageId&&!e.source)continue;
+   if(e.kind==='chat'&&e.messageId)historyIds.add(e.messageId);
    facts.push({...candidate,text:`[记录来源 ${e.source||e.messageId}；${e.speaker==='me'?'对方原话':e.speaker==='char'?'角色发言（不代表对外部事实的证实）':'正式事件记录'}] ${e.title}：${e.detail}`,scope,knownBy:e.knownBy?.length?[...e.knownBy]:knownBy,active:true,revisionValid:true});
   }
+  for(const f of readRoleMemory(r,at,query,{excludeStage:p.id,excludeMessageIds:historyIds}).episodes.facts)add(f.id,'episodic','worldInfoAfter',f.text);
  }
  const history=visible.map(m=>({id:m.id,role:m.speaker==='me'?'user' as const:'assistant' as const,text:`[消息 ID=${m.id}; createdAt=${new Date(m.at).toISOString()}]\n${formatMessageContentForModel(m,base.char,base.user)}`,at:m.at,scope,knownBy,active:true,revisionValid:true}));
  const context:ConversationContext={source:'novel-live',mode,memoryDenied:kind==='scene'?base.memoryDenied:[],actorId:r.id,scope,now:at,user:base.user,char:base.char,facts,history,examples:[],capabilities:{keywordRetrieval:kind==='scene',semanticRetrieval:false,completeRevisionChain:false}};

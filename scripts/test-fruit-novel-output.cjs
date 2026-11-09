@@ -18,10 +18,10 @@ async function main(extraCases){
   const ctx=await browser.newContext({viewport:{width:options.width||390,height:844},timezoneId:'America/Los_Angeles',serviceWorkers:'block',ignoreHTTPSErrors:true,isMobile:true,hasTouch:true});
   const posts=[],errors=[];let boot=true,release;const held=new Promise(r=>release=r);
   try{
-   await ctx.addInitScript(({endpoint,fault})=>{
+   await ctx.addInitScript(({endpoint,fault,refuseReply,refuseCurtain})=>{
     window.novelProbe={starts:[],shows:[],id:Math.random()};addEventListener('pageshow',e=>window.novelProbe.shows.push(e.persisted));
     const fetchOriginal=fetch.bind(window);window.fetch=async(...args)=>{const response=await fetchOriginal(...args);if(fault==='body'&&String(args[0]).startsWith(endpoint))Object.defineProperty(response,'json',{value:()=>new Promise((yes,no)=>window.novelBodyRelease=(value,fail=false)=>fail?no(Error('late synthetic rejection')):yes(value))});return response;};
-    const set=Storage.prototype.setItem;Storage.prototype.setItem=function(k,v){if(k==='elsewhere-v01'&&window.refuseNovelSave){const d=JSON.parse(v);if(d.roles.some(r=>(r.scene||r.play)?.messages.some(m=>m.speaker==='char'&&m.text==='合成有效小说正文。')))throw Error('synthetic reply save refusal');}return set.call(this,k,v);};
+    const set=Storage.prototype.setItem;Storage.prototype.setItem=function(k,v){if(k==='elsewhere-v01'&&(refuseReply&&v.includes(refuseReply)||refuseCurtain&&v.includes('"curtainReply"')))throw Error('synthetic reply save refusal');if(k==='elsewhere-v01'&&window.refuseNovelSave){const d=JSON.parse(v);if(d.roles.some(r=>(r.scene||r.play)?.messages.some(m=>m.speaker==='char'&&m.text==='合成有效小说正文。')))throw Error('synthetic reply save refusal');}return set.call(this,k,v);};
     if(fault==='preset-read'&&indexedDB.databases)indexedDB.databases=()=>new Promise(()=>{});
     if(fault==='preset-transaction'){
      const transaction=IDBDatabase.prototype.transaction,close=IDBDatabase.prototype.close,open=IDBFactory.prototype.open;window.novelFruitHandles=new Set();IDBFactory.prototype.open=function(...args){const request=open.apply(this,args);if(args[0]==='elsewhere-fruit-private-v1')request.addEventListener('success',()=>window.novelFruitHandles.add(request.result));return request;};
@@ -29,13 +29,13 @@ async function main(extraCases){
      IDBDatabase.prototype.close=function(){if(this.name==='elsewhere-fruit-private-v1'){window.closedFruitReads=(window.closedFruitReads||0)+1;window.novelFruitHandles.delete(this);}return close.call(this);};
     }
 
-   },{endpoint,fault:options.fault});
+   },{endpoint,fault:options.fault,refuseReply:options.refuseReply,refuseCurtain:options.refuseCurtain});
    await ctx.route('**/*',async route=>{const req=route.request(),u=new URL(req.url());if(boot&&req.isNavigationRequest()){boot=false;return route.fulfill({contentType:'text/html',body:'<!doctype html><title>Isolated novel lifecycle seed</title>'});}
     if(req.url()===endpoint+'/chat/completions'){const headers={'access-control-allow-origin':'*','access-control-allow-headers':'*','access-control-allow-methods':'POST'};if(req.method()==='OPTIONS')return route.fulfill({status:204,headers});posts.push(req.postDataJSON());if(options.fault==='headers'||options.hold)await held;
      const content=options.response?options.response(req.postDataJSON(),posts.length):options.content??(options.fruit?'<content>合成有效小说正文。</content>':'合成有效小说正文。');return route.fulfill({status:options.status||200,headers,json:{choices:[{finish_reason:options.finish||'stop',message:{role:'assistant',content,...(options.refusal?{refusal:'synthetic blocked'}:{})}}]}}).catch(()=>{});
     }if(req.url()===new URL('novel-away',url).href)return route.fulfill({contentType:'text/html',body:'<!doctype html><title>Novel away</title>'});if(req.method()==='GET'&&(u.protocol==='file:'||u.origin===new URL(url).origin))return route.continue();return route.abort();});
    const world=defaults(),r=createRole('合成小说角色','','记录者','谨慎','合成港口');Object.assign(r,{theme:options.theme||'blue',id:'novel-role',chats:[],events:[],lifeAt:at,lastDiaryCheckDay:'2026-11-06',firstMessageState:{status:'ready',updatedAt:at}});r.diaries=Array.from({length:8},(_,i)=>({id:'diary'+i,speaker:'char',source:'manual',text:'合成既有日记',at:at-i*86400000,dateKey:new Date(at-i*86400000).toISOString().slice(0,10)}));
-   if(options.play||options.both)r.play={id:'synthetic-play',title:'合成戏剧',world:'独立戏内世界',user:'旅人',char:'演员',startedAt:at-1000,messages:[]};if(!options.play)r.scene={id:'synthetic-scene',where:'合成庭院',startedAt:at-1000,messages:[]};
+   if(options.play||options.both)r.play={id:'synthetic-play',title:'合成戏剧',world:'独立戏内世界',user:'旅人',char:'演员',startedAt:at-1000,messages:[]};if(!options.play&&!options.phoneFirst)r.scene={id:'synthetic-scene',where:'合成庭院',startedAt:at-1000,messages:[]};
    if(options.opening){r.chats=[{id:'opening-phone',speaker:'me',text:'合成原始手机消息',at:at-900,status:'active'}];r.scene.messages=[{...r.chats[0],id:'opening-bridge',sourceMessageId:'opening-phone',kind:'scene'}];r.scene.opening={roundId:'synthetic-round',entry:'scheduled',status:'unsent'};}
    if(options.regen)(r.scene||r.play).messages.push({id:'prior-user',speaker:'me',text:'合成已保存的原话',at:at-800},{id:'prior-char',speaker:'char',text:'合成旧回复',at:at-700,replyTo:'prior-user'});
    world.roles=[r];if(options.other){const b=structuredClone(r);b.id='other-role';b.name='合成另一角色';world.roles.push(b);}world.selected=null;world.settings={...world.settings,mode:'api',endpoint,model:'synthetic',autonomousLife:false};
@@ -47,7 +47,7 @@ async function main(extraCases){
    const p=await ctx.newPage();p.setDefaultTimeout(8000);p.on('pageerror',e=>errors.push(e.message));await p.clock.install({time:at});await p.goto(url);
    await p.evaluate(async({world,key,endpoint,library})=>{localStorage.setItem(key,JSON.stringify(world));localStorage.setItem('elsewhere-device-api-key-v1',JSON.stringify({endpoint,key:'SYNTHETIC_ONLY'}));await new Promise((yes,no)=>{const q=indexedDB.open('elsewhere-fruit-private-v1',2);q.onupgradeneeded=()=>{q.result.createObjectStore('documents');q.result.createObjectStore('preset-library');};q.onsuccess=()=>{const db=q.result,tx=db.transaction('preset-library','readwrite');tx.objectStore('preset-library').put(library,'current');tx.oncomplete=()=>{db.close();yes();};tx.onabort=()=>no(Error('synthetic preset seed failed'));};});},{world,key,endpoint,library:serializePresetLibrary(library)});
    await p.reload();await p.locator('#app[data-storage-state=ready][data-write-access=writer]').waitFor();
-   await p.locator('[data-action=enter][data-id=novel-role]').click();await p.locator(options.play?'[data-action=resume]':'[data-action=openconversation]').click();await p.locator('#novel-form').waitFor();
+   await p.locator('[data-action=enter][data-id=novel-role]').click();if(options.phoneFirst)await p.locator('.dock [data-view=chat]').click();else{await p.locator(options.play?'[data-action=resume]':'[data-action=openconversation]').click();await p.locator('#novel-form').waitFor();}
    const submit=p.locator('[data-novel-control]'),record=()=>p.evaluate(key=>{const r=JSON.parse(localStorage.getItem(key)).roles[0];return r.scene||r.play;},key);
    const waitPost=async(n=1)=>{const end=Date.now()+8000;while(posts.length<n&&Date.now()<end)await new Promise(r=>setTimeout(r,20));assert.equal(posts.length,n);};
    const send=async()=>{await p.locator('#novel-input').fill('合成用户本轮原话');await submit.click();};

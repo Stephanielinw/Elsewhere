@@ -10,7 +10,8 @@ const key='elsewhere-v01';
 const at=Date.parse('2026-11-06T22:00:00Z');
 const day='2026-11-06';
 const ready=p=>p.locator('#app[data-storage-state=ready]').waitFor();
-const paw=p=>p.locator('[data-action=intermissionreply]');
+const retry=p=>p.locator('[data-action=retry-intermission]');
+const status=p=>p.getByTestId('intermission-panel').locator('[role=status]');
 const wait=async(read,label)=>{
   for(let i=0;i<150;i++){
     if(await read())return;
@@ -54,7 +55,8 @@ async function main(){
         if(req.method()==='GET'&&(new URL(dest).protocol==='file:'||new URL(dest).origin===new URL(url).origin))return route.continue();
         return route.abort();
       });
-      await ctx.addInitScript(({key,endpoint,holdBody,failText,failClaim})=>{
+      await ctx.addInitScript(({key,endpoint,holdBody,failText,failClaim,parallelVisible})=>{
+        if(parallelVisible)Object.defineProperty(document,'hidden',{get:()=>false});
         const fixture=window.timeoutFixture={holdBody,release:null,reads:0,failText,failClaim,failed:0,document:Math.random(),shows:[]};
         addEventListener('pageshow',e=>fixture.shows.push(e.persisted));
         const nativeFetch=window.fetch.bind(window);
@@ -75,7 +77,7 @@ async function main(){
           }
           return set.call(this,k,v);
         };
-      },{key,endpoint,holdBody:options.body||0,failText:options.failText||'',failClaim:!!options.failClaim});
+      },{key,endpoint,holdBody:options.body||0,failText:options.failText||'',failClaim:!!options.failClaim,parallelVisible:!!options.parallelVisible});
       const p=await ctx.newPage();
       p.setDefaultTimeout(5000);
       await p.clock.install({time:at-60000});
@@ -110,7 +112,7 @@ async function main(){
       const reload=async(page=p)=>{await page.reload();await ready(page);};
       const saved=async()=>p.evaluate(key=>JSON.parse(localStorage.getItem(key)),key);
       const role=async(i=0)=>(await saved()).roles[i];
-      const attempt=async()=>Object.values((await role()).play.intermissionAttempts||{})[0];
+      const attempt=async()=>Object.values((await role()).play.intermissionAttempts||{}).at(-1);
       const enter=async(i=0,page=p)=>page.locator(`[data-action=enter][data-id=timeout-role-${i}]`).click();
       const stage=async(i=0,page=p)=>{await enter(i,page);await page.locator('[data-action=resume]').click();};
       const back=async()=>{
@@ -156,39 +158,40 @@ async function main(){
   try{
     await run('intermission header deadline, refresh, confirmed retry and no duplicate archive',{headers:1,posts:2},async t=>{
       await t.stage();await t.send();assert.equal(t.posts.length,0);
-      await paw(t.p).click();await t.count(1);
-      await paw(t.p).evaluate(el=>el.click());
+      await t.advance(31000);await t.count(1);
+      assert.equal(await retry(t.p).count(),0);
       const first=await t.attempt();
-      await t.advance();await wait(async()=>!(await paw(t.p).isDisabled()),'header timeout releases paw');
+      await t.advance();await retry(t.p).waitFor();
       await t.reload();await t.stage();assert.equal((await t.attempt()).id,first.id);
-      assert.match(await t.p.locator('.intermission-panel [role=status]').innerText(),/可能已计费/);
-      t.confirm(false);await paw(t.p).click();assert.equal(t.posts.length,1);
-      t.confirm(true);await paw(t.p).click();await t.count(2);
+      assert.match(await status(t.p).innerText(),/可能已计费/);
+      t.confirm(false);await retry(t.p).click();assert.equal(t.posts.length,1);
+      t.confirm(true);await retry(t.p).click();await t.count(2);
       await wait(async()=>(await t.attempt()).status==='archived','retry archived');
       assert.notEqual((await t.attempt()).id,first.id);
       t.releaseHeaders();await t.advance();
-      await paw(t.p).click();assert.equal(await t.chars(),1);
+      assert.equal(await retry(t.p).count(),0);assert.equal(await t.chars(),1);
       assert.equal((await t.role()).play.intermissionMessages.filter(m=>m.speaker==='me').length,1);
     });
     await run('intermission body ignores abort and a late rejection cannot affect newer attempt',{body:1,headers:2,posts:2},async t=>{
-      await t.stage();await t.send();await paw(t.p).click();await t.bodyReady();
-      await t.advance();await wait(async()=>!(await paw(t.p).isDisabled()),'body timeout releases paw');
+      await t.stage();await t.send();await t.advance(31000);await t.bodyReady();
+      await t.advance();await retry(t.p).waitFor();
       assert.equal((await t.attempt()).status,'unknown');assert.equal(await t.chars(),0);
-      t.confirm(true);await paw(t.p).click();await t.count(2);
+      t.confirm(true);await retry(t.p).click();await t.count(2);
       await t.release(true);
       await t.p.evaluate(()=>Promise.resolve());
-      assert.equal(await paw(t.p).isDisabled(),true);
+      assert.equal(await retry(t.p).count(),0);
+      assert.match(await status(t.p).innerText(),/正在等待/);
       t.releaseHeaders();
       await wait(async()=>await t.chars()===1,'new attempt saved');
       assert.equal((await t.attempt()).status,'archived');
     });
     await run('intermission claim rejection never dispatches',{failClaim:true,posts:0},async t=>{
-      await t.stage();await t.send();await paw(t.p).click();
+      await t.stage();await t.send();await t.advance(31000);
       await wait(()=>t.p.evaluate(()=>window.timeoutFixture.failed===1),'claim save failed');
       assert.equal(await t.attempt(),undefined);assert.equal(await t.chars(),0);
     });
     await run('intermission rejected archive leaves only scoped copy and durable uncertainty',{failText:'合成回复 1',posts:1},async t=>{
-      await t.stage();await t.send();await paw(t.p).click();await t.count(1);
+      await t.stage();await t.send();await t.advance(31000);await t.count(1);
       const copy=t.p.locator('[data-action=copy-intermission-reply]');
       await copy.waitFor();await copy.click();
       assert.equal(await t.p.getByRole('textbox',{name:'可复制的未确认回复'}).inputValue(),'合成回复 1');
@@ -198,47 +201,49 @@ async function main(){
       await t.back();await t.stage(1);assert.equal(await copy.count(),0);
       await t.back();await t.stage();assert.equal(await copy.count(),1);
       await t.reload();await t.stage();assert.equal(await copy.count(),0);
-      assert.match(await t.p.locator('.intermission-panel [role=status]').innerText(),/可能已计费/);
+      assert.match(await status(t.p).innerText(),/可能已计费/);
     });
     await run('ordinary role navigation keeps a valid result in the original Play',{body:1,posts:1},async t=>{
-      await t.stage();await t.send();await paw(t.p).click();await t.bodyReady();
+      await t.stage();await t.send();await t.advance(31000);await t.bodyReady();
       await t.back();await t.stage(1);await t.release();
       await wait(async()=>await t.chars()===1,'original role archived');
       assert.equal(await t.chars(1),0);
-      assert.equal((await t.saved()).logs.find(log=>log.detail==='用户通过爪印触发戏外 AI 回复').roleId,'timeout-role-0');
+      assert.equal((await t.saved()).logs.find(log=>log.detail==='已保存戏外幕间回复').roleId,'timeout-role-0');
     });
     await run('world replacement with the same role and Play IDs rejects the old result',{body:1,posts:1},async t=>{
-      await t.stage();await t.send();await paw(t.p).click();await t.bodyReady();
+      await t.stage();await t.send();await t.advance(31000);await t.bodyReady();
       await t.back();await t.upload(t.world);
       await t.p.locator('.toast').filter({hasText:'已导入备份'}).waitFor();
       await t.release();await t.advance();
       assert.equal(await t.chars(),0);assert.equal(await t.attempt(),undefined);
     });
     await run('a saved intermission source change invalidates a late body',{body:1,posts:1},async t=>{
-      await t.stage();await t.send();await paw(t.p).click();await t.bodyReady();
+      await t.stage();await t.send();await t.advance(31000);await t.bodyReady();
       await t.p.locator('.intermission-tools summary').click();
       await t.p.locator('#intermission-settings-form [name=world]').fill('新的合成设定');
       await t.p.locator('#intermission-settings-form button').click();
       await t.release();
-      await wait(async()=>!(await paw(t.p).isDisabled()),'changed source released paw');
+      await retry(t.p).waitFor();
       assert.equal(await t.chars(),0);
       assert.equal((await t.attempt()).status,'unknown');
       assert.equal((await t.role()).play.world,'新的合成设定');
     });
-    await run('same intermission task across two writers sends at most once',{body:1,posts:1},async t=>{
+    await run('same intermission task across two writers sends at most once',{body:1,posts:1,parallelVisible:true},async t=>{
       await t.stage();await t.send();
       const b=await t.ctx.newPage();b.setDefaultTimeout(5000);
       await b.clock.install({time:at-60000});await b.clock.pauseAt(at);
       await b.goto(url);await ready(b);
       await b.locator('#app[data-write-access=read-only]').waitFor();
       await t.stage(0,b);
-      await Promise.all([paw(t.p).click(),paw(b).click()]);
+      await t.p.bringToFront();
+      // Playwright's virtual clock is shared by both pages in this browser context.
+      await t.advance(31000);
       await t.bodyReady();assert.equal(t.posts.length,1);
       await t.p.close();
       await t.reload(b);await b.locator('#app[data-write-access=writer]').waitFor();
       await t.stage(0,b);
-      await b.locator('.intermission-panel [role=status]').filter({hasText:'可能已计费'}).waitFor();
-      b.once('dialog',d=>d.dismiss());await paw(b).click();assert.equal(t.posts.length,1);
+      await status(b).filter({hasText:'可能已计费'}).waitFor();
+      b.once('dialog',d=>d.dismiss());await retry(b).click();assert.equal(t.posts.length,1);
       const saved=await b.evaluate(key=>JSON.parse(localStorage.getItem(key)),key);
       assert.equal(saved.roles[0].play.intermissionMessages.length,1);
     });
@@ -322,17 +327,17 @@ async function main(){
       t.world.roles[0].play={id:'replacement-play',title:'合成替换剧场',world:'测试剧场',user:'来访者',char:'留守者',startedAt:at-60000,paused:true,messages:[]};
       await t.p.locator('#backup-file').setInputFiles({name:'fixture.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(t.world))});
       await t.p.locator('.toast').filter({hasText:'已导入备份'}).waitFor();
-      await t.stage();assert.equal(await paw(t.p).isEnabled(),true);
+      await t.stage();assert.equal(await t.p.locator('#intermission-form button[type=submit]').isEnabled(),true);
       await t.release();await t.advance();assert.equal((await t.role()).scene,null);
     });
     if(new URL(url).protocol==='https:')await run('real BFCache returns to uncertain intermission without resending',{body:1,posts:1},async t=>{
-      await t.stage();await t.send();await paw(t.p).click();await t.bodyReady();
+      await t.stage();await t.send();await t.advance(31000);await t.bodyReady();
       const id=await t.p.evaluate(()=>window.timeoutFixture.document);
       await t.p.goto(away);await t.p.goBack({waitUntil:'commit'});await ready(t.p);
       await t.p.locator('#app[data-write-access=writer]').waitFor();
       assert.equal(await t.p.evaluate(()=>window.timeoutFixture.document),id);
       assert.equal(await t.p.evaluate(()=>window.timeoutFixture.shows.at(-1)),true);
-      await t.p.locator('.intermission-panel [role=status]').filter({hasText:'可能已计费'}).waitFor();
+      await status(t.p).filter({hasText:'可能已计费'}).waitFor();
       await t.release();await t.advance();assert.equal(await t.chars(),0);
     });
   }finally{await browser.close();}

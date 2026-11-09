@@ -14,8 +14,22 @@ async function cases(run){
   assert.ok(wire(t).includes(order));assert.ok(wire(t).includes('Scene=synthetic-scene'));assert.ok(wire(t).includes('角色原文'));assert.equal(t.posts.length,2);
   const role=await t.p.evaluate(key=>JSON.parse(localStorage.getItem(key)).roles[0],key);assert.equal(role.meetings[0].id,scene.id);assert.deepEqual(role.meetings[0].messages,scene.messages);assert.ok(role.memory.experiences.episodes.some(e=>e.containerId===scene.id&&e.sources.some(s=>s.id===scene.messages.at(-1).id)));
  });
- await run('backstage send costs zero and paw uses the same reality memory',{play:true,alter:r=>archived(r)},async t=>{await t.p.locator('[data-action=intermission]').click();await t.p.locator('#intermission-input').fill('刚才那次见面之后，我回到了房间。');await t.p.locator('#intermission-form button[type=submit]').click();assert.equal(t.posts.length,0);await t.p.locator('[data-action=intermissionreply]').click();await t.waitPost();assert.ok(wire(t).includes(order));assert.ok(!wire(t).includes('UNSPOKEN_SECRET'));assert.equal(t.posts.length,1);});
+ await run('backstage waits for its batch and uses the same reality memory',{play:true,alter:r=>archived(r)},async t=>{await t.p.locator('[data-action=intermission]').click();await t.p.locator('#intermission-input').fill('刚才那次见面之后，我回到了房间。');await t.p.locator('#intermission-form button[type=submit]').click();assert.equal(t.posts.length,0);await t.advance(31000);await t.waitPost();assert.ok(wire(t).includes(order));assert.ok(!wire(t).includes('UNSPOKEN_SECRET'));assert.equal(t.posts.length,1);});
  await run('formal theatre request does not inherit real shared episodes',{fruit:true,play:true,alter:r=>archived(r)},async t=>{await t.send();await t.p.locator('.passage.theirs').filter({hasText:'合成有效小说正文。'}).waitFor();assert.ok(!wire(t).includes(order));assert.ok(!wire(t).includes('UNSPOKEN_SECRET'));assert.equal(t.posts.length,1);});
- await run('diary actual request uses the same source-owned episode',{alter:r=>{archived(r,at-86400000);r.diaries=r.diaries.filter(d=>d.dateKey!=='2026-11-05');r.diaryTasks=[{id:'prior-diary',roleId:r.id,dateKey:'2026-11-05',status:'failed',attempts:0,createdAt:at,updatedAt:at}];}},async t=>{await t.p.locator('[data-action=view][data-view=home]').first().click();await t.p.locator('[data-home-page="1"]').click();await t.p.getByRole('button',{name:'打开日记'}).click();await t.p.locator('[data-action=retrydiary][data-date="2026-11-05"]').click();await t.waitPost();assert.ok(wire(t).includes(order));assert.ok(wire(t).includes('消息=public-order'));assert.ok(!wire(t).includes('UNSPOKEN_SECRET'));assert.equal(t.posts.length,1);});
+ await run('diary actual request sees the same reality and distinguishes play from backstage',{alter:r=>{
+  const yesterday=at-86400000;
+  archived(r,yesterday);
+  r.plays=[{id:'diary-play',title:'合成排演',world:'虚构车站',user:'旅客',char:'守门人',startedAt:yesterday-1000,endedAt:yesterday+1000,
+    messages:[{id:'played-fact',speaker:'char',at:yesterday,text:'我在戏里关上车站的门。'}],
+    intermissionMessages:[{id:'diary-backstage',speaker:'me',at:yesterday+500,text:'幕间时我说那扇门的演法太夸张。'}]}];
+  r.diaries=r.diaries.filter(d=>d.dateKey!=='2026-11-05');
+  r.diaryTasks=[{id:'prior-diary',roleId:r.id,dateKey:'2026-11-05',status:'failed',attempts:0,createdAt:at,updatedAt:at}];
+ }},async t=>{
+  await t.p.locator('[data-action=view][data-view=home]').first().click();await t.p.locator('[data-home-page="1"]').click();
+  await t.p.getByRole('button',{name:'打开日记'}).click();await t.p.locator('[data-action=retrydiary][data-date="2026-11-05"]').click();await t.waitPost();
+  const text=wire(t);
+  for(const expected of [order,'消息=public-order','演员演过的虚构内容 · Play=diary-play','戏外幕间 · Play=diary-play','幕间时我说那扇门的演法太夸张'])assert.ok(text.includes(expected),expected);
+  assert.ok(!text.includes('UNSPOKEN_SECRET'));assert.equal(t.posts.length,1);
+ });
 }
 main(cases).catch(e=>{console.error(e);process.exitCode=1;});

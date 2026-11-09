@@ -151,8 +151,8 @@ async function main() {
       await t.backstage.fill('B_BACKSTAGE');await t.sendBackstage();
       assert.equal(await t.backstage.inputValue(),'');
       assert.equal(t.posts.length,0);assert.doesNotMatch(await t.raw(),/A_ONLY_BACKSTAGE/);
-      await t.p.locator('[data-action=intermissionreply]').click();
-      await poll(()=>t.posts.length===1,'backstage paw POST');
+      await t.p.clock.fastForward(31000);
+      await poll(()=>t.posts.length===1,'backstage batch POST');
       await poll(async()=> (await t.saved()).roles[1].play.intermissionMessages.some(m=>m.speaker==='char'),'B saved backstage reply');
       assert.match(JSON.stringify(t.posts[0]),/B_BACKSTAGE/);
       assert.doesNotMatch(JSON.stringify(t.posts[0]),/A_ONLY_BACKSTAGE/);
@@ -244,7 +244,8 @@ async function main() {
       assert.notEqual((await t.saved()).roles[0].play.id,'shared-stage-id');
       await t.pause();assert.equal(await t.backstage.inputValue(),'');
       assert.doesNotMatch(await t.raw(),/OLD_PLAY_DRAFT|OLD_BACKSTAGE_DRAFT|OTHER_ROLE_DRAFT/);
-      assert.equal(t.posts.length,0);
+      await poll(()=>t.posts.length===1,'one curtain reply POST');
+      assert.doesNotMatch(JSON.stringify(t.posts[0]),/OLD_PLAY_DRAFT|OLD_BACKSTAGE_DRAFT|OTHER_ROLE_DRAFT/);
     });
     await run('save failure and duplicate submit keep exact text until one confirmed send',async t=>{
       await t.play();await t.novel.fill('\n  FAILED_PERFORMANCE  \n');

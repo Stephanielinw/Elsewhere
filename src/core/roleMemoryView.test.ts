@@ -12,3 +12,23 @@ test('edited or withdrawn episode bodies are invalidated without deleting the ol
 test('legacy phone Memory IDs are stable and explicit real scene declarations stay source scoped',()=>{const f=fixture();f.r.chats=[{id:'identity',speaker:'me',text:'我是剪辑师。',at:at-80000}];syncRoleMemory(f.r,at);const before=projectRoleMemory(f.r,at).facts.map(f=>f.id);f.r.scene={id:'real-self',where:'庭院',startedAt:at-1000,messages:[{id:'other-self',speaker:'me',text:'我不是医生。',at:at-500}]};syncRoleMemory(f.r,at);const now=projectRoleMemory(f.r,at);assert.ok(before.every(id=>now.facts.some(f=>f.id===id)));assert.ok(now.facts.some(f=>f.value==='医生'&&f.polarity==='deny'&&f.source.scope==='scene:real-self'));});
 test('actor remembers performing and discussing a play without adopting the fictional identity',()=>{const f=fixture();f.r.plays=[{id:'performed',title:'虚构戏剧',char:'虚构国王',user:'旅客',world:'舞台',startedAt:at-2000,endedAt:at-1000,messages:[{id:'king',speaker:'char',text:'我在戏里加冕。',at:at-1500}],intermissionMessages:[{id:'actor-note',speaker:'me',text:'下一次演得轻一点。',at:at-1400}]}];syncRoleMemory(f.r,at);const view=roleMemoryText(f.r,at);assert.ok(view.includes('演员演过的虚构内容'));assert.ok(view.includes('戏外幕间'));assert.equal(readRoleMemory(f.r,at).identity.job,'守港人');});
 test('a different role and a replacement world cannot borrow previous episode content',()=>{const f=fixture(),b=createRole('另一角色','','','','');b.id=f.r.id;assert.ok(!roleMemoryText(b,at).includes(command));const imported=JSON.parse(JSON.stringify(f.r));imported.meetings=[];assert.ok(!roleMemoryText(imported,at).includes(command));});
+test('recent phone evidence reaches the real Scene and backstage wire without entering the stage',()=>{
+ const f=fixture(),phone='明晚记得把那封蓝色信交给我。';
+ f.r.chats=[{id:'phone-agreement',speaker:'me',text:phone,at:at-20000}];
+ f.r.scene={id:'next',where:'庭院',startedAt:at-1000,messages:[]};
+ f.r.play={id:'play',title:'合成戏剧',world:'虚构世界',user:'旅客',char:'虚构国王',startedAt:at-1000,messages:[]};
+ for(const mode of ['scene','intermission'] as const){const text=wire(f,mode);assert.ok(text.includes(phone));assert.ok(text.includes(command));assert.ok(text.includes('消息=phone-agreement'));}
+ assert.equal(wire(f).split(phone).length-1,1);
+ const stage=requestMessages(compileNativeConversation(f.d,f.r,'play','台词',{nowTs:at})).map(m=>m.content).join('\n');
+ assert.ok(!stage.includes(phone));
+ retractMessage(f.r,'chat','phone-agreement',at-100);
+ assert.ok(!wire(f,'intermission').includes(phone));
+});
+
+test('the actor can recall a named earlier performance without replacing the current play',()=>{
+ const f=fixture();
+ f.r.plays=[{id:'old-show',title:'雾灯剧',world:'虚构港口',user:'旅人',char:'守门人',startedAt:at-20000,endedAt:at-9000,messages:[{id:'old-show-line',speaker:'char',text:'我在戏里点亮了雾灯。',at:at-10000}]}];
+ f.r.play={id:'today-show',title:'另一出戏',world:'虚构旅店',user:'旅人',char:'店主',startedAt:at-1000,paused:true,messages:[{id:'today-show-line',speaker:'char',text:'我在戏里关上旅店的门。',at:at-500}]};
+ const context=requestMessages(compileNativeConversation(f.d,f.r,'intermission','还记得雾灯剧吗？',{nowTs:at})).map(m=>m.content).join('\n');
+ for(const evidence of ['消息=old-show-line','消息=today-show-line','演员演过的虚构内容'])assert.ok(context.includes(evidence),evidence);
+});

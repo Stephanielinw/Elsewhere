@@ -9,7 +9,7 @@ import {logsForDay,logDays,logTimestamp} from './core/systemLogs';
 import {meetingPlan,createEncounter,isFarewell,encounterHistory,updateEncounterLocation,commitSceneDecision} from './core/encounter';
 import {createSceneObservation,sceneStateKey} from './core/sceneState';
 import {prepareSceneReply,splitSceneReply,sceneReplyMatches,resolveSceneReply} from './core/sceneReply';
-import {phoneMessagesAt,messageSourceIndex} from './core/messageProvenance';
+import {phoneMessagesAt,messageSourceIndex,stageMessagesAt} from './core/messageProvenance';
 import {identityName,identityContext,buildNativeContext,compileNativeConversation,compileNovelConversation,compileOpeningPrompt,type NativePromptOptions} from './core/prompt';
 import {ConversationCompileError,requestMessages,promptStructure,type ConversationCompilation} from './core/conversationPrompt';
 import {loadRequestPreset} from './core/fruit/library';
@@ -18,7 +18,7 @@ import type {FruitPreset} from './core/fruit/types';
 import {createNovelTasks,commitNovelReply,prepareNovelRegeneration,parseNovelResponse,NovelOutputError,safeNovelText,novelRequestTimeout,novelSamplingParameters,novelSourceKey,type NovelKind} from './core/novelGeneration';
 import {monitorItemsForDisplay} from './core/monitorPresentation';
 import {uiIcon,plainUiLabel} from './uiIcons';
-import {chatTiming,setChatFocused,enqueueChat,prepareChatDue,claimChatBatch,canChooseChatScene,chatSceneEntry,setChatScene,chatBatchValid,chatRevisionKey,completeChatBatch,failChatBatch,recoverChatTiming,retryChatTiming,reviseChatTiming,sourceStillValid} from './core/chatScheduler';
+import {chatTiming,setChatFocused,enqueueChat,prepareChatDue,claimChatBatch,canChooseChatScene,chatSceneEntry,setChatScene,chatBatchValid,chatRevisionKey,completeChatBatch,failChatBatch,recoverChatTiming,retryChatTiming,reviseChatTiming,sourceStillValid,messageStillValid} from './core/chatScheduler';
 import {compileChatBatchPrompt,buildPhoneRegeneration,parseChatResponse,readChatResponse,readChatResponseBody} from './core/chatBatchPrompt';
 import {startRequestDeadline} from './core/requestDeadline';
 import {describeChatVoice,chatVoiceSummary} from './core/chatVoice';
@@ -81,6 +81,7 @@ import {
   ensureRevisionsList,
   getActiveEvents,
   getActiveMessages,
+  getScopeMessages,
   makeUid,
   prepareRegenerateReply,
   retractMessage,
@@ -217,6 +218,9 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   const activeModelReads=new Map<Pick<ReturnType<typeof startRequestDeadline>,'cancel'|'check'>,boolean>();
   let modelPageEpoch=0;
   let modelPageHidden=false;
+  const intermissionQuietMs=30_000;
+  const curtainOperations=new WeakSet<PlayData>();
+  const curtainRecovery=new WeakMap<PlayData,string>();
   const intermissionOperations=new WeakMap<PlayData,AbortController>();
   const intermissionRecovery=new WeakMap<PlayData,{sourceId:string;text:string}>();
   let token = readDeviceApiKey(localStorage,data.settings.endpoint);
@@ -1708,18 +1712,18 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       });document.body.append(dialog);dialog.showModal();
     });
   }
-  async function compileRequest(r:RoleData,kind:'chat'|'scene'|'play'|'intermission',build:(options:RequestPromptOptions)=>ConversationCompilation,valid:()=>boolean,novel?:{signal:AbortSignal;stage:(phase:NovelPhase)=>void}){
+  async function compileRequest(r:RoleData,kind:'chat'|'scene'|'play'|'intermission',build:(options:RequestPromptOptions)=>ConversationCompilation,valid:()=>boolean,novel?:{signal:AbortSignal;stage?:(phase:NovelPhase)=>void}){
     let skipLegacyOnce=false;
     while(true){
       const mode=kind==='scene'?'meeting':kind==='play'?'theatre':kind;
-      novel?.stage('preparing');
+      novel?.stage?.('preparing');
       const snapshot=novel?await readModelBeforeDeadline(signal=>loadRequestPreset(mode,r.id,signal),novel.signal,false,30_000):await loadRequestPreset(mode,r.id);
-      novel?.stage('compiling');
+      novel?.stage?.('compiling');
       if(!valid())throw new Error('请求来源已变化，未发送');
       try{
         const compileStarted=performance.now();
         const compilation=build({profile:snapshot.profile,skipLegacyOnce,preset:snapshot.preset,presetId:snapshot.actualPresetId});
-        if(novel)syslog('novel-lifecycle','预设编译完成',{roleId:null,mode:kind,compileMs:Math.round(performance.now()-compileStarted),promptMessages:compilation.messages.length,estimatedInputTokens:estimateTextTokens(compilation.messages.map(m=>m.content).join('\n')),requestedCharacters:snapshot.profile.length.max,presetId:snapshot.actualPresetId});
+        if(novel?.stage)syslog('novel-lifecycle','预设编译完成',{roleId:null,mode:kind,compileMs:Math.round(performance.now()-compileStarted),promptMessages:compilation.messages.length,estimatedInputTokens:estimateTextTokens(compilation.messages.map(m=>m.content).join('\n')),requestedCharacters:snapshot.profile.length.max,presetId:snapshot.actualPresetId});
         promptTraces.set(r.id,{...promptStructure(compilation),profileRevision:snapshot.revision,requestedPresetId:snapshot.requestedPresetId,actualPresetId:snapshot.actualPresetId,profileOwnerRoleId:snapshot.roleId,profileSource:snapshot.configSource,actualPresetHash:snapshot.presetHash,profileBaseHash:snapshot.profileBaseHash,...(kind==='chat'?{voice:chatVoiceSummary(describeChatVoice(snapshot.profile,r,data.preset),skipLegacyOnce)}:{})});
         const messages=requestMessages(compilation);
         if(!valid())throw new Error('请求来源已变化，未发送');
@@ -1732,13 +1736,13 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     }
   }
 
-  async function requestPhoneReply(r:RoleData,messages:{role:string;content:string}[],signal:AbortSignal,task:'chat'|'first-message'='chat'):Promise<string> {
+  async function requestPhoneReply(r:RoleData,messages:{role:string;content:string}[],signal:AbortSignal,task:'chat'|'first-message'='chat',onDispatch?:()=>void):Promise<string> {
       const settings={...data.settings};
       const pendingResponse=postModel(settings.endpoint.trim().replace(/\/+$/,'')+'/chat/completions',{
         method:'POST',signal,
         headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},
         body:JSON.stringify({model:settings.model,messages,stream:false,temperature:+settings.temperature,...completionLimit(settings,task)}),
-      });
+      },onDispatch);
       const trace=promptTraces.get(r.id);if(trace?.mode==='chat')trace.sentAt=now();
       chatTyping.add(r.id);
       if(view==='chat'&&role()?.id===r.id)patchDynamicRegionsOnTick();
@@ -1783,6 +1787,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
 
   function pumpChatSchedules():void {
     if(!saveSession.current())return;
+    const backstage=role()?.play,queue=backstage?.intermissionQueue;
+    if(view==='intermission'&&!document.hidden&&backstage?.paused&&Array.isArray(queue?.ids)&&queue.ids.length&&!queue.blocked&&queue.dueAt<=now())void requestIntermissionReply(false);
     for(const r of data.roles){
       if(!r.chatTiming)continue;
       const before=structuredClone(r.chatTiming),at=now();
@@ -3231,6 +3237,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         focused
       )}</button><button type="button" class="chat-more" data-action="chatroleedit" data-testid="chat-role-edit-btn" aria-label="进入角色修改页面" title="编辑当前角色资料">${uiIcon('ellipsis')}</button></div></div>
  <div class="chat-feedback" data-chat-feedback ${r.chatTiming?.blocked?'':'hidden'}>${renderChatFeedback(r)}</div>
+ ${curtainStatus(r.plays.filter(p=>Array.isArray(p.curtainReply?.attempts)&&p.curtainReply.attempts.at(-1)?.status!=='archived').at(-1))}
  <div class="chat-conversation" id="scroll-area" data-role-id="${esc(r.id)}">${renderChatMessagesHtml(
    r
  )}</div>
@@ -4160,18 +4167,17 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       return screenHome();
     }
     const title = isPlay ? (p as PlayData).title : `与${r.name}的见面`;
-    const showBackstage=isPlay&&Boolean((p as PlayData).paused);
-    if(showBackstage)view='intermission';
+    if(isPlay&&(p as PlayData).paused){view='intermission';return screenIntermission();}
     const activeMessages = isPlay?getActiveMessages(p.messages):encounterHistory(r,p.messages);
     const revCount = ensureRevisionsList(r).filter(
       (x) => x.scope === scope
     ).length;
 
     return shell(
-      `<div class="theatre-layout ${showBackstage?'has-backstage':''}"><section class="theatre-main" aria-label="${isPlay?'戏中戏正式内容':'面对面'}"><div class="top"><button class="back-btn" data-action="view" data-view="home" aria-label="离开但保留进度">‹</button><div class="grow"><h1>${esc(
+      `<div class="theatre-layout"><section class="theatre-main" aria-label="${isPlay?'戏中戏正式内容':'面对面'}"><div class="top"><button class="back-btn" data-action="view" data-view="home" aria-label="离开但保留进度">‹</button><div class="grow"><h1>${esc(
         isPlay ? '戏剧 · ' + title : '面对面'
       )}</h1><div class="small">${
-        isPlay ? showBackstage?'幕间讨论中 · 演出暂停':'戏内时间与现实隔离' : '时间按现实流速 · ' + hm(now())
+        isPlay ? '戏内时间与现实隔离' : '时间按现实流速 · ' + hm(now())
       }</div></div>
       <button type="button" class="btn small secondary" data-action="togglerevisions">修订${
         revCount ? `(${revCount})` : ''
@@ -4225,7 +4231,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
                         m.speaker === 'char'
                           ? `<button type="button" class="msg-action-btn" data-action="regenmsg" data-scope="${scope}" data-id="${esc(
                               m.id
-                            )}" ${busy||showBackstage ? 'disabled' : ''}>重抽</button>`
+                            )}" ${busy ? 'disabled' : ''}>重抽</button>`
                           : ''
                       }
                       <button type="button" class="msg-action-btn" data-action="retractmsg" data-scope="${scope}" data-id="${esc(
@@ -4249,7 +4255,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
           : ''
       }
       ${novelStatusHtml(r,p)}
-      <form class="compose" id="novel-form" data-role-id="${esc(r.id)}" data-stage-id="${esc(p.id)}" data-scene-id="${isPlay?'':esc(p.id)}"><textarea id="novel-input" data-scoped-draft ${showBackstage?'disabled':''} placeholder="写下你说的话或行动..." rows="1"></textarea><button type="submit" class="btn" data-novel-control ${showBackstage?'disabled':''} aria-label="发送描写">${uiIcon('send')}</button></form></section>${showBackstage?renderIntermissionPanel(r,p as PlayData):''}</div>`,
+      <form class="compose" id="novel-form" data-role-id="${esc(r.id)}" data-stage-id="${esc(p.id)}" data-scene-id="${isPlay?'':esc(p.id)}"><textarea id="novel-input" data-scoped-draft placeholder="写下你说的话或行动..." rows="1"></textarea><button type="submit" class="btn" data-novel-control aria-label="发送描写">${uiIcon('send')}</button></form></section></div>`,
       false
     );
   }
@@ -4260,44 +4266,24 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     return p;
   }
 
-  function screenIntermission():string {return screenNovel();}
-
-  function renderIntermissionPanel(r:RoleData,p:PlayData):string {
-    ensureIntermission(p);
-    const messages = getActiveMessages(p.intermissionMessages!);
-    const latest=messages.filter(m=>m.speaker==='me').at(-1);
-    const attempt=latest&&intermissionAttempt(p,latest.id);
-    const pending=intermissionOperations.has(p);
-    const locked=busy||pending;
-    const lastTurns = getActiveMessages(p.messages).filter(
-      (m) => m.speaker === 'me' || m.speaker === 'char'
-    );
-    return `<aside class="intermission-panel" aria-labelledby="intermission-title" data-testid="intermission-panel"><header class="intermission-panel-top"><div><small>BACKSTAGE · 演出暂停</small><h2 id="intermission-title">幕间讨论 · ${esc(r.name)}</h2></div><button type="button" class="btn small secondary" data-action="resumeplay" aria-label="关闭幕间并返回演出">回到演出 ×</button></header>
- <p class="intermission-hint">戏外本人 · 发送仅保存你的发言，点爪印才请 AI 回复。未发送的草稿不进入请求。</p>
- ${pending?'<p class="sub" role="status">正在等待幕间回复…</p>':attempt?.status==='unknown'?'<p class="sub" role="status">幕间请求结果未确认，可能已计费。再次请求需要确认。</p>':''}
+  function screenIntermission():string {
+    const r=role(),p=r?.play;
+    if(!r||!p?.paused){view='home';return screenHome();}
+    const messages=getActiveMessages(p.intermissionMessages);
+    const pending=intermissionOperations.has(p),queue=p.intermissionQueue;
+    const retry=backstageRetry(p,messages);
+    const lastTurns=getActiveMessages(p.messages).filter(m=>m.speaker!=='note');
+    return shell(`<section class="intermission-conversation" data-testid="intermission-panel"><header class="top intermission-top">
+ <button type="button" class="back-btn" data-action="view" data-view="home" aria-label="返回桌面">‹</button>
+ <div class="grow"><h1>${esc(r.name)}</h1><small>幕间 · ${esc(p.title)}</small></div>
+ <button type="button" class="btn small secondary" data-action="resumeplay">回到演出</button></header>
+ <div class="intermission-history" id="intermission-scroll" data-stage-id="${esc(p.id)}" aria-live="polite">${messages.map(m=>{
+   const actions=['quotemsg','starteditmsg','retractmsg'].map((action,i)=>`<button type="button" class="msg-action-btn" data-action="${action}" data-scope="intermission" data-id="${esc(m.id)}">${['引用','编辑','撤回'][i]}</button>`).join('');
+   const editing=editingMessageScope==='intermission'&&editingMessageId===m.id;
+   return `<div class="offstage-message ${m.speaker==='me'?'offstage-me':'offstage-actor'}" data-msg-id="${esc(m.id)}">${m.speaker==='note'?'<small>演出修订</small>':''}<div class="offstage-bubble">${quoteBubbleHtml(m,r)}${esc(m.text)}</div>${m.speaker==='note'?'':editing?`<form id="inline-edit-form" class="inline-edit-form" data-scope="intermission" data-id="${esc(m.id)}"><textarea name="editText" required>${esc(editingMessageDraft)}</textarea><div class="inline-edit-actions"><button type="button" class="btn small secondary" data-action="canceleditmsg">取消</button><button type="submit" class="btn small">保存修改</button></div></form>`:`<div class="message-meta-row"><time>${hm(m.at)}${m.editedAt?' · 已编辑':''}</time>${actions}</div>`}</div>`;
+ }).join('')||'<p class="intermission-empty">演出暂停了。想聊些什么？</p>'}</div>
+ ${pending?'<p class="intermission-status" role="status">正在等待幕间回复…</p>':retry||queue?.blocked?`<div class="intermission-status" role="status">${queue?.blocked?'幕间消息未派发。':'上次幕间请求结果未确认，可能已计费。'} <button type="button" class="btn small secondary" data-action="retry-intermission">重新调用</button></div>`:Array.isArray(queue?.ids)&&queue.ids.length?'<p class="intermission-status" role="status">等待合批…</p>':''}
  ${intermissionRecovery.has(p)?'<button type="button" class="btn small secondary" data-action="copy-intermission-reply">查看可复制的未保存幕间回复</button>':''}
- <div class="intermission-history" id="intermission-scroll" aria-live="polite">
- ${
-   messages.length
-     ? messages
-         .map(
-           (m) =>
-             `<div class="offstage-message ${
-               m.speaker === 'me' ? 'offstage-me' : 'offstage-actor'
-             }"><div class="offstage-name">${
-               m.speaker === 'me'
-                 ? '我'
-                 : m.speaker === 'note'
-                 ? '修订记录'
-                 : esc(r.name)
-             }</div><div class="offstage-bubble">${esc(
-               m.text
-             )}</div><time>${hm(m.at)}</time></div>`
-         )
-         .join('')
-     : `<div class="intermission-empty">幕布暂时落下了。你可以聊剧情、吐槽刚才的表演，或者修改接下来的方向。</div>`
- }
- </div>
  <details class="intermission-tools"><summary>剧本调整与回退 <span>⌄</span></summary><form id="intermission-settings-form"><label>戏剧世界与规则</label><textarea name="world" class="field">${esc(
    p.world || ''
  )}</textarea><label>我的戏内角色</label><textarea name="user" class="field">${esc(
@@ -4308,76 +4294,92 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         p.char || ''
       )}</textarea><button class="btn small full">保存修改后的演出设定</button></form><button class="btn secondary full" data-action="rollbackplay" ${
         lastTurns.length ? '' : 'disabled'
-      }>回退刚才一轮戏内互动</button><p class="sub">仅回退戏内已演的最后一轮；旧版本留在幕间修订档案，戏内正式剧情不再引用它。演员仍可能记得你们试过另一种演法。</p></details>
- <form class="compose intermission-compose" id="intermission-form"><textarea id="intermission-input" data-scoped-draft placeholder="和戏外的${esc(r.name)}聊聊……" rows="1" required ${locked?'disabled':''}></textarea><button class="btn" type="submit" ${locked?'disabled':''} aria-label="发送幕间消息（不触发 AI）" title="仅发送你的消息">发送</button><button type="button" class="btn intermission-paw" data-action="intermissionreply" ${locked?'disabled':''} aria-label="让 AI 回复幕间讨论" title="仅点爪印才触发 AI 回复">${catPawSvg(true)}<span>AI 回复</span></button></form></aside>`;
+      }>回退刚才一轮戏内互动</button><button class="btn secondary full" data-action="endnovel">落幕</button><p class="sub">仅回退戏内已演的最后一轮；旧版本留在幕间修订档案，戏内正式剧情不再引用它。演员仍可能记得你们试过另一种演法。</p></details>
+
+ ${quotingMessage?`<div class="compose-quote-bar"><div class="quote-preview">正在引用：「${esc(quotingMessage.text)}」</div><button type="button" data-action="cancelquote">取消引用</button></div>`:''}
+ <form class="compose intermission-compose" id="intermission-form"><textarea id="intermission-input" data-scoped-draft placeholder="发送消息" aria-label="输入幕间消息" rows="1" required></textarea><button class="send-btn" type="submit" aria-label="发送幕间消息">${uiIcon('send')}</button></form></section>`,false);
   }
 
   function submitIntermission(draft:DraftBinding,text:string):void {
-    const p=draft.owner.play!;
-    if(intermissionOperations.has(p))return;
-    ensureIntermission(p);
-    const message:ChatMessage={id:uid(),speaker:'me',text:text.trim(),at:now(),status:'active'};
+    const p=ensureIntermission(draft.owner.play!),previous=p.intermissionQueue;
+    const at=now(),message:ChatMessage={id:uid(),speaker:'me',text:text.trim(),at,status:'active',quote:quotingMessage};
     p.intermissionMessages!.push(message);
-    if(!save()){p.intermissionMessages!.pop();return;}
+    p.intermissionQueue={ids:[...(Array.isArray(previous?.ids)?previous.ids:[]),message.id],dueAt:at+intermissionQuietMs};
+    if(!save()){p.intermissionMessages!.pop();p.intermissionQueue=previous;return;}
+    quotingMessage=null;
     clearSubmittedDraft(draft);
-    syslog('intermission','幕间用户发言已保存；等待爪印触发回复',{source:p.id});
-    render(false);const area=$('#intermission-scroll');if(area)area.scrollTop=area.scrollHeight;
+    render(false);
+    const area=$('#intermission-scroll');if(area)area.scrollTop=area.scrollHeight;
     $<HTMLTextAreaElement>('#intermission-input')?.focus({preventScroll:true});
   }
 
-  function intermissionAttempt(p:PlayData,id:string) {
-    const attempts=p.intermissionAttempts;
-    return attempts&&Object.hasOwn(attempts,id)?attempts[id]:undefined;
+  function backstageRetry(p:PlayData,messages:ChatMessage[]) {
+    const attempts=Object.entries(p.intermissionAttempts||{});
+    return attempts.reverse().find(([key,attempt])=>attempt?.status==='unknown'&&
+      !(Array.isArray(p.intermissionQueue?.ids)?p.intermissionQueue.ids:[]).includes(attempt.triggerId||key)&&
+      !attempts.some(([other,receipt])=>receipt?.status==='archived'&&(receipt.triggerId||other)===(attempt.triggerId||key)&&receipt.revision===attempt.revision)&&
+      (Array.isArray(attempt.sources)?attempt.sources:[{id:attempt.triggerId||key,revision:attempt.revision}]).every(source=>messages.some(m=>m.id===source?.id&&m.speaker==='me'&&(m.revisionCount||0)===source.revision)));
   }
 
-  async function requestIntermissionReply(form:HTMLFormElement|null):Promise<void> {
-    const draft=form&&currentDraft(form);
-    if(!draft||draft.mode!=='intermission'||busy||modelPageHidden)return;
-    const world=data,r=draft.owner,p=r.play!,epoch=modelPageEpoch;
-    if(intermissionOperations.has(p))return;
-    if(draft.input.value.trim()){notify('这段文字尚未发送，请先点发送，再点爪印。');return;}
-    const messages=getActiveMessages(p.intermissionMessages);
-    const latest=messages.filter(m=>m.speaker==='me').at(-1);
-    if(!latest){notify('先发送一条幕间消息，再点爪印请 AI 回复。');return;}
-    if(!token.trim()||!canUseRealModel(data.settings)){notify('请先在终端连接 API；当前发言已保存在本地。');return;}
+  function reviseBackstageQueue(p:PlayData,id:string):void {
+    const queue=p.intermissionQueue;
+    if(!Array.isArray(queue?.ids)||!queue.ids.includes(id))return;
+    const ids=queue.ids.filter(id=>getActiveMessages(p.intermissionMessages).some(m=>m.id===id&&m.speaker==='me'));
+    p.intermissionQueue=ids.length?{ids,dueAt:now()+intermissionQuietMs}:undefined;
+  }
+
+  async function requestIntermissionReply(manual:boolean):Promise<void> {
+    const world=data,r=role(),p=r?.play,epoch=modelPageEpoch;
+    if(!r||!p?.paused||p.endedAt||view!=='intermission'||busy||modelPageHidden||intermissionOperations.has(p))return;
+    const messages=stageMessagesAt(p.intermissionMessages,now());
+    const queue=p.intermissionQueue;
+    const retry=manual&&!queue?.blocked&&backstageRetry(p,messages);
+    const queued=!(manual&&retry);
+    if(queued&&(!Array.isArray(queue?.ids)||!queue.ids.length||(!manual&&(queue.blocked||queue.dueAt>now()))))return;
+    const ids=queued?queue!.ids:retry?(Array.isArray(retry[1].sources)?retry[1].sources.map(m=>m.id):[retry[1].triggerId||retry[0]]):[];
+    const sources=messages.filter(m=>m.speaker==='me'&&ids.includes(m.id));
+    const latest=sources.at(-1);
+    if(!latest||sources.length!==ids.length)return;
+    const block=()=>{
+      if(queued&&p.intermissionQueue===queue){p.intermissionQueue={...queue!,blocked:true};save();}
+    };
     if(!checkWriteAccess())return;
-    const previous=intermissionAttempt(p,latest.id),revision=latest.revisionCount||0;
-    if(previous?.status==='archived'&&previous.revision===revision||
-      !previous&&messages.some(m=>m.speaker==='char'&&m.replyTo===latest.id&&m.at>=(latest.editedAt||latest.at))){
-      notify('这条幕间发言已有回复。');return;
-    }
-    if(previous?.status==='unknown'&&!window.confirm('上次幕间请求可能已被服务商处理。再次生成可能再次计费，确定继续？'))return;
+    if(!token.trim()||!canUseRealModel(data.settings)){block();if(manual)notify('请先在终端连接 API；当前发言已保存在本地。');render(false);return;}
+    if(retry&&!window.confirm('上次幕间请求可能已被服务商处理。再次生成可能再次计费，确定继续？'))return;
     const operation=new AbortController(),connection=apiConnectionVersion;
-    const context=()=>JSON.stringify([p.title,p.world,p.user,p.char,p.messages,p.revisions,getActiveMessages(p.intermissionMessages)]);
+    const prefix=new Set(messages.map(m=>m.id));
+    const contextMessages=()=>stageMessagesAt(p.intermissionMessages,now()).filter(m=>prefix.has(m.id));
+    const context=()=>JSON.stringify([p.title,p.world,p.user,p.char,p.messages,p.revisions,contextMessages()]);
     const basis=context(),visible=()=>data===world&&role()===r&&r.play===p&&view==='intermission';
-    const current=()=>data===world&&epoch===modelPageEpoch&&world.roles.includes(r)&&r.play===p&&p.paused===true&&!p.endedAt&&
-      intermissionOperations.get(p)===operation&&!operation.signal.aborted&&context()===basis;
+    const owns=()=>data===world&&epoch===modelPageEpoch&&world.roles.includes(r)&&r.play===p&&p.paused===true&&!p.endedAt&&intermissionOperations.get(p)===operation&&!operation.signal.aborted;
+    const current=()=>owns()&&context()===basis&&sources.every(m=>messageStillValid(contextMessages(),m));
     intermissionOperations.set(p,operation);
     render(false);
     let sent=false;
     let claimed:PlayData['intermissionAttempts'];
     const oldAttempts=p.intermissionAttempts;
     try {
-      const valid=()=>current()&&apiConnectionVersion===connection&&saveSession.current();
+      const valid=()=>current()&&visible()&&!document.hidden&&apiConnectionVersion===connection&&saveSession.current()&&(!queued||p.intermissionQueue===queue);
       let compileSource:(()=>ConversationCompilation)|undefined;
       const prompt=await compileRequest(r,'intermission',options=>{
-        const snapshot={...options,isFocused:isFocused(r),nowTs:now()};
+        const snapshot={...options,isFocused:isFocused(r),nowTs:now(),currentInputs:sources};
         // Navigation changes attendance, not the sources of an already dispatched backstage turn.
         const sceneAttendance=r.scene?.attendance?structuredClone(r.scene.attendance):undefined,playAttendance=p.attendance?structuredClone(p.attendance):undefined;
-        compileSource=()=>compileNativeConversation(world,{...r,scene:r.scene?{...r.scene,attendance:sceneAttendance}:null,play:{...p,attendance:playAttendance}},'intermission',latest.text,snapshot);
+        compileSource=()=>compileNativeConversation(world,{...r,scene:r.scene?{...r.scene,attendance:sceneAttendance}:null,play:{...p,attendance:playAttendance,intermissionMessages:contextMessages()}},'intermission',sources.map(m=>m.text).join('\n'),snapshot);
         return compileSource();
-      },valid);
+      },valid,{signal:operation.signal});
       if(!valid())throw Error('幕间任务或连接已变化');
-      const attempt:NonNullable<PlayData['intermissionAttempts']>[string]={id:uid(),revision,status:'unknown'};
-      p.intermissionAttempts={...oldAttempts,[latest.id]:attempt};
-      if(!save()){p.intermissionAttempts=oldAttempts;throw Error('幕间领取未确认');}
+      const attempt={id:uid(),triggerId:latest.id,revision:latest.revisionCount||0,status:'unknown' as const,sources:sources.map(m=>({id:m.id,revision:m.revisionCount||0}))};
+      p.intermissionAttempts={...oldAttempts,[attempt.id]:attempt};
+      if(queued)p.intermissionQueue=undefined;
+      if(!save()){p.intermissionAttempts=oldAttempts;if(queued)p.intermissionQueue={...queue!,blocked:true};throw Error('幕间领取未确认');}
       claimed=p.intermissionAttempts;
       const body=await readModelBeforeDeadline(async signal=>{
         const response=requestSceneCompletion(prompt,'intermission',{},signal,{roleId:r.id,onDispatch:()=>{sent=true;}});
         return readChatResponseBody(await response);
       },operation.signal);
       const reply=parseChatResponse(body);
-      if(!current()||intermissionAttempt(p,latest.id)!==attempt)return;
+      if(!current()||p.intermissionAttempts?.[attempt.id]!==attempt)return;
       if(!compileSource||JSON.stringify(requestMessages(compileSource()))!==JSON.stringify(prompt))return;
       if(!saveSession.current()){
         intermissionRecovery.set(p,{sourceId:latest.id,text:reply});
@@ -4385,19 +4387,20 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         return;
       }
       const count=p.intermissionMessages!.length;
-      p.intermissionAttempts[latest.id]={...attempt,status:'archived'};
-      for(const text of splitChatBubbles(reply,r))p.intermissionMessages!.push({id:uid(),speaker:'char',text,at:now(),status:'active',replyTo:latest.id});
-      if(!saveLogged('intermission','用户通过爪印触发戏外 AI 回复',{source:p.id,roleId:r.id})){
+      p.intermissionAttempts[attempt.id]={...attempt,status:'archived'};
+      for(const text of splitChatBubbles(reply,r))p.intermissionMessages!.push({id:uid(),speaker:'char',text,at:now(),status:'active',replyTo:latest.id,replySourceIds:ids,replyTurnId:attempt.id});
+      if(!saveLogged('intermission','已保存戏外幕间回复',{source:p.id,roleId:r.id})){
         p.intermissionMessages!.length=count;
-        p.intermissionAttempts[latest.id]=attempt;
+        p.intermissionAttempts[attempt.id]=attempt;
         intermissionRecovery.set(p,{sourceId:latest.id,text:reply});
         if(visible())notify('幕间正文已返回，保存未确认。可以复制这次回复。');
       }else if(intermissionRecovery.get(p)?.sourceId===latest.id)intermissionRecovery.delete(p);
     }catch(error){
-      if(!sent&&claimed&&current()&&p.intermissionAttempts===claimed&&saveSession.current()){
+      if(!sent&&claimed&&owns()&&p.intermissionAttempts===claimed&&saveSession.current()){
         p.intermissionAttempts=oldAttempts;
-        if(!save())p.intermissionAttempts=claimed;
-      }
+        if(queued)p.intermissionQueue={...queue!,blocked:true};
+        if(!save()){p.intermissionAttempts=claimed;if(queued)p.intermissionQueue=undefined;}
+      }else if(!sent&&!claimed&&visible()&&!document.hidden&&current()&&saveSession.current())block();
       if(visible()&&epoch===modelPageEpoch){
         const reason=error instanceof Error&&error.name==='TimeoutError'?'幕间请求超时。':'幕间请求未完成。';
         notify(reason+(sent?'结果未确认，可能已计费。':'本次请求未发送。')+'你的发言已保留。');
@@ -4405,7 +4408,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     }finally{
       if(intermissionOperations.get(p)===operation){
         intermissionOperations.delete(p);
-        if(visible()){render(false);const area=$('#intermission-scroll');if(area)area.scrollTop=area.scrollHeight;}
+        if(visible())render(false);
       }
     }
   }
@@ -4512,7 +4515,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     return shell(
       `${header('戏剧档案', 'drama')}<div class="viewport"><div class="h2">${esc(
         p.title
-      )}</div><div class="card"><p>世界：${esc(p.world)}</p><p>我的人设：${esc(
+      )}</div>${curtainStatus(p)}<div class="card"><p>世界：${esc(p.world)}</p><p>我的人设：${esc(
         p.user
       )}</p><p>${esc(r.name)}的人设：${esc(p.char)}</p></div>${getActiveMessages(
         p.messages
@@ -4523,7 +4526,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
               m.speaker === 'me' ? '你' : m.speaker === 'char' ? esc(r.name) : '场景'
             }</time><div>${novelMessageHtml(m,r.id,p.id,'theatre')}</div></div>`
         )
-        .join('')}</div>`
+        .join('')}${stageMessagesAt(p.intermissionMessages,p.endedAt??now()).length?`<h3>幕间讨论</h3>${stageMessagesAt(p.intermissionMessages,p.endedAt??now()).map(m=>`<div class="entry"><time>${m.speaker==='me'?'你':m.speaker==='char'?esc(r.name):'演出修订'} · ${hm(m.at)}</time><div class="offstage-bubble">${esc(m.text)}</div></div>`).join('')}`:''}</div>`
     );
   }
 
@@ -4861,6 +4864,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       ).value;
     }
 
+    const backstageArea=$('#intermission-scroll');
+    const oldBackstage=backstageArea&&{stageId:backstageArea.dataset.stageId,top:backstageArea.scrollTop,following:backstageArea.scrollHeight-backstageArea.clientHeight-backstageArea.scrollTop<=36};
     const uiSnap = captureUIState(document);
 
     ensureFocusData();
@@ -4932,6 +4937,10 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     restoreUIState(uiSnap, !scroll, document, sameView);
     refreshNovelControls();
     if(view==='chat')chatHistory.finish(chatAnchor);
+    if(view==='intermission'){
+      const area=$('#intermission-scroll');
+      if(area)area.scrollTop=!scroll&&oldBackstage&&oldBackstage.stageId===area.dataset.stageId&&!oldBackstage.following?oldBackstage.top:area.scrollHeight;
+    }
     hydrateMedia();
     if (pendingScrollAnchorSelector) {
       const anchor = document.querySelector<HTMLElement>(pendingScrollAnchorSelector);
@@ -5862,7 +5871,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if(scope==='chat'){
       await regeneratePhoneReply(r,charMessageId);return;
     }
-    if(busy)return;
+    if(busy||scope==='intermission')return;
     if(data.settings.mode!=='api'){notify('请先连接 API；原回复已保留。');return;}
     const target=scope==='play'?r.play:r.scene;if(!target||!confirmNovelRetry(target))return;
     busy=true;render(false);
@@ -5921,69 +5930,97 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     go('novel','scene',false);
   }
 
+  function curtainStatus(p:PlayData|undefined):string {
+    if(!Array.isArray(p?.curtainReply?.attempts)||p.curtainReply.attempts.at(-1)?.status==='archived')return '';
+    if(curtainOperations.has(p))return '<p class="intermission-status" role="status">已归档演出 · 正在处理落幕回复</p>';
+    const attempt=p.curtainReply.attempts?.at(-1),recovered=curtainRecovery.has(p);
+    return `<div class="intermission-status" data-curtain-status>《${esc(p.title)}》已归档。${recovered?'正文已返回，保存未确认。':attempt?'落幕回复结果未确认，可能已计费。':'落幕回复尚未发送。'}
+ <button type="button" class="btn small secondary" data-action="retry-curtain" data-id="${esc(p.id)}">重新调用</button>${recovered?` <button type="button" class="btn small secondary" data-action="copy-curtain" data-id="${esc(p.id)}">查看可复制的回复</button>`:''}</div>`;
+  }
+
+  async function requestCurtainReply(r:RoleData,p:PlayData,manual:boolean):Promise<void> {
+    const world=data,endedAt=p.endedAt,epoch=modelPageEpoch,connection=apiConnectionVersion,receipt=p.curtainReply;
+    const attempts=receipt?.attempts;
+    if(endedAt===undefined||!Array.isArray(attempts)||attempts.at(-1)?.status==='archived'||(!manual&&attempts.length)||
+      !token.trim()||!canUseRealModel(world.settings)||modelPageHidden||activeChatRequests.has(r.id)||awaitingNainOpening(r)){
+      if(manual)notify('目前无法发送落幕回复。请检查 API 或等待手机正在处理的请求。演出档案已保留。');
+      return;
+    }
+    if(!checkWriteAccess())return;
+    if(attempts.length&&!window.confirm('上次落幕请求可能已经计费，重新调用可能再次产生费用。确定继续？'))return;
+    const operation=new AbortController();
+    activeChatRequests.set(r.id,operation);
+    curtainOperations.add(p);
+    const visible=()=>data===world&&role()===r&&(view==='chat'||view==='playdetail'&&detailId===p.id);
+    const current=()=>data===world&&epoch===modelPageEpoch&&world.roles.includes(r)&&r.plays.filter(play=>play.id===p.id).length===1&&
+      r.plays.includes(p)&&p.endedAt===endedAt&&p.curtainReply===receipt&&activeChatRequests.get(r.id)===operation&&!operation.signal.aborted;
+    if(visible())render(false);
+    const at=now(),attempt={id:uid(),at,status:'unknown' as const};
+    const source=()=>JSON.stringify([p.title,p.world,p.user,p.char,stageMessagesAt(p.messages,endedAt),stageMessagesAt(p.intermissionMessages,endedAt)]);
+    const basis=source();
+    const valid=()=>current()&&source()===basis&&apiConnectionVersion===connection&&saveSession.current();
+    let sent=false,claimed=false;
+    try{
+      let compileSource:(()=>ConversationCompilation)|undefined;
+      const prompt=await compileRequest(r,'chat',options=>{
+        const snapshot={...options,nowTs:at,preferredPlayId:p.id,openingTask:`刚结束的演出：Play=${p.id}《${p.title}》。现在由你本人在手机上发出自然的戏外消息，内容由你和对方的关系、已演的内容与幕间讨论决定。你参与过表演，剧中的事属于虚构。只发聊天正文，不写舞台旁白或转场仪式。`};
+        compileSource=()=>compileNativeConversation(world,r,'chat',p.title,snapshot);
+        return compileSource();
+      },valid,{signal:operation.signal});
+      if(!valid())return;
+      attempts.push(attempt);
+      if(!save()){attempts.pop();return;}
+      claimed=true;
+      const reply=await readModelBeforeDeadline(signal=>requestPhoneReply(r,prompt,signal,'chat',()=>{sent=true;}),operation.signal);
+      if(!current()||source()!==basis||attempts.at(-1)!==attempt||!compileSource||JSON.stringify(requestMessages(compileSource()))!==JSON.stringify(prompt))return;
+      if(!saveSession.current()){curtainRecovery.set(p,reply);return;}
+      const chats=r.chats.length,events=r.events.length;
+      for(const text of splitChatBubbles(reply,r)){
+        const id=uid(),replyAt=now();
+        r.chats.push({id,speaker:'char',text,at:replyAt,kind:'chat',status:'active',replyTurnId:attempt.id,playSource:{playId:p.id,endedAt,attemptId:attempt.id}});
+        eMemory(r,text,'char','chat',replyAt,id);
+      }
+      attempts[attempts.length-1]={...attempt,status:'archived'};
+      if(!save()){
+        r.chats.length=chats;r.events.length=events;attempts[attempts.length-1]=attempt;
+        curtainRecovery.set(p,reply);
+      }else curtainRecovery.delete(p);
+    }catch{
+      if(!sent&&claimed&&current()&&saveSession.current()&&attempts.at(-1)===attempt){
+        attempts.pop();if(!save())attempts.push(attempt);
+      }
+      if(visible())notify(sent?'演出已归档。落幕回复结果未确认，可能已计费。':'演出已归档。落幕回复未发送。');
+    }finally{
+      if(activeChatRequests.get(r.id)===operation){activeChatRequests.delete(r.id);chatTyping.delete(r.id);}
+      curtainOperations.delete(p);
+      if(visible())render(false);
+    }
+  }
+
   function endNovel(kind:NovelKind=novelViewKind,returnToChat=true): void {
     const r = role();
     if(r&&novelTasks.cancel(r.id))busy=false;
     if (!r) return;
     if (kind==='play'&&r.play) {
-      const p = r.play;
-      const {endedAt}=p,plays=r.plays.length,events=r.events.length,chats=r.chats.length;
-      p.endedAt = now();
+      const p = r.play,previous={endedAt:p.endedAt,curtainReply:p.curtainReply,intermissionQueue:p.intermissionQueue};
+      const plays=r.plays.length,events=r.events.length;
+      p.endedAt=now();
+      p.curtainReply={attempts:[]};
+      p.intermissionQueue=undefined;
       r.plays.push(p);
-      const activePlayMsgs = getActiveMessages(p.messages);
-      entry(
-        r,
-        'drama',
-        `一起演过《${p.title}》`,
-        `戏剧设定：${p.world}；双方的戏内设定：你是${p.user}，${
-          r.name
-        }是${p.char}。剧中主要对白：${activePlayMsgs
-          .filter((m) => m.speaker !== 'note')
-          .slice(-8)
-          .map(
-            (m) =>
-              (m.speaker === 'me' ? '用户' : '角色') +
-              '：' +
-              m.text.slice(0, 140)
-          )
-          .join(' / ')}。幕间讨论：${(p.intermissionMessages || [])
-          .filter((m) => m.speaker !== 'note')
-          .slice(-8)
-          .map(
-            (m) =>
-              (m.speaker === 'me' ? '用户' : '戏外角色') +
-              '：' +
-              m.text.slice(0, 130)
-          )
-          .join(' / ')}。注意：戏剧内容不等于日常发生的事实。`,
-        now(),
-        { source: p.id }
-      );
-      const afterMsgId = uid();
-      if(!(awaitingNainOpening(r)))r.chats.push({
-        id: afterMsgId,
-        speaker: 'char',
-        text: `刚演完《${p.title}》，我还在想你为什么给我安排“${p.char.slice(
-          0,
-          26
-        )}”这种设定。挺有意思的。`,
-        at: now(),
-        kind: 'chat',
-        status: 'active',
-      });
-      r.play = null;
+      entry(r,'drama',`一起演过《${p.title}》`,`参与过《${p.title}》的演出。表演内容属于虚构；本次演出及幕间发言保留于档案。`,p.endedAt,{source:p.id,knownBy:['user',r.id]});
+      r.play=null;
       if(!save()){
-        p.endedAt=endedAt;
-        r.play=p;
-        r.plays.length=plays;
-        r.events.length=events;
-        r.chats.length=chats;
+        Object.assign(p,previous);r.play=p;r.plays.length=plays;r.events.length=events;
         return;
       }
       const performance=draftScope(r,'play',p),backstage=draftScope(r,'intermission',p);
       intermissionOperations.get(p)?.abort();
       intermissionRecovery.delete(p);
       clearDrafts(scope=>scope===performance||scope===backstage);
+      go('chat',undefined,false);
+      void requestCurtainReply(r,p,false);
+      return;
     } else if (kind==='scene'&&r.scene) {
       try{archiveScene(r);}catch(error){notify(error instanceof Error?error.message:'见面未能归档，现场已保留');return;}
       if(returnToChat)go('chat');
@@ -6103,7 +6140,15 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       const p=r&&(novelViewKind==='play'?r.play:r.scene);
       if(r&&p&&b.dataset.roleId===r.id&&b.dataset.stageId===p.id&&b.dataset.attemptId===novelAttemptId(p))openNovelFailure(r,p);return;
     }
-    if(act==='intermissionreply'){void requestIntermissionReply(b.closest('form'));return;}
+    if(act==='retry-curtain'||act==='copy-curtain'){
+      const p=r?.plays.find(p=>p.id===b.dataset.id);
+      if(r&&p&&b.isConnected&&(view==='chat'||view==='playdetail'&&detailId===p.id)){
+        if(act==='retry-curtain')void requestCurtainReply(r,p,true);
+        else {const text=curtainRecovery.get(p);if(text)offerUnstoredReply(text);}
+      }
+      return;
+    }
+    if(act==='retry-intermission'){void requestIntermissionReply(true);return;}
     if(act==='copy-intermission-reply'){
       const p=r?.play,text=p&&intermissionRecovery.get(p)?.text;
       if(view==='intermission'&&p?.paused&&text)offerUnstoredReply(text);
@@ -6428,12 +6473,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if (act === 'quotemsg') {
       if (!r || !b.dataset.id) return;
       const scope = (b.dataset.scope as RevisionScope) || 'chat';
-      const list =
-        scope === 'chat'
-          ? r.chats
-          : scope === 'play'
-          ? r.play?.messages || []
-          : r.scene?.messages || [];
+      if(scope==='intermission'&&(view!=='intermission'||!r.play?.paused))return;
+      const list=getScopeMessages(r,scope);
       const msg = list.find(
         (m) => m.id === b.dataset.id && m.status !== 'retracted'
       );
@@ -6441,7 +6482,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       quotingMessage = buildQuoteMetadata(msg);
       render(false);
       const inputEl = $(
-        scope === 'chat' ? '#message-input' : '#novel-input'
+        scope === 'chat' ? '#message-input' : scope==='intermission'?'#intermission-input':'#novel-input'
       ) as HTMLTextAreaElement | null;
       inputEl?.focus();
       return;
@@ -6454,12 +6495,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if (act === 'starteditmsg') {
       if (!r || !b.dataset.id) return;
       const scope = (b.dataset.scope as RevisionScope) || 'chat';
-      const list =
-        scope === 'chat'
-          ? r.chats
-          : scope === 'play'
-          ? r.play?.messages || []
-          : r.scene?.messages || [];
+      if(scope==='intermission'&&(view!=='intermission'||!r.play?.paused))return;
+      const list=getScopeMessages(r,scope);
       const msg = list.find(
         (m) => m.id === b.dataset.id && m.status !== 'retracted'
       );
@@ -6480,12 +6517,14 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if (!r || !b.dataset.id) return;
       const scope = (b.dataset.scope as RevisionScope) || 'chat';
       const previous=structuredClone(r);
+      if(scope==='intermission'&&(view!=='intermission'||!r.play?.paused))return;
       const res = retractMessage(r, scope, b.dataset.id, now());
       if (!res.ok) {
         notify(res.reason || '撤回失败');
         return;
       }
       if(scope==='chat')revisePhoneSchedule(r,false,b.dataset.id);
+      if(scope==='intermission')reviseBackstageQueue(r.play!,b.dataset.id);
       if(!saveLogged('revision',`撤回 ${scope} 消息`,{targetMessageId:b.dataset.id,revisionId:res.revision?.id})){
         restoreFields(r,previous);
         return;
@@ -6512,6 +6551,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       const previous=r.play.paused;
       r.play.paused = true;
       if(!saveLogged('intermission','用户主动暂停演出',{source:r.play.id})){r.play.paused=previous;return;}
+      if(novelTasks.cancel(r.id,'play'))busy=false;
       go('intermission',undefined,false);
       return;
     }
@@ -6908,12 +6948,14 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if (!r || !msgId) return;
       const previous=structuredClone(r);
       const newText = String(fd.get('editText') || '').trim();
+      if(scope==='intermission'&&(view!=='intermission'||!r.play?.paused))return;
       const res = editMessage(r, scope, msgId, newText, now());
       if (!res.ok) {
         notify(res.reason || '修改失败');
         return;
       }
       if(scope==='chat'){syncRoleMemory(r,now());revisePhoneSchedule(r,false,msgId);}
+      if(scope==='intermission')reviseBackstageQueue(r.play!,msgId);
       if(!saveLogged('revision', `编辑 ${scope} 消息`, {
         targetMessageId: msgId,
         revisionId: res.revision?.id,

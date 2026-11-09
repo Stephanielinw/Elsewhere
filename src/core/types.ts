@@ -31,6 +31,7 @@ export interface ChatMessage {
   sourceMessageId?: string;
   replyTo?: string;
   replyTurnId?: string;
+  playSource?: {playId:string;endedAt:number;attemptId:string};
   replySourceIds?: string[];
   proactive?: boolean;
   novelOutput?: {document?:NovelDocument;presetId:string;mode:'meeting'|'theatre';scene?:string;summary?:string;characters?:string;choices?:string;generatedAuxiliary?:string;memoryEligible:false};
@@ -45,7 +46,7 @@ export interface ChatMessage {
 
 export type RevisionActionType = 'edit' | 'retract' | 'regenerate';
 
-export type RevisionScope = 'chat' | 'scene' | 'play';
+export type RevisionScope = 'chat' | 'scene' | 'play' | 'intermission';
 
 export interface MessageRevisionRecord {
   id: string;
@@ -208,7 +209,9 @@ export interface PlayData {
   paused?: boolean;
   messages: ChatMessage[];
   intermissionMessages?: ChatMessage[];
-  intermissionAttempts?: Record<string,{id:string;revision:number;status:'unknown'|'archived'}>;
+  intermissionQueue?: {ids:string[];dueAt:number;blocked?:boolean};
+  intermissionAttempts?: Record<string,{id:string;revision:number;status:'unknown'|'archived';triggerId?:string;sources?:{id:string;revision:number}[]}>;
+  curtainReply?: {attempts:{id:string;at:number;status:'unknown'|'archived'}[]};
   novelAttempt?:NovelAttempt;
   revisions?: PlayRevision[];
 }

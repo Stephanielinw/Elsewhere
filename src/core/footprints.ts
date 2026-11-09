@@ -65,7 +65,7 @@ export function detectRoleWorldProfile(role: RoleData): RoleWorldProfile {
   if (
     /古希腊|雅典|斯巴达|奥林匹斯|神庙|城邦|古罗马|中世纪|骑士|魔法学院|精灵|剑与魔法/i.test(
       haystack
-    )
+    )||/伊萨卡|Ithaca|Telemachus/i.test(haystack)&&!/现代|当代|赛博|modern|contemporary|cyber/i.test(haystack)
   ) {
     return 'ancient_west';
   }
@@ -312,6 +312,28 @@ export function renderSafeFootprintArtifact(artifact: FootprintArtifact): string
     ${totalHtml}
     ${footerHtml}
   </div>`;
+}
+
+/** A paper object needs a confirmed event; old enrichment text is never evidence by itself. */
+export function artifactForLifeEvent(role:RoleData,event:EventRecord,at:number):FootprintArtifact|null {
+ if(!collectRoleLife(role,at).events.some(e=>e.id===event.id))return null;
+ let raw:FootprintArtifact|undefined;
+ if(event.lifeRecord?.version===2){
+  const step=role.lifePlans?.find(p=>p.id===event.lifeRecord!.planId)?.intents.find(s=>s.id===event.lifeRecord!.stepId);
+  if(!step?.artifact)return null;
+  raw={kind:step.artifact,paperStyle:step.artifact==='list'?'craft':'parchment',header:event.title,bodyText:event.detail,groundedInEventIds:[event.id],...(step.artifact==='list'?{items:[{name:step.focus||event.title,checked:true}]}:{})};
+ }else{
+  const legacy=Object.values(role.footprintsByDate||{}).flatMap(a=>Array.isArray(a?.items)?a.items:[]).filter(i=>i.sourceEventIds?.length===1&&i.sourceEventIds[0]===event.id&&i.artifact?.groundedInEventIds?.length===1&&i.artifact.groundedInEventIds[0]===event.id);
+  if(legacy.length!==1)return null;raw=legacy[0].artifact||undefined;
+  if(!raw)return null;
+  const evidence=event.title+'\n'+event.detail;
+  const fields=[raw.header,raw.subheader,raw.serialNo,raw.bodyText,raw.footerNote,raw.totalAmount,raw.currency,...(Array.isArray(raw.items)?raw.items:[]).flatMap(i=>[i?.name,i?.qty,i?.price,i?.note])].filter((v):v is string=>typeof v==='string'&&!!v);
+  if(!fields.every(text=>evidence.includes(text)))return null;
+  if(raw.kind==='receipt'&&!/小票|收据|收条|receipt/i.test(evidence)||raw.kind==='ticket'&&!/票根|门票|车票|ticket/i.test(evidence))return null;
+ }
+ const safe=validateAndSanitizeArtifact(raw,role);
+ if(!safe||raw.currency&&safe.currency!==raw.currency)return null;
+ return safe;
 }
 
 export function normalizeInnerMonologue(role:RoleData,value:unknown,fallback:string):string {

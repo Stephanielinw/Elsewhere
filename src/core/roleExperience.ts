@@ -25,7 +25,8 @@ export function roleEpisodes(r:RoleData,at:number):RoleEpisode[]{
 }
 export function syncRoleExperiences(r:RoleData,at:number):void{
  if(r.memory&&(r.memory.version!==1||!Array.isArray(r.memory.records)))return;
- const episodes=roleEpisodes(r,at),previous=r.memory?.experiences?.episodes||[];
+ const episodes=roleEpisodes(r,at),stored=r.memory?.experiences?.episodes;
+ const previous=Array.isArray(stored)?stored:[];
  // Invalidated sources remain in the ledger as history; readers always revalidate current sources.
  const merged=new Map(previous.filter(e=>e&&typeof e.id==='string'&&e.roleId===r.id).map(e=>[e.id,e]));for(const e of episodes)merged.set(e.id,e);
  const experiences:RoleExperienceLedger={version:1,episodes:[...merged.values()]};
@@ -44,12 +45,13 @@ export function episodeExcerpt(text:string,query:string,budget:number):string{
 }
 export function experienceContext(r:RoleData,query:string,at:number,rejected:ReadonlySet<string>,options:{excludeStage?:string;includePerformance?:boolean;since?:number}={}){
  const all=messageSourceIndex(r,at),episodes=roleEpisodes(r,at),messageIds=new Set((r.meetings||[]).flatMap(s=>s.messages.map(m=>m.id))),facts:{id:string;text:string;at:number;sourceIds:string[]}[]=[];
+ const diaryPhoneIds = options.since === undefined ? undefined : new Set(phoneMessagesAt(r, at).filter(m => m.at >= options.since!).map(m => m.id));
  const withheld=new Set(r.events.filter(e=>e.messageId&&e.status!=='retracted'&&e.status!=='superseded'&&(e.sourceRevision===undefined||e.sourceRevision===(all.get(e.messageId)?.revisionCount||0))&&e.knownBy?.length&&!e.knownBy.includes(r.id)).map(e=>e.messageId));
  const candidates=episodes.filter(e=>e.kind!=='phone'&&e.kind!=='life'&&e.containerId!==options.excludeStage&&(options.since===undefined||(e.until??e.at)>=options.since)&&(e.domain!=='performance'||options.includePerformance));
  const messages=(e:RoleEpisode)=>{
   const p=(e.kind==='meeting'?[...(r.meetings||[]),...(r.scene?[r.scene]:[])]:[...(r.plays||[]),...(r.play?[r.play]:[])]).find(s=>s.id===e.containerId);
   const effective=e.kind==='meeting'?sceneMessagesAt(r,p?.messages,at):stageMessagesAt(e.kind==='backstage'?(p as PlayData)?.intermissionMessages:p?.messages,at);
-  return effective.filter(m=>e.sources.some(s=>s.id===m.id&&s.at===m.at&&s.revision===(m.revisionCount||0))&&m.speaker!=='note'&&(e.domain!=='real'||all.has(m.id))&&!withheld.has(m.id)&&!rejected.has(m.id)&&!rejected.has(m.sourceMessageId||'')&&(m.speaker==='char'||e.kind==='backstage'||e.domain==='performance'||publicUserText(m)));
+  return effective.filter(m=>(options.since===undefined||m.at>=options.since)&&!diaryPhoneIds?.has(m.sourceMessageId||'')&&e.sources.some(s=>s.id===m.id&&s.at===m.at&&s.revision===(m.revisionCount||0))&&m.speaker!=='note'&&(e.domain!=='real'||all.has(m.id))&&!withheld.has(m.id)&&!rejected.has(m.id)&&!rejected.has(m.sourceMessageId||'')&&(m.speaker==='char'||e.kind==='backstage'||e.domain==='performance'||publicUserText(m)));
  };
  const ranked=candidates.map(e=>({e,messages:messages(e)})).filter(x=>x.messages.length).map(x=>({...x,score:Math.max(0,...x.messages.map(m=>memoryRelevance(m.text,query)))})).filter(x=>(x.e.domain!=='performance'||!query||x.score>0)&&(x.score>0||at-(x.e.until??x.e.at)<=86400000)).sort((a,b)=>b.e.at-a.e.at);
  // The latest shared episode is a continuity anchor, independently of word overlap.

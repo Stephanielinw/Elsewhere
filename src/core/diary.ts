@@ -527,7 +527,7 @@ ${playTranscript||'无'}
 ${sharedTasksText?`公开待办背景：${sharedTasksText.slice(0,500)}`:''}
 
 直接写下 ${facts.dateKey} 的私人日记。`;
-  const prepared=preparePersonalReply(role,[{role:'system',content:systemPrompt+'\n\n'+roleMemoryText(role,Math.min(Date.now(),facts.endMs),'',{since:facts.startMs})},{role:'user',content:userPrompt}],facts.endMs,makeUid('private-diary'),'本次只输出私人日记正文；可选元数据同次提供，不生成公开手机消息。',facts.chatMessages.slice(-12),'diary',true);
+  const prepared=preparePersonalReply(role,[{role:'system',content:systemPrompt+'\n\n'+roleMemoryText(role,Math.min(Date.now(),facts.endMs),'',{since:facts.startMs,includePrivate:false})},{role:'user',content:userPrompt}],facts.endMs,makeUid('private-diary'),'本次只输出私人日记正文；可选元数据同次提供，不生成公开手机消息。',facts.chatMessages.slice(-12),'diary',true);
   return {messages:prepared.messages,facts,personal:prepared.ticket};
 }
 

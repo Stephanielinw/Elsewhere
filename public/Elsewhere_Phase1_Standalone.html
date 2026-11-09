@@ -2288,6 +2288,24 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
 .monitor-life .fp-nav-btn{flex-shrink:0}
 @media(max-width:420px){.monitor-life .fp-date-bar{gap:6px}.monitor-life .fp-nav-btn{padding:8px;font-size:12px}.monitor-life .fp-date-display strong{font-size:14px}}
 
+/* Daily life stays a single timeline; paper objects open without replacing history. */
+.monitor-life .life-timeline-item{display:grid;grid-template-columns:48px minmax(0,1fr);gap:12px;padding:14px 0;border:0;border-radius:0;background:transparent;box-shadow:none}
+.life-timeline-item>.fp-time-badge{align-self:start}
+.life-timeline-content{min-width:0;border-left:1px solid var(--line);padding:0 0 8px 15px}
+.life-record-open{display:block;width:100%;border:0;padding:0;background:transparent;color:var(--ink);text-align:left;cursor:pointer}
+.monitor-life .life-record-open h3{font-size:15px;margin:0 0 6px}
+.monitor-life .life-record-open .life-narrative{font-size:13px;margin:0 0 6px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.life-record-open:focus-visible,.fp-artifact-trigger:focus-visible{outline:2px solid var(--accent);outline-offset:4px;border-radius:8px}
+.fp-artifact-trigger{display:block;max-width:100%;width:260px;border:0;padding:0;margin-top:12px;background:transparent;cursor:pointer;text-align:left;color:var(--ink)}
+.fp-artifact-trigger .fp-artifact-card{max-height:160px;overflow:hidden;pointer-events:none;transform:rotate(-1deg);margin:0 0 7px}
+.fp-artifact-trigger>small{display:block;color:var(--muted);font-size:11px;text-align:center}
+.monitor-detail{max-width:min(600px,calc(100vw - 24px));max-height:85dvh;padding:0}
+.monitor-detail .fruit-dialog-body{padding:20px;overflow:auto;max-height:85dvh}
+.monitor-detail .meeting-record{padding:0;height:auto;overflow:visible}
+.life-detail-text{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.85}
+.monitor-life .life-private,.monitor-life .life-settings{border-top:1px solid var(--line);padding:14px 0;margin-top:10px;font-size:13px}
+.monitor-life .life-current-status{font-size:13px;line-height:1.6}
+
 </style>
 <script id="theme-boot">
       // Restore only the theme before first paint; application data stays untouched.
@@ -2870,7 +2888,8 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
   }
   function syncRoleExperiences(r, at) {
     if (r.memory && (r.memory.version !== 1 || !Array.isArray(r.memory.records))) return;
-    const episodes = roleEpisodes(r, at), previous = r.memory?.experiences?.episodes || [];
+    const episodes = roleEpisodes(r, at), stored = r.memory?.experiences?.episodes;
+    const previous = Array.isArray(stored) ? stored : [];
     const merged = new Map(previous.filter((e) => e && typeof e.id === "string" && e.roleId === r.id).map((e) => [e.id, e]));
     for (const e of episodes) merged.set(e.id, e);
     const experiences = { version: 1, episodes: [...merged.values()] };
@@ -2899,12 +2918,13 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
   }
   function experienceContext(r, query, at, rejected, options = {}) {
     const all = messageSourceIndex(r, at), episodes = roleEpisodes(r, at), messageIds = new Set((r.meetings || []).flatMap((s) => s.messages.map((m) => m.id))), facts = [];
+    const diaryPhoneIds = options.since === void 0 ? void 0 : new Set(phoneMessagesAt(r, at).filter((m) => m.at >= options.since).map((m) => m.id));
     const withheld = new Set(r.events.filter((e) => e.messageId && e.status !== "retracted" && e.status !== "superseded" && (e.sourceRevision === void 0 || e.sourceRevision === (all.get(e.messageId)?.revisionCount || 0)) && e.knownBy?.length && !e.knownBy.includes(r.id)).map((e) => e.messageId));
     const candidates = episodes.filter((e) => e.kind !== "phone" && e.kind !== "life" && e.containerId !== options.excludeStage && (options.since === void 0 || (e.until ?? e.at) >= options.since) && (e.domain !== "performance" || options.includePerformance));
     const messages = (e) => {
       const p = (e.kind === "meeting" ? [...r.meetings || [], ...r.scene ? [r.scene] : []] : [...r.plays || [], ...r.play ? [r.play] : []]).find((s) => s.id === e.containerId);
       const effective = e.kind === "meeting" ? sceneMessagesAt(r, p?.messages, at) : stageMessagesAt(e.kind === "backstage" ? p?.intermissionMessages : p?.messages, at);
-      return effective.filter((m) => e.sources.some((s) => s.id === m.id && s.at === m.at && s.revision === (m.revisionCount || 0)) && m.speaker !== "note" && (e.domain !== "real" || all.has(m.id)) && !withheld.has(m.id) && !rejected.has(m.id) && !rejected.has(m.sourceMessageId || "") && (m.speaker === "char" || e.kind === "backstage" || e.domain === "performance" || publicUserText(m)));
+      return effective.filter((m) => (options.since === void 0 || m.at >= options.since) && !diaryPhoneIds?.has(m.sourceMessageId || "") && e.sources.some((s) => s.id === m.id && s.at === m.at && s.revision === (m.revisionCount || 0)) && m.speaker !== "note" && (e.domain !== "real" || all.has(m.id)) && !withheld.has(m.id) && !rejected.has(m.id) && !rejected.has(m.sourceMessageId || "") && (m.speaker === "char" || e.kind === "backstage" || e.domain === "performance" || publicUserText(m)));
     };
     const ranked = candidates.map((e) => ({ e, messages: messages(e) })).filter((x) => x.messages.length).map((x) => ({ ...x, score: Math.max(0, ...x.messages.map((m) => memoryRelevance(m.text, query))) })).filter((x) => (x.e.domain !== "performance" || !query || x.score > 0) && (x.score > 0 || at - (x.e.until ?? x.e.at) <= 864e5)).sort((a, b) => b.e.at - a.e.at);
     const selected = [...ranked.slice(0, 1), ...ranked.slice(1).sort((a, b) => b.score - a.score || b.e.at - a.e.at)].slice(0, 2);
@@ -4664,10 +4684,20 @@ ${msg.text}`;
   }
 
   // src/core/roleMemoryView.ts
+  function roleCurrentState(r, at, life = collectRoleLife(r, at)) {
+    const observed = observedRoleState(r, at), plans = (Array.isArray(r.lifePlans) ? r.lifePlans : []).filter((p) => lifePlanShape(r, p) && p.acceptedAt <= at && p.expiresAt > at && lifeSourcesValid(r, p.sources, at)), running = plans.flatMap((p) => p.intents).find((s) => s.status === "running" && s.startedAt <= at && s.until > at);
+    if (observed.kind !== "unknown") return observed;
+    if (running) return { kind: "life", label: lifeActivity(running.action, r.name, running.focus, running.person, running.where)[0], where: running.where || "\u5730\u70B9\u672A\u8BB0\u5F55", sourceId: running.id, at: running.startedAt };
+    const scenes = [...r.meetings || [], ...r.scene ? [r.scene] : []], plays = [...r.plays || [], ...r.play ? [r.play] : []];
+    const lastAttendanceEnd = (stage2) => Array.isArray(stage2.attendance) ? stage2.attendance.at(-1)?.to : void 0;
+    const records = [...life.events.map((e) => ({ at: e.lifeRecord?.until ?? e.at, label: e.title, where: life.historicalProfileEventIds.has(e.id) ? "" : e.where || "", sourceId: e.id })), ...scenes.filter((s) => scenes.filter((x) => x.id === s.id).length === 1 && s.startedAt <= at && sceneMessagesAt(r, s.messages, at).some((m) => m.speaker !== "note" && m.kind !== "play") && (s.endedAt !== void 0 || lastAttendanceEnd(s) !== void 0)).map((s) => ({ at: s.endedAt ?? lastAttendanceEnd(s), label: s.endedAt ? "\u4E0E\u4F60\u89C1\u9762" : "\u89C1\u9762\u6682\u6B47", where: s.locationEvidence || s.agreement ? scenePlaceAt(r, s, at) : s.where, sourceId: s.id })), ...plays.filter((p) => p.startedAt <= at && stageMessagesAt([...p.messages, ...p.intermissionMessages || []], at).length && (p.endedAt !== void 0 || lastAttendanceEnd(p) !== void 0)).map((p) => ({ at: p.endedAt ?? lastAttendanceEnd(p), label: "\u6392\u6F14\u300A" + p.title + "\u300B", where: "", sourceId: p.id }))].filter((e) => e.at <= at && at - e.at <= 864e5).sort((a, b) => b.at - a.at);
+    const latest = records[0];
+    return latest ? { kind: "recent", label: "\u6700\u8FD1\uFF1A" + latest.label, where: latest.where ? latest.where + "\uFF08\u5F53\u65F6\uFF09" : "\u5730\u70B9\u5C1A\u672A\u786E\u8BA4", sourceId: latest.sourceId, at: latest.at } : observed;
+  }
   function readRoleMemory(r, at, query = "", options = {}) {
-    const declarations = compactRoleMemory(r, at), life = collectRoleLife(r, at), episodes = experienceContext(r, query, at, declarations.supersededSources, { ...options, includePerformance: true }), observed = observedRoleState(r, at);
-    const plans = (Array.isArray(r.lifePlans) ? r.lifePlans : []).filter((p) => lifePlanShape(r, p) && p.acceptedAt <= at && p.expiresAt > at && lifeSourcesValid(r, p.sources, at)), running = plans.flatMap((p) => p.intents).find((s) => s.status === "running" && s.startedAt <= at && s.until > at);
-    const state2 = observed.kind === "unknown" && running ? { kind: "life", label: lifeActivity(running.action, r.name, running.focus, running.person, running.where)[0], where: running.where || "\u5730\u70B9\u672A\u8BB0\u5F55", sourceId: running.id, at: running.startedAt } : observed;
+    const declarations = compactRoleMemory(r, at), life = collectRoleLife(r, at), episodes = experienceContext(r, query, at, declarations.supersededSources, { ...options, includePerformance: true }), state2 = roleCurrentState(r, at, life);
+    const plans = (Array.isArray(r.lifePlans) ? r.lifePlans : []).filter((p) => lifePlanShape(r, p) && p.acceptedAt <= at && p.expiresAt > at && lifeSourcesValid(r, p.sources, at));
+    const agreement = meetingPlan(r, at);
     return {
       roleId: r.id,
       identity: { name: r.name, job: r.job, profile: r.profile, traits: r.traits },
@@ -4676,7 +4706,7 @@ ${msg.text}`;
       episodes,
       state: state2,
       life,
-      pending: [...meetingPlan(r, at) && ["proposed", "confirmed"].includes(meetingPlan(r, at).status) ? [{ id: "meeting-plan", text: meetingPlan(r, at).timeText || "\u672A\u7ED3\u675F\u7684\u7EA6\u5B9A" }] : [], ...life.threads.filter((t) => t.kind === "plan").map((t) => ({ id: t.id, text: t.text })), ...plans.flatMap((p) => p.intents.filter((s) => s.status === "pending").slice(0, 2).map((s) => ({ id: s.id, text: "\u53EF\u80FD" + lifeActivity(s.action, r.name, s.focus, s.person, s.where)[0] + "\uFF08\u6761\u4EF6\u672A\u6EE1\u8DB3\uFF0C\u4E0D\u662F\u4E8B\u5B9E\uFF09" })))],
+      pending: [...agreement && ["proposed", "confirmed"].includes(agreement.status) ? [{ id: "meeting-plan", text: agreement.timeText || "\u672A\u7ED3\u675F\u7684\u7EA6\u5B9A" }] : [], ...life.threads.filter((t) => t.kind === "plan").map((t) => ({ id: t.id, text: t.text })), ...plans.flatMap((p) => p.intents.filter((s) => s.status === "pending").slice(0, 2).map((s) => ({ id: s.id, text: "\u53EF\u80FD" + lifeActivity(s.action, r.name, s.focus, s.person, s.where)[0] + "\uFF08\u6761\u4EF6\u672A\u6EE1\u8DB3\uFF0C\u4E0D\u662F\u4E8B\u5B9E\uFF09" })))],
       experienceIds: roleEpisodes(r, at).map((e) => e.id),
       privateText: personalContext(r, at, { query })
     };
@@ -4685,10 +4715,11 @@ ${msg.text}`;
     const view = readRoleMemory(r, at, query, options);
     return `[\u89D2\u8272\u7EA7\u56DB\u5C42\u8BB0\u5FC6 \xB7 ${r.id}]
 \u5F53\u524D\u8EAB\u4EFD\uFF1A${r.name}\uFF1B${r.job}\u3002\u5F53\u524D\u5173\u7CFB\uFF1A${view.relationship}\u3002
-\u5F53\u524D\u72B6\u6001\uFF1A${view.state.label}\uFF1B${view.state.where}\u3002
+\u5F53\u524D\u72B6\u6001\uFF1A${view.state.kind === "recent" ? "\u5F53\u524D\u6D3B\u52A8\u548C\u5730\u70B9\u672A\u786E\u8BA4\u3002" + view.state.label + "\uFF1B" + view.state.where : view.state.label + "\uFF1B" + view.state.where}\u3002
 \u672A\u5B8C\u4E8B\u9879\uFF08\u8BA1\u5212\u4E0D\u662F\u5DF2\u53D1\u751F\u4E8B\u5B9E\uFF09\uFF1A${view.pending.map((p) => p.text).join("\uFF1B") || "\u6CA1\u6709\u53EF\u9A8C\u8BC1\u7684\u660E\u786E\u8BA1\u5212"}\u3002
 \u73B0\u5B9E\u7ECF\u5386\u4E0E\u8868\u6F14\u7ECF\u5386\u4FDD\u6301\u5404\u81EA\u8BED\u5883\uFF1B\u7ED3\u675F\u89C1\u9762\u4E0D\u63A8\u65AD\u8C01\u79BB\u5F00\uFF0C\u89D2\u8272\u4E3B\u5F20\u4E0D\u662F\u5916\u90E8\u4E8B\u5B9E\u8BC1\u5B9E\u3002
-${options.includeEpisodes === false ? "" : view.episodes.facts.map((f) => f.text).join("\n")}`;
+${options.includeEpisodes === false ? "" : view.episodes.facts.map((f) => f.text).join("\n")}
+${options.includePrivate === false ? "" : view.privateText}`;
   }
 
   // src/core/diary.ts
@@ -5009,7 +5040,7 @@ ${playTranscript || "\u65E0"}
 ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText.slice(0, 500)}` : ""}
 
 \u76F4\u63A5\u5199\u4E0B ${facts.dateKey} \u7684\u79C1\u4EBA\u65E5\u8BB0\u3002`;
-    const prepared = preparePersonalReply(role, [{ role: "system", content: systemPrompt + "\n\n" + roleMemoryText(role, Math.min(Date.now(), facts.endMs), "", { since: facts.startMs }) }, { role: "user", content: userPrompt }], facts.endMs, makeUid("private-diary"), "\u672C\u6B21\u53EA\u8F93\u51FA\u79C1\u4EBA\u65E5\u8BB0\u6B63\u6587\uFF1B\u53EF\u9009\u5143\u6570\u636E\u540C\u6B21\u63D0\u4F9B\uFF0C\u4E0D\u751F\u6210\u516C\u5F00\u624B\u673A\u6D88\u606F\u3002", facts.chatMessages.slice(-12), "diary", true);
+    const prepared = preparePersonalReply(role, [{ role: "system", content: systemPrompt + "\n\n" + roleMemoryText(role, Math.min(Date.now(), facts.endMs), "", { since: facts.startMs, includePrivate: false }) }, { role: "user", content: userPrompt }], facts.endMs, makeUid("private-diary"), "\u672C\u6B21\u53EA\u8F93\u51FA\u79C1\u4EBA\u65E5\u8BB0\u6B63\u6587\uFF1B\u53EF\u9009\u5143\u6570\u636E\u540C\u6B21\u63D0\u4F9B\uFF0C\u4E0D\u751F\u6210\u516C\u5F00\u624B\u673A\u6D88\u606F\u3002", facts.chatMessages.slice(-12), "diary", true);
     return { messages: prepared.messages, facts, personal: prepared.ticket };
   }
   function listMissingDiaryDateKeys(role, nowTs = Date.now(), maxBackfillDays = 7) {
@@ -9992,6 +10023,33 @@ ${prevLogs}` : "",
       })[m] || m
     );
   }
+  function stripHtmlTags(raw) {
+    return String(raw ?? "").replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?>[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, "").trim();
+  }
+  function detectRoleWorldProfile(role) {
+    const haystack = [
+      role.name,
+      role.job,
+      role.place,
+      role.traits,
+      role.profile,
+      role.canonNotes
+    ].filter(Boolean).join(" ");
+    if (/古希腊|雅典|斯巴达|奥林匹斯|神庙|城邦|古罗马|中世纪|骑士|魔法学院|精灵|剑与魔法/i.test(
+      haystack
+    ) || /伊萨卡|Ithaca|Telemachus/i.test(haystack) && !/现代|当代|赛博|modern|contemporary|cyber/i.test(haystack)) {
+      return "ancient_west";
+    }
+    if (/美国|密歇根|纽约|伦敦|英国|警探|间谍|Nain|奈恩|John|约翰|Michigan|New York/i.test(
+      haystack
+    )) {
+      return "modern_us";
+    }
+    if (/古籍修复|苏州|茶室|宣纸|线装|碑帖|沈叙|江南|古琴|水墨|古典/i.test(haystack)) {
+      return "classical_cn";
+    }
+    return "modern_cn";
+  }
   function formatNaturalTimeLabel(ts, preferFuzzy = false) {
     const d = new Date(ts);
     const h = d.getHours();
@@ -10001,6 +10059,163 @@ ${prevLogs}` : "",
       return period;
     }
     return `${period} ${String(h).padStart(2, "0")}:${m}`;
+  }
+  var VALID_ARTIFACT_TYPES = [
+    "receipt",
+    "ticket",
+    "memo",
+    "list",
+    "letter",
+    "dossier"
+  ];
+  var VALID_PAPER_STYLES = [
+    "thermal",
+    "ticket",
+    "sticky",
+    "parchment",
+    "dossier",
+    "craft"
+  ];
+  function validateAndSanitizeArtifact(raw, role) {
+    if (!raw || typeof raw !== "object") return null;
+    const obj = raw;
+    const world = detectRoleWorldProfile(role);
+    const rawKind = stripHtmlTags(obj.kind).toLowerCase();
+    let kind = VALID_ARTIFACT_TYPES.includes(rawKind) ? rawKind : "memo";
+    const rawPaper = stripHtmlTags(obj.paperStyle).toLowerCase();
+    let paperStyle = VALID_PAPER_STYLES.includes(rawPaper) ? rawPaper : kind === "receipt" ? "thermal" : kind === "ticket" ? "ticket" : kind === "dossier" ? "dossier" : kind === "list" ? "craft" : world === "classical_cn" || world === "ancient_west" ? "parchment" : "sticky";
+    const header = stripHtmlTags(obj.header).slice(0, 80);
+    if (!header) return null;
+    const subheader = stripHtmlTags(obj.subheader).slice(0, 100) || void 0;
+    const serialNo = stripHtmlTags(obj.serialNo).slice(0, 40) || void 0;
+    const timeLabel = stripHtmlTags(obj.timeLabel).slice(0, 40) || void 0;
+    const bodyText = stripHtmlTags(obj.bodyText).slice(0, 400) || void 0;
+    const footerNote = stripHtmlTags(obj.footerNote).slice(0, 140) || void 0;
+    let totalLabel = stripHtmlTags(obj.totalLabel).slice(0, 30) || void 0;
+    let totalAmount = stripHtmlTags(obj.totalAmount).slice(0, 30) || void 0;
+    let currency = stripHtmlTags(obj.currency).slice(0, 8) || void 0;
+    if (world === "ancient_west") {
+      const combinedText = `${header} ${subheader || ""} ${bodyText || ""} ${totalAmount || ""}`;
+      if (/电影票|超市|收银|POS|扫码|支付宝|微信|美元|\$|¥|RMB|USD|卡布奇诺|拿铁/i.test(combinedText)) {
+        return null;
+      }
+      if (kind === "receipt" || kind === "ticket" || paperStyle === "thermal") {
+        kind = "memo";
+        paperStyle = "parchment";
+        totalLabel = void 0;
+        totalAmount = void 0;
+        currency = void 0;
+      }
+    }
+    if (world === "modern_us" && currency === "\xA5") {
+      currency = "$";
+    } else if (world === "modern_cn" && currency === "$") {
+      currency = "\xA5";
+    }
+    const rawItems = Array.isArray(obj.items) ? obj.items : [];
+    const items = rawItems.slice(0, 8).map((it) => {
+      if (!it || typeof it !== "object") return null;
+      const rec = it;
+      const name = stripHtmlTags(rec.name).slice(0, 60);
+      if (!name) return null;
+      const item = { name };
+      const qty = stripHtmlTags(rec.qty).slice(0, 16);
+      if (qty) item.qty = qty;
+      const price = stripHtmlTags(rec.price).slice(0, 24);
+      if (price && world !== "ancient_west") item.price = price;
+      if (typeof rec.checked === "boolean") item.checked = rec.checked;
+      const note = stripHtmlTags(rec.note).slice(0, 60);
+      if (note) item.note = note;
+      return item;
+    }).filter((it) => it !== null);
+    if (!items.length && !bodyText) {
+      return null;
+    }
+    return {
+      kind,
+      paperStyle,
+      header,
+      subheader,
+      serialNo,
+      timeLabel,
+      items: items.length ? items : void 0,
+      totalLabel,
+      totalAmount,
+      currency,
+      bodyText,
+      footerNote,
+      groundedInEventIds: Array.isArray(obj.groundedInEventIds) ? obj.groundedInEventIds.map((id2) => stripHtmlTags(id2)).filter(Boolean) : void 0
+    };
+  }
+  function renderSafeFootprintArtifact(artifact) {
+    const kindClass = `fp-artifact-${escHtml(artifact.kind)}`;
+    const paperClass = `fp-paper-${escHtml(artifact.paperStyle)}`;
+    const kindBadgeMap = {
+      receipt: "\u5355\u636E\u5B58\u6839",
+      ticket: "\u7968\u6839\u7559\u5B58",
+      memo: "\u968F\u624B\u4FBF\u7B7E",
+      list: "\u624B\u5199\u6E05\u5355",
+      letter: "\u77ED\u7B3A\u6458\u5F55",
+      dossier: "\u6848\u5934\u8BB0\u5F55"
+    };
+    const badgeText = kindBadgeMap[artifact.kind] || "\u751F\u6D3B\u7269\u4EF6";
+    const itemsHtml = artifact.items && artifact.items.length ? `<div class="fp-artifact-items">
+          ${artifact.items.map((it) => {
+      const checkMark = typeof it.checked === "boolean" ? `<span class="fp-item-check">${uiIcon(it.checked ? "checked" : "square")}</span>` : "";
+      const qtyPart = it.qty ? `<span class="fp-item-qty">${escHtml(it.qty)}</span>` : "";
+      const pricePart = it.price ? `<span class="fp-item-price">${escHtml(it.price)}</span>` : "";
+      const notePart = it.note ? `<div class="fp-item-note">${escHtml(it.note)}</div>` : "";
+      return `<div class="fp-artifact-row">
+                <div class="fp-artifact-row-main">
+                  <span class="fp-item-name">${checkMark}${escHtml(it.name)}</span>
+                  <span class="fp-item-meta">${qtyPart}${pricePart}</span>
+                </div>
+                ${notePart}
+              </div>`;
+    }).join("")}
+        </div>` : "";
+    const bodyHtml = artifact.bodyText ? `<div class="fp-artifact-body">${escHtml(artifact.bodyText).replace(/\n/g, "<br>")}</div>` : "";
+    const totalHtml = artifact.totalAmount || artifact.totalLabel ? `<div class="fp-artifact-total">
+          <span>${escHtml(artifact.totalLabel || "TOTAL")}</span>
+          <strong>${escHtml(artifact.currency || "")}${escHtml(artifact.totalAmount || "")}</strong>
+        </div>` : "";
+    const footerHtml = artifact.footerNote ? `<div class="fp-artifact-footer">${escHtml(artifact.footerNote)}</div>` : "";
+    return `<div class="fp-artifact-card ${kindClass} ${paperClass}" data-artifact-kind="${escHtml(artifact.kind)}" data-paper-style="${escHtml(artifact.paperStyle)}">
+    <div class="fp-artifact-top">
+      <div class="fp-artifact-heading">
+        <span class="fp-artifact-badge">${escHtml(badgeText)}</span>
+        <strong class="fp-artifact-title">${escHtml(artifact.header)}</strong>
+      </div>
+      ${artifact.serialNo ? `<span class="fp-artifact-serial">${escHtml(artifact.serialNo)}</span>` : ""}
+    </div>
+    ${artifact.subheader || artifact.timeLabel ? `<div class="fp-artifact-sub">${escHtml(artifact.subheader || "")}${artifact.subheader && artifact.timeLabel ? " \xB7 " : ""}${escHtml(artifact.timeLabel || "")}</div>` : ""}
+    <div class="fp-artifact-divider"></div>
+    ${itemsHtml}
+    ${bodyHtml}
+    ${totalHtml}
+    ${footerHtml}
+  </div>`;
+  }
+  function artifactForLifeEvent(role, event, at) {
+    if (!collectRoleLife(role, at).events.some((e) => e.id === event.id)) return null;
+    let raw;
+    if (event.lifeRecord?.version === 2) {
+      const step = role.lifePlans?.find((p) => p.id === event.lifeRecord.planId)?.intents.find((s) => s.id === event.lifeRecord.stepId);
+      if (!step?.artifact) return null;
+      raw = { kind: step.artifact, paperStyle: step.artifact === "list" ? "craft" : "parchment", header: event.title, bodyText: event.detail, groundedInEventIds: [event.id], ...step.artifact === "list" ? { items: [{ name: step.focus || event.title, checked: true }] } : {} };
+    } else {
+      const legacy2 = Object.values(role.footprintsByDate || {}).flatMap((a) => Array.isArray(a?.items) ? a.items : []).filter((i) => i.sourceEventIds?.length === 1 && i.sourceEventIds[0] === event.id && i.artifact?.groundedInEventIds?.length === 1 && i.artifact.groundedInEventIds[0] === event.id);
+      if (legacy2.length !== 1) return null;
+      raw = legacy2[0].artifact || void 0;
+      if (!raw) return null;
+      const evidence2 = event.title + "\n" + event.detail;
+      const fields = [raw.header, raw.subheader, raw.serialNo, raw.bodyText, raw.footerNote, raw.totalAmount, raw.currency, ...(Array.isArray(raw.items) ? raw.items : []).flatMap((i) => [i?.name, i?.qty, i?.price, i?.note])].filter((v) => typeof v === "string" && !!v);
+      if (!fields.every((text2) => evidence2.includes(text2))) return null;
+      if (raw.kind === "receipt" && !/小票|收据|收条|receipt/i.test(evidence2) || raw.kind === "ticket" && !/票根|门票|车票|ticket/i.test(evidence2)) return null;
+    }
+    const safe = validateAndSanitizeArtifact(raw, role);
+    if (!safe || raw.currency && safe.currency !== raw.currency) return null;
+    return safe;
   }
   function buildGroundedDailyFootprints(role, dateKey, nowTs = Date.now()) {
     const facts = collectDailyDiaryFacts(role, dateKey, true, nowTs), cutoff = Math.min(nowTs, facts.endMs), userLabel = role.userAlias || "\u5BF9\u65B9";
@@ -11517,15 +11732,10 @@ ${JSON.stringify(control)}`;
     day: "numeric"
   });
   function routine(r, t) {
-    if (r.scene && !r.scene.endedAt && r.scene.startedAt <= t)
-      return { icon: "chat", where: r.scene.where, doing: "\u4E0E\u5BF9\u65B9\u5F53\u9762\u4EA4\u8C08", label: "\u6B63\u5728\u89C1\u9762" };
-    if (r.play && !r.play.endedAt && r.play.startedAt <= t)
-      return { icon: "drama", where: "\u620F\u5267\u573A\u666F", doing: r.play.paused ? "\u6B63\u5728\u5E55\u95F4\u8BA8\u8BBA" : "\u6B63\u5728\u6392\u6F14\u620F\u5267", label: r.play.paused ? "\u5E55\u95F4\u8BA8\u8BBA" : "\u620F\u5267\u6F14\u51FA" };
-    const life = r.id && Array.isArray(r.chats) && Array.isArray(r.diaries) && Array.isArray(r.events) ? collectRoleLife(r, t) : null;
-    const observation = (life?.events || []).filter(
-      (e) => !life.historicalProfileEventIds.has(e.id) && e.kind === "life" && e.at <= t && t - e.at <= 30 * 6e4 && e.status !== "retracted" && e.status !== "superseded" && e.source && e.knownBy?.includes(r.id || "")
-    ).sort((a, b) => b.at - a.at)[0];
-    if (observation) return { icon: "clock", where: observation.where || "\u5730\u70B9\u5C1A\u672A\u786E\u8BA4", doing: `\u6700\u8FD1\u8BB0\u5F55\uFF1A${observation.detail}`, label: observation.title };
+    if (r.id && Array.isArray(r.chats) && Array.isArray(r.diaries) && Array.isArray(r.events)) {
+      const state2 = roleCurrentState(r, t);
+      if (state2.kind !== "unknown") return { icon: state2.kind === "performance" ? "drama" : state2.kind === "meeting" ? "chat" : "clock", where: state2.where, doing: state2.kind === "recent" ? "\u6700\u8FD1\u8BB0\u5F55\uFF1A" + state2.label.replace(/^最近：/, "") : state2.label, label: state2.label };
+    }
     return { icon: "clock", where: "\u5730\u70B9\u5C1A\u672A\u786E\u8BA4", doing: "\u6682\u65E0\u53EF\u786E\u8BA4\u7684\u6D3B\u52A8\u8BB0\u5F55", label: "\u5F53\u524D\u6D3B\u52A8\u672A\u786E\u8BA4" };
   }
   function keywords(s) {
@@ -11598,15 +11808,14 @@ ${JSON.stringify(control)}`;
       const p = r.play;
       base = `\u4F60\u6B63\u5728\u53C2\u4E0E\u4E00\u6BB5\u72EC\u7ACB\u3001\u5C01\u95ED\u7684\u865A\u6784\u620F\u5267\u3002\u4EC5\u4F5C\u4E3A\u5267\u4E2D\u89D2\u8272\u884C\u52A8\uFF0C\u4E0D\u77E5\u9053\u5267\u5916\u7684\u624B\u673A\u3001\u804A\u5929\u3001\u89D2\u8272\u672C\u4EBA\u771F\u5B9E\u8EAB\u4EFD\u3001\u7528\u6237\u771F\u5B9E\u8EAB\u4EFD\u3001\u65E5\u8BB0\u6216\u5176\u4ED6\u751F\u6D3B\u8BB0\u5F55\u3002\u5267\u540D\uFF1A${p.title}\u3002\u4E16\u754C\u89C4\u5219\u4E0E\u5F00\u573A\uFF1A${p.world}\u3002\u7528\u6237\u5728\u5267\u5185\u7684\u8EAB\u4EFD\uFF1A${p.user}\u3002\u4F60\u5728\u5267\u5185\u7684\u8EAB\u4EFD\uFF1A${p.char}\u3002\u63A8\u8FDB\u573A\u666F\u3001\u8868\u73B0\u4EBA\u7269\u5FC3\u7406\u4E0E\u81EA\u8EAB\u52A8\u4F5C\uFF0C\u4E0D\u4EE3\u66FF\u7528\u6237\u505A\u51FA\u9009\u62E9\u3002\u5267\u5185\u89D2\u8272\u4E4B\u95F4\u7684\u5173\u7CFB\u4EC5\u4EE5\u5267\u672C\u53CA\u672C\u573A\u5BF9\u767D\u4E3A\u51C6\u3002`;
     } else {
-      const life = collectRoleLife(memoryRole, nowTs), trustedLife = new Set(life.events.map((e) => e.id));
       const a = routine(memoryRole, nowTs);
       const bridgedIds = new Set((kind === "scene" ? recentMessages : []).flatMap((m) => m.sourceMessageId ? [m.sourceMessageId, m.id] : []));
       const candidates = getRoleKnownEvents(r).filter((e) => {
         const message = e.messageId ? shownPhoneSources.get(e.messageId) : void 0;
         const duplicate = e.kind === "chat" && message && e.detail === message.text && e.at === message.at && (!e.speaker || e.speaker === message.speaker) && (!e.source || e.source === "chat");
         if (e.kind === "scene" && (continuity.messageIds.has(e.messageId || "") || !e.messageId && e.title === "\u8FD9\u6B21\u89C1\u9762\u7ED3\u675F")) return false;
-        if (kind === "chat" && e.kind === "life") return false;
-        return eventSourceValid(memoryRole, e, nowTs, messageIndex, memory.supersededSources) && !duplicate && e.kind !== "drama" && (e.kind !== "life" || trustedLife.has(e.id)) && e.at <= nowTs && (!e.messageId || !bridgedIds.has(e.messageId));
+        if (e.kind === "life") return false;
+        return eventSourceValid(memoryRole, e, nowTs, messageIndex, memory.supersededSources) && !duplicate && e.kind !== "drama" && e.at <= nowTs && (!e.messageId || !bridgedIds.has(e.messageId));
       });
       if (kind !== "chat") recalled = retrieve(memoryRole, input, 12, nowTs, candidates);
       if (kind === "chat") {
@@ -11615,11 +11824,12 @@ ${JSON.stringify(control)}`;
         const ranked = scored.filter((item) => item.score > 0).map(({ e }) => ({ ...e, detail: memoryExcerpt(e.detail, input, past ? 180 : 90) }));
         recalled = selectMemoryItems(ranked, (e) => e.detail, past ? 1200 : 260, past ? 6 : 3);
       }
-      facts = recalled.map((e) => kind === "chat" ? `[${e.id} \xB7 ${new Date(e.at).toISOString().slice(0, 10)} \xB7 ${e.speaker === "char" ? "\u89D2\u8272\u539F\u8BDD/\u89C2\u70B9\uFF0C\u975E\u5916\u90E8\u4E8B\u5B9E\u8BC1\u5B9E" : e.speaker === "me" ? "\u7528\u6237\u539F\u8BDD/\u62A5\u544A" : "\u6709\u6765\u6E90\u7684\u4E8B\u4EF6"}] ${e.title}: ${e.detail}` : `[${dt(e.at)} | ${e.kind} | ${e.id} | ${e.speaker === "char" ? "\u89D2\u8272\u539F\u8BDD/\u89C2\u70B9\uFF0C\u975E\u5916\u90E8\u4E8B\u5B9E\u8BC1\u5B9E" : e.speaker === "me" ? "\u7528\u6237\u539F\u8BDD/\u62A5\u544A" : life.historicalProfileEventIds.has(e.id) ? "\u65E7\u6863\u6848\u5386\u53F2\uFF0C\u5F53\u524D\u8EAB\u4EFD\u3001\u5730\u70B9\u548C\u5173\u7CFB\u4EE5\u5F53\u524D\u6863\u6848\u4E3A\u51C6" : "\u6709\u6765\u6E90\u7684\u4E8B\u4EF6"}] ${e.title}: ${e.detail}`).join("\n");
+      facts = recalled.map((e) => kind === "chat" ? `[${e.id} \xB7 ${new Date(e.at).toISOString().slice(0, 10)} \xB7 ${e.speaker === "char" ? "\u89D2\u8272\u539F\u8BDD/\u89C2\u70B9\uFF0C\u975E\u5916\u90E8\u4E8B\u5B9E\u8BC1\u5B9E" : e.speaker === "me" ? "\u7528\u6237\u539F\u8BDD/\u62A5\u544A" : "\u6709\u6765\u6E90\u7684\u4E8B\u4EF6"}] ${e.title}: ${e.detail}` : `[${dt(e.at)} | ${e.kind} | ${e.id} | ${e.speaker === "char" ? "\u89D2\u8272\u539F\u8BDD/\u89C2\u70B9\uFF0C\u975E\u5916\u90E8\u4E8B\u5B9E\u8BC1\u5B9E" : e.speaker === "me" ? "\u7528\u6237\u539F\u8BDD/\u62A5\u544A" : "\u6709\u6765\u6E90\u7684\u4E8B\u4EF6"}] ${e.title}: ${e.detail}`).join("\n");
       const sharedDiaries = getSharedUserDiariesForRole(r).filter((d) => d.at <= nowTs && (d.sharedAt?.[r.id] ?? d.at) <= nowTs).slice(kind === "chat" ? past ? -2 : -1 : -5).map((d) => `[${dt(d.at)} \u7528\u6237\u4E3B\u52A8\u5206\u4EAB\u7ED9\u4F60\u7684\u65E5\u8BB0] ${kind === "chat" ? memoryExcerpt(d.text, input, past ? 180 : 80) : d.text}`).join("\n");
       const phasedScene = kind === "scene" && r.scene?.entryPhase;
-      const activity = r.scene ? phasedScene ? "\u6309\u6709\u6548\u539F\u8BDD\u7EE7\u7EED\u89C1\u9762\u573A\u666F" : "\u4E0E\u7528\u6237\u5F53\u9762\u4EA4\u8C08" : kind === "chat" && a.doing.startsWith("\u6700\u8FD1\u8BB0\u5F55\uFF1A") ? "\u6700\u8FD1\u8BB0\u5F55\uFF1A" + a.label : a.doing;
-      base = `\u4F60\u5728\u626E\u6F14\u540D\u4E3A${r.name}\u7684\u865A\u6784\u4EBA\u7269\uFF08\u4E0D\u662FAI\u52A9\u624B\uFF09\uFF0C\u6709\u72EC\u7ACB\u751F\u6D3B\u3001\u5DE5\u4F5C\u3001\u504F\u597D\u548C\u4E3B\u89C2\u611F\u53D7\u3002\u8EAB\u4EFD\uFF1A${r.job}\u3002\u6240\u5728\u533A\u57DF\u4E0E\u4E16\u754C\u89C2\uFF1A${r.place}\u3002\u6027\u683C\uFF1A${r.traits}\u3002\u4EBA\u8BBE\uFF1A${r.profile}\u3002\u524D\u53F2\u8282\u70B9\u4E0E\u672A\u53D1\u751F\u5267\u60C5\u8FB9\u754C\uFF1A${r.canonNotes || "\u4EE5\u7528\u6237\u8BBE\u5B9A\u4E3A\u51C6"}\u3002\u7528\u6237\u8EAB\u4EFD\u8BBE\u5B9A\uFF1A${userIdentity}\u3002\u4F60\u548C\u7528\u6237\u76EE\u524D\u7684\u5173\u7CFB\uFF1A${relationshipContext(memoryRole, nowTs, memory)}\u3002\u6B64\u523B\u5730\u70B9\uFF1A${r.scene ? r.scene.locationEvidence || r.scene.agreement ? scenePlaceAt(r, r.scene, nowTs) : r.scene.where : a.where}\u3002\u6B63\u5728\u505A\uFF1A${activity}\u3002\u5F53\u524D\u65E5\u671F\u65F6\u95F4\uFF1A${dt(nowTs)}\u3002\u4FDD\u6301\u4EBA\u8BBE\u4E00\u81F4\uFF0C\u4F46\u4E0D\u8981\u673A\u68B0\u9644\u548C\uFF0C\u4E0D\u66FF\u7528\u6237\u51B3\u5B9A\u884C\u4E3A\u3002\u7981\u6B62\u5047\u88C5\u77E5\u9053\u6CA1\u6709\u83B7\u6089\u7684\u79C1\u4E8B\u3002\u6240\u9644\u5386\u53F2\u662F\u6709\u6765\u6E90\u7684\u90E8\u5206\u68C0\u7D22\u7ED3\u679C\uFF0C\u4E0D\u786E\u5B9A\u65F6\u4E0D\u8981\u7F16\u9020\u3002\u804C\u4E1A\u4E0E\u4E16\u754C\u8BBE\u5B9A\u53EA\u7EA6\u675F\u53EF\u80FD\u7684\u6D3B\u52A8\uFF0C\u4E0D\u4EE3\u8868\u5F53\u4E0B\u5DF2\u7ECF\u53D1\u751F\uFF1B\u4E0D\u5F97\u4E3A\u6240\u6709\u89D2\u8272\u5957\u7528\u56FA\u5B9A\u7684\u7EDF\u4E00\u65E5\u7A0B\u6216\u7F16\u9020\u5177\u4F53\u884C\u7A0B\u3002`;
+      const activity = kind === "scene" && r.scene ? phasedScene ? "\u6309\u6709\u6548\u539F\u8BDD\u7EE7\u7EED\u89C1\u9762\u573A\u666F" : "\u4E0E\u7528\u6237\u5F53\u9762\u4EA4\u8C08" : a.doing;
+      const whereabouts = kind === "scene" && r.scene ? "\u6B64\u523B\u5730\u70B9\uFF1A" + (r.scene.locationEvidence || r.scene.agreement ? scenePlaceAt(r, r.scene, nowTs) : r.scene.where) : a.label.startsWith("\u6700\u8FD1\uFF1A") ? "\u6B64\u523B\u5730\u70B9\uFF1A\u5730\u70B9\u5C1A\u672A\u786E\u8BA4\u3002\u6700\u8FD1\u8BB0\u5F55\u7684\u5730\u70B9\uFF1A" + a.where : "\u6B64\u523B\u5730\u70B9\uFF1A" + a.where;
+      base = `\u4F60\u5728\u626E\u6F14\u540D\u4E3A${r.name}\u7684\u865A\u6784\u4EBA\u7269\uFF08\u4E0D\u662FAI\u52A9\u624B\uFF09\uFF0C\u6709\u72EC\u7ACB\u751F\u6D3B\u3001\u5DE5\u4F5C\u3001\u504F\u597D\u548C\u4E3B\u89C2\u611F\u53D7\u3002\u8EAB\u4EFD\uFF1A${r.job}\u3002\u6240\u5728\u533A\u57DF\u4E0E\u4E16\u754C\u89C2\uFF1A${r.place}\u3002\u6027\u683C\uFF1A${r.traits}\u3002\u4EBA\u8BBE\uFF1A${r.profile}\u3002\u524D\u53F2\u8282\u70B9\u4E0E\u672A\u53D1\u751F\u5267\u60C5\u8FB9\u754C\uFF1A${r.canonNotes || "\u4EE5\u7528\u6237\u8BBE\u5B9A\u4E3A\u51C6"}\u3002\u7528\u6237\u8EAB\u4EFD\u8BBE\u5B9A\uFF1A${userIdentity}\u3002\u4F60\u548C\u7528\u6237\u76EE\u524D\u7684\u5173\u7CFB\uFF1A${relationshipContext(memoryRole, nowTs, memory)}\u3002${whereabouts}\u3002${a.label.startsWith("\u6700\u8FD1\uFF1A") && kind === "chat" ? "\u6D3B\u52A8\u8BB0\u5F55" : "\u6B63\u5728\u505A"}\uFF1A${activity}\u3002\u5F53\u524D\u65E5\u671F\u65F6\u95F4\uFF1A${dt(nowTs)}\u3002\u4FDD\u6301\u4EBA\u8BBE\u4E00\u81F4\uFF0C\u4F46\u4E0D\u8981\u673A\u68B0\u9644\u548C\uFF0C\u4E0D\u66FF\u7528\u6237\u51B3\u5B9A\u884C\u4E3A\u3002\u7981\u6B62\u5047\u88C5\u77E5\u9053\u6CA1\u6709\u83B7\u6089\u7684\u79C1\u4E8B\u3002\u6240\u9644\u5386\u53F2\u662F\u6709\u6765\u6E90\u7684\u90E8\u5206\u68C0\u7D22\u7ED3\u679C\uFF0C\u4E0D\u786E\u5B9A\u65F6\u4E0D\u8981\u7F16\u9020\u3002\u804C\u4E1A\u4E0E\u4E16\u754C\u8BBE\u5B9A\u53EA\u7EA6\u675F\u53EF\u80FD\u7684\u6D3B\u52A8\uFF0C\u4E0D\u4EE3\u8868\u5F53\u4E0B\u5DF2\u7ECF\u53D1\u751F\uFF1B\u4E0D\u5F97\u4E3A\u6240\u6709\u89D2\u8272\u5957\u7528\u56FA\u5B9A\u7684\u7EDF\u4E00\u65E5\u7A0B\u6216\u7F16\u9020\u5177\u4F53\u884C\u7A0B\u3002`;
       const entry2 = phasedScene ? encounterEntryContext(r, nowTs) : void 0;
       if (entry2) base += "\n\n" + entry2;
       const agreement = r.scene?.agreement;
@@ -11645,7 +11855,8 @@ ${facts || "\u6682\u65E0"}`;
         if (continuity.facts.length) base += "\n\n\u6700\u8FD1\u7ED3\u675F\u7684\u771F\u5B9E\u89C1\u9762\u539F\u6587\u8282\u9009\uFF08\u4E0D\u662F\u620F\u4E2D\u620F\uFF0C\u4E5F\u4E0D\u662F\u65B0\u7684\u5BA2\u89C2\u603B\u7ED3\uFF09\uFF1A\u7ED3\u675F\u4EA4\u4E92\u4E0D\u8BC1\u660E\u53CC\u65B9\u544A\u522B\u6216\u79BB\u5F00\uFF1B\u6309\u539F\u6587\u5206\u6E05\u884C\u52A8\u4E3B\u4F53\u3002\u89D2\u8272\u53EF\u4EE5\u8FA9\u89E3\u3001\u9690\u7792\u6216\u6492\u8C0E\uFF0C\u4F46\u4E0D\u8981\u628A\u7F3A\u5931\u5386\u53F2\u6216\u4E2A\u4EBA\u4E3B\u5F20\u5F53\u6210\u8BC1\u636E\uFF1B\u7528\u6237\u672A\u8868\u8FBE\u7684\u5185\u5FC3\u4E0E\u672A\u7ECF\u786E\u8BA4\u7684\u884C\u52A8\u4E0D\u662F\u89D2\u8272\u77E5\u8BC6\u3002";
       }
     }
-    if (kind !== "play") base += "\n\n" + roleMemoryText(memoryRole, nowTs, input, { excludeStage: kind === "scene" ? r.scene?.id : kind === "intermission" ? r.play?.id : void 0 });
+    const sharedText = kind === "play" ? "" : roleMemoryText(memoryRole, nowTs, input, { excludeStage: kind === "scene" ? r.scene?.id : kind === "intermission" ? r.play?.id : void 0, includePrivate: kind !== "chat" });
+    if (sharedText) base += "\n\n" + sharedText;
     const memoryFragments = {};
     if (kind !== "play") {
       const lines = memory.facts.map((f) => {
@@ -11675,7 +11886,7 @@ ${facts || "\u6682\u65E0"}`;
     };
     if (options.profile && (kind === "scene" || kind === "play")) values.native_output_rule += `\u76EE\u6807 ${options.profile.length.min}\u2013${options.profile.length.max} \u5B57\uFF0C\u6309\u5267\u60C5\u81EA\u7136\u53D6\u820D\uFF0C\u4E0D\u51D1\u5B57\u6570\u3002${options.profile.style ? `\u6587\u98CE\uFF1A${options.profile.style}\u3002` : ""}`;
     const factsForContext = [
-      ...kind !== "play" ? [{ id: "role-memory:" + r.id, text: roleMemoryText(memoryRole, nowTs, input, { excludeStage: kind === "scene" ? r.scene?.id : kind === "intermission" ? r.play?.id : void 0 }), layer: "currentState", at: nowTs, scope, knownBy: [r.id], active: true, revisionValid: true }] : [],
+      ...kind !== "play" ? [{ id: "role-memory:" + r.id, text: sharedText, layer: "currentState", at: nowTs, scope, knownBy: [r.id], active: true, revisionValid: true }] : [],
       { id: "identity:" + r.id, text: kind === "play" ? `\u4F60\u5728\u5267\u5185\u7684\u8EAB\u4EFD\uFF1A${r.play.char}` : kind === "intermission" ? `\u4F60\u7684\u8EAB\u4EFD:${r.job}\uFF0C\u6027\u683C:${r.traits}\uFF0C\u5B8C\u6574\u4EBA\u8BBE:${r.profile}` : `\u8EAB\u4EFD\uFF1A${r.job}\u3002\u6240\u5728\u533A\u57DF\u4E0E\u4E16\u754C\u89C2\uFF1A${r.place}\u3002\u6027\u683C\uFF1A${r.traits}\u3002\u4EBA\u8BBE\uFF1A${r.profile}\u3002\u524D\u53F2\u8282\u70B9\u4E0E\u672A\u53D1\u751F\u5267\u60C5\u8FB9\u754C\uFF1A${r.canonNotes || "\u4EE5\u7528\u6237\u8BBE\u5B9A\u4E3A\u51C6"}`, layer: "identity", marker: "charDescription", at: nowTs, scope, knownBy: [r.id], active: true, revisionValid: true },
       { id: "relationship:" + r.id, text: kind === "play" ? "\u5267\u5185\u89D2\u8272\u4E4B\u95F4\u7684\u5173\u7CFB\u4EC5\u4EE5\u5267\u672C\u53CA\u672C\u573A\u5BF9\u767D\u4E3A\u51C6\u3002" : relationshipContext(memoryRole, nowTs, memory), layer: "relationship", at: nowTs, scope, knownBy: [r.id], active: true, revisionValid: true },
       { id: "state:" + r.id, text: kind === "play" ? r.play.world : dt(nowTs), layer: "currentState", at: nowTs, scope, knownBy: [r.id], active: true, revisionValid: true },
@@ -12592,7 +12803,7 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
       if (item.category === "life") {
         const event = life.find((e) => item.sourceEventIds.length === 1 && e.id === item.sourceEventIds[0]);
         if (!event) return [];
-        return [{ ...item, title: event.title, summary: event.detail, where: event.where, confirmed: true, sourceMessageCount: item.sourceMessageIds.length, sourceEventCount: 1, innerThought: void 0, artifact: void 0 }];
+        return [{ ...item, title: event.title, summary: event.detail, where: event.where, confirmed: true, sourceMessageCount: item.sourceMessageIds.length, sourceEventCount: 1, innerThought: void 0, artifact: artifactForLifeEvent(role, event, cutoff) }];
       }
       if (item.category === "interaction") {
         const fact = compactRoleMemory(role, cutoff).facts.find((f) => f.mutual && item.id === "fp_relation_" + f.id);
@@ -12602,7 +12813,9 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
         const scene = facts.sceneBlocks.find((s) => item.id === "fp_scene_" + s.id && s.messages.some((m) => m.at <= cutoff));
         if (!scene) return [];
         where = scene.where;
-        summary = `${role.name}\u5728\u300C${where}\u300D\u4E0E${username}\u89C1\u9762\u3002`;
+        const exchange = scene.messages.filter((m) => m.kind !== "play" && m.novelOutput?.mode !== "theatre" && (m.speaker === "char" || m.speaker === "me" && publicUserText(m))).slice(-2);
+        summary = exchange.length ? exchange.map((m) => `${m.speaker === "char" ? role.name : username}\u7684\u539F\u8BDD\uFF1A${episodeExcerpt(m.text, "", 90)}`).join("\n") : `${role.name}\u5728\u300C${where}\u300D\u4E0E${username}\u89C1\u9762\u3002`;
+        return [{ ...item, title: "\u4E0E\u4F60\u89C1\u9762", summary, where, confirmed: true, sourceMessageCount: scene.messages.length, sourceEventCount: 0, innerThought: void 0, artifact: void 0 }];
       } else if (item.category === "focus") {
         if (!facts.focusEvents.some((e) => item.sourceEventIds.includes(e.id) && e.at <= cutoff)) return [];
         summary = `${role.name}\u7559\u51FA\u4E86\u4E00\u6BB5\u4E13\u6CE8\u7684\u65F6\u95F4\u3002`;
@@ -16623,7 +16836,7 @@ channel.onmessage=async({data:job})=>{
       return Boolean(f.companion && f.ownerId === r.id);
     }
     function activity(r, t) {
-      const a = routine(r, t);
+      const raw = routine(r, t), a = raw.label === "\u5F53\u524D\u6D3B\u52A8\u672A\u786E\u8BA4" ? { ...raw, label: "\u8FD8\u6CA1\u6709\u65B0\u7684\u751F\u6D3B\u8BB0\u5F55", where: "", doing: "\u7A7A\u767D\u7684\u65F6\u6BB5\u6682\u4E0D\u63A8\u6D4B\uFF1B\u6709\u8BB0\u5F55\u65F6\u4F1A\u7559\u5728\u76D1\u63A7\u91CC\u3002" } : raw;
       if (awaitingNainOpening(r)) return { ...a, label: "\u7B49\u5F85\u9996\u6761\u6D88\u606F", where: r.place, doing: "\u5C1A\u672A\u5F00\u59CB\u6B63\u5F0F\u4E92\u52A8" };
       const f = activeFocus();
       if (f && isRoleInActiveFocus(r, f) && (f.status === "running" || f.status === "paused")) {
@@ -17241,7 +17454,10 @@ channel.onmessage=async({data:job})=>{
           r.lifeTasks = before.tasks;
           return;
         }
-        if (view === "monitor" && role() === r) render(false);
+        if (role() === r) {
+          if (view === "monitor") render(false);
+          else if (view === "home") patchDynamicRegionsOnTick();
+        }
       }
     }
     function pumpRoleLife() {
@@ -18183,9 +18399,7 @@ channel.onmessage=async({data:job})=>{
  <button class="home-widget" data-action="openconversation" data-role-id="${esc(r.id)}"><div class="home-widget-top"><div class="widget-person">${avatarTag(
           r,
           "widget-avatar"
-        )}<div><b>${esc(r.name)}</b><small>${esc(a.label)} \xB7 ${esc(
-          a.where
-        )}</small></div></div><span class="widget-arrow">\u203A</span></div><div class="widget-divider"></div><div class="widget-bottom"><span class="widget-caption">${captionText}</span><span class="widget-action">${r.scene && r.scene.endedAt === void 0 ? "\u8FD4\u56DE\u89C1\u9762" : "\u6253\u5F00\u804A\u5929"} \u2192</span></div></button>
+        )}<div><b>${esc(r.name)}</b><small>${esc(a.label)}${a.where ? " \xB7 " + esc(a.where) : ""}</small></div></div><span class="widget-arrow">\u203A</span></div><div class="widget-divider"></div><div class="widget-bottom"><span class="widget-caption">${captionText}</span><span class="widget-action">${r.scene && r.scene.endedAt === void 0 ? "\u8FD4\u56DE\u89C1\u9762" : "\u6253\u5F00\u804A\u5929"} \u2192</span></div></button>
  <div class="shared-widgets" id="home-task-cards">${homeTasks.renderCards()}</div>
 
  ${activeFocus() ? `<button class="home-ongoing" data-action="view" data-view="focus">\u4E13\u6CE8 \xB7 \u6B63\u5728${activeFocus().phase === "break" ? "\u4F11\u606F" : "\u4E13\u6CE8"} \xB7 \u7EE7\u7EED\u8BA1\u65F6 <span>\u203A</span></button>` : ""}
@@ -18627,30 +18841,55 @@ channel.onmessage=async({data:job})=>{
       } catch {
         state2 = "\u751F\u6D3B\u8C03\u7528\u989D\u5EA6\u8BB0\u5F55\u65E0\u6CD5\u6838\u9A8C\uFF0C\u81EA\u52A8\u63A8\u8FDB\u5DF2\u6682\u505C\u3002";
       }
-      const list = items.map((item) => {
-        const event = item.category === "life" ? life.events.find((e) => e.id === item.sourceEventIds[0]) : void 0;
-        const source = event?.lifeRecord ? "\u751F\u6D3B\u6A21\u62DF \xB7 \u5DF2\u5F52\u6863" + (life.historicalProfileEventIds.has(event.id) ? " \xB7 \u65E7\u6863\u6848\u5386\u53F2" : "") : item.category === "life" ? "\u6709\u6765\u6E90\u7684\u751F\u6D3B\u8BB0\u5F55" : item.category === "drama" ? "\u6392\u6F14\u53C2\u4E0E \xB7 \u4E0D\u8BA1\u4F5C\u620F\u5185\u4EBA\u751F" : "\u6709\u6548\u4E92\u52A8";
-        return `<article class="card footprint-card" data-testid="footprint-item" data-fp-category="${esc(item.category)}" data-fp-id="${esc(item.id)}">
-        <div class="row between"><time class="fp-time-badge">${esc(hm(item.timestamp))}</time><span class="tiny muted">${esc(source)}</span></div>
-        <h3>${esc(item.title)}</h3><p class="life-narrative">${esc(item.summary)}</p>${item.where ? `<div class="tiny muted">${uiIcon("pin")}${esc(item.where)}</div>` : ""}
-        <details class="life-provenance"><summary>\u6765\u6E90\u4E0E\u8BB0\u5F55</summary><p class="tiny muted">${esc(dt(item.timestamp))} \xB7 ${esc(source)}</p>
-          ${(item.rawTranscript || []).slice(0, 3).map((t) => `<p class="tiny">${esc(t.speakerLabel)} \xB7 ${esc(t.text.slice(0, 240))}</p>`).join("")}
-          ${event?.lifeRecord ? `<div class="tiny muted">${event.lifeRecord.sources.map((s) => esc(s.kind + ":" + s.id)).join(" \xB7 ")}</div><button class="btn small ghost" data-action="retractlife" data-id="${esc(event.id)}">\u64A4\u56DE\u6B64\u6A21\u62DF\u8BB0\u5F55</button>` : ""}
-        </details></article>`;
-      }).join("");
+      const list = items.map((item) => `<article class="footprint-card life-timeline-item" data-testid="footprint-item" data-fp-category="${esc(item.category)}" data-fp-id="${esc(item.id)}">
+      <time class="fp-time-badge">${esc(hm(item.timestamp))}</time><div class="life-timeline-content"><button type="button" class="life-record-open" data-action="monitor-detail" data-id="${esc(item.id)}" data-role-id="${esc(r.id)}" aria-label="\u67E5\u770B${esc(item.title)}"><h3>${esc(item.title)}</h3><p class="life-narrative">${esc(item.summary)}</p>${item.where ? `<span class="tiny muted">${uiIcon("pin")}${esc(item.where)}</span>` : ""}</button>
+      ${item.artifact ? `<button type="button" class="fp-artifact-trigger" data-action="monitor-detail" data-id="${esc(item.id)}" data-role-id="${esc(r.id)}" aria-label="\u67E5\u770B${item.artifact.kind === "list" ? "\u624B\u5199\u6E05\u5355" : "\u751F\u6D3B\u7269\u4EF6"}\uFF1A${esc(item.artifact.header)}">${renderSafeFootprintArtifact(item.artifact)}<small>\u5C55\u5F00\u7269\u4EF6</small></button>` : ""}</div></article>`).join("");
       const thoughts = life.threads.filter((t) => t.at <= cutoff).slice(0, 3);
       return shell(`${header("\u751F\u6D3B\u76D1\u63A7", "home")}<div class="viewport monitor-life">
       <div class="row between"><div><div class="label">DAILY FOOTPRINTS</div><h2>\u65E5\u5E38\u8DB3\u8FF9</h2></div>${avatarTag(r, "avatar large")}</div>
-      <p class="sub">\u53D1\u751F\u5728${esc(r.name)}\u81EA\u5DF1\u4E16\u754C\u91CC\u7684\u751F\u6D3B\u3002\u6CA1\u6709\u8BB0\u5F55\u7684\u65F6\u6BB5\u4FDD\u6301\u672A\u77E5\u3002</p>
+      <p class="sub life-current-status" data-testid="role-life-status">${esc(activity(r, at).label)}${activity(r, at).where ? " \xB7 " + esc(activity(r, at).where) : ""}</p>
       <div class="fp-date-bar" data-testid="monitor-date-bar">
         <button class="btn small secondary fp-nav-btn" data-action="monitordate" data-date="${esc(shiftDateKey(monitorDateKey, -1))}" data-testid="monitor-prev-day" aria-label="\u524D\u4E00\u5929">\u2039 \u524D\u4E00\u5929</button>
         <button class="fp-date-display" data-action="togglefootprintcal" data-testid="monitor-date-display"><strong>${esc(bounds.label)}</strong><small>${esc(monitorDateKey)} \xB7 ${monitorDateKey === today ? "\u4ECA\u5929" : "\u5386\u53F2\u5F52\u6863"} \u25BE</small></button>
         <button class="btn small secondary fp-nav-btn" data-action="monitordate" data-date="${esc(shiftDateKey(monitorDateKey, 1))}" data-testid="monitor-next-day" ${monitorDateKey < today ? "" : "disabled"} aria-label="\u540E\u4E00\u5929">\u540E\u4E00\u5929 \u203A</button>
       </div>${renderFootprintCalendarDrawer(r, monitorDateKey)}
-      <div class="footprints-list" data-testid="footprints-list">${list || `<div class="card fp-empty-card" data-testid="footprint-calm-empty">${uiIcon("leaf")}<h3>\u5C1A\u65E0\u5DF2\u5F52\u6863\u7684\u751F\u6D3B\u8BB0\u5F55</h3><p>\u8FD9\u4E0D\u4EE3\u8868\u5DF2\u786E\u8BA4\u6574\u5929\u65E0\u4E8B\u53D1\u751F\u3002API \u4E0D\u53EF\u7528\u65F6\uFF0C\u4E0D\u4F1A\u8865\u9020\u6D3B\u52A8\u3002</p></div>`}</div>
-      ${thoughts.length ? `<details class="card life-private" data-testid="life-private"><summary>\u79C1\u4EBA\u5173\u6CE8 \xB7 \u4E3B\u89C2\u60F3\u6CD5</summary><p class="tiny muted">\u8FD9\u662F${esc(r.name)}\u81EA\u5DF1\u8BB0\u4E0B\u7684\u60F3\u6CD5\u3001\u8BA1\u5212\u6216\u5224\u65AD\uFF0C\u4E0D\u7B49\u4E8E\u5916\u90E8\u4E8B\u5B9E\uFF0C\u4E5F\u4E0D\u8868\u793A\u5DF2\u7ECF\u544A\u8BC9\u4E86\u4F60\u3002</p>${thoughts.map((t) => `<p>${esc(t.text)}<br><time class="tiny muted">${esc(dt(t.at))}</time></p>`).join("")}</details>` : ""}
-      <details class="card life-settings" data-testid="life-settings"><summary>\u751F\u6D3B\u63A8\u8FDB\u4E0E\u8C03\u7528\u989D\u5EA6</summary><p data-testid="life-state">${esc(state2)}</p><p class="tiny muted">\u4EC5\u5728\u7F51\u9875\u6253\u5F00\u4E14\u7A7A\u95F2\u65F6\u63A8\u8FDB\u5F53\u5929\u6700\u8FD1\u4E00\u6BB5\u751F\u6D3B\u3002\u6BCF\u89D2\u8272\u6BCF\u5929\u6700\u591A 1 \u6B21\uFF0C\u5168\u5E94\u7528\u6BCF\u5929\u53CA\u6700\u8FD1 24 \u5C0F\u65F6\u6700\u591A 2 \u6B21\uFF1B\u5931\u8D25\u8BA1\u5165\u989D\u5EA6\uFF0C\u4E0D\u81EA\u52A8\u91CD\u8BD5\u3002\u666E\u901A\u804A\u5929\u4E0E\u6BCF\u7BC7\u65E5\u8BB0\u4ECD\u5404\u4F7F\u7528\u539F\u6709\u4E00\u6B21\u8BF7\u6C42\uFF0C\u989D\u5EA6\u72EC\u7ACB\u8BA1\u7B97\u3002</p><button class="btn small secondary" data-action="toggleautonomouslife">${data.settings.autonomousLife === false ? "\u6062\u590D\u81EA\u52A8\u63A8\u8FDB" : "\u6682\u505C\u81EA\u52A8\u63A8\u8FDB"}</button></details>
+      <div class="footprints-list" data-testid="footprints-list">${list || `<div class="fp-empty-card" data-testid="footprint-calm-empty">${uiIcon("leaf")}<h3>\u8FD9\u4E00\u5929\u8FD8\u6CA1\u6709\u7559\u4E0B\u8BB0\u5F55</h3><p>\u7A7A\u767D\u4E0D\u4EE3\u8868\u4EC0\u4E48\u90FD\u6CA1\u505A\uFF1B\u6709\u4F9D\u636E\u7684\u7ECF\u5386\u4F1A\u7559\u5728\u8FD9\u91CC\u3002</p></div>`}</div>
+      ${thoughts.length ? `<details class="life-private" data-testid="life-private"><summary>\u968F\u624B\u8BB0\u4E0B\u7684\u8BDD</summary><p class="tiny muted">\u8FD9\u662F${esc(r.name)}\u81EA\u5DF1\u8BB0\u4E0B\u7684\u60F3\u6CD5\u3001\u8BA1\u5212\u6216\u5224\u65AD\uFF0C\u4E0D\u7B49\u4E8E\u5916\u90E8\u4E8B\u5B9E\uFF0C\u4E5F\u4E0D\u8868\u793A\u5DF2\u7ECF\u544A\u8BC9\u4E86\u4F60\u3002</p>${thoughts.map((t) => `<p>${esc(t.text)}<br><time class="tiny muted">${esc(dt(t.at))}</time></p>`).join("")}</details>` : ""}
+      <details class="life-settings" data-testid="life-settings"><summary>\u751F\u6D3B\u8BBE\u7F6E\u4E0E\u8BB0\u5F55</summary><p data-testid="life-state">${esc(state2)}</p><p class="tiny muted">\u7F51\u9875\u6253\u5F00\u4E14\u6761\u4EF6\u5408\u9002\u65F6\u6267\u884C\u751F\u6D3B\u610F\u56FE\uFF1B\u9519\u8FC7\u6216\u4E2D\u65AD\u7684\u6D3B\u52A8\u4E0D\u4F1A\u8865\u5199\u6210\u5DF2\u5B8C\u6210\u3002\u6BCF\u89D2\u8272\u6BCF\u5929\u53CA\u6700\u8FD1 24 \u5C0F\u65F6\u6700\u591A 1 \u6B21\u751F\u6D3B\u8BF7\u6C42\uFF0C\u5168\u5E94\u7528\u6BCF\u5929\u53CA\u6700\u8FD1 24 \u5C0F\u65F6\u6700\u591A 2 \u6B21\uFF1B\u5931\u8D25\u8BA1\u5165\u989D\u5EA6\uFF0C\u4E0D\u81EA\u52A8\u91CD\u8BD5\u3002\u6BCF\u6B21\u751F\u6D3B\u8F93\u51FA\u4E0A\u9650 2400 token\uFF08\u539F\u4E3A 1200\uFF0C\u5355\u6B21\u53EF\u80FD\u66F4\u8D35\uFF09\uFF0C\u4E0D\u589E\u52A0\u8BF7\u6C42\u6B21\u6570\u3002\u666E\u901A\u804A\u5929\u3001\u65E5\u8BB0\u989D\u5EA6\u4FDD\u6301\u539F\u89C4\u5219\u3002</p>${(r.lifeTasks || []).slice(-3).map((t) => `<p class="tiny muted life-cost-row">${esc(t.dateKey)} \xB7 ${t.transport === "not-sent" ? "\u786E\u5B9A\u672A\u53D1\u9001" : t.transport === "returned" ? "\u6B63\u6587\u5DF2\u8FD4\u56DE" : t.status === "attempted" || t.transport === "unknown" ? "\u53D1\u9001\u6216\u7ED3\u679C\u672A\u786E\u8BA4" : "\u65E2\u6709\u8C03\u7528\u8BB0\u5F55"} \xB7 \u8F93\u51FA\u4E0A\u9650 ${t.outputTokenLimit || 1200} token${t.usage ? ` \xB7 \u670D\u52A1\u5546\u5B9E\u62A5\uFF1A\u8F93\u5165 ${t.usage.input ?? "\u672A\u63D0\u4F9B"} / \u8F93\u51FA ${t.usage.output ?? "\u672A\u63D0\u4F9B"}` : " \xB7 \u670D\u52A1\u5546\u672A\u63D0\u4F9B\u5B9E\u9645\u7528\u91CF"}\uFF1B\u8BA1\u8D39\u4EE5\u670D\u52A1\u5546\u4E3A\u51C6\u3002</p>`).join("")}<button class="btn small secondary" data-action="toggleautonomouslife">${data.settings.autonomousLife === false ? "\u6062\u590D\u81EA\u52A8\u63A8\u8FDB" : "\u6682\u505C\u81EA\u52A8\u63A8\u8FDB"}</button></details>
     </div>`);
+    }
+    function openMonitorDetail(id2) {
+      const r = role(), world = data;
+      if (!r || view !== "monitor") return;
+      const at = now(), date = resolveSafeMonitorDateKey(monitorDateKey, at), item = monitorItemsForDisplay(r, data.user, getOrBuildDailyFootprints(r, date, at).items, at).find((i) => i.id === id2);
+      if (!item) return;
+      const dialog = document.createElement("dialog"), focus = document.activeElement;
+      dialog.className = "fruit-dialog monitor-detail";
+      const scene = item.category === "scene" ? r.meetings?.find((s) => item.id === "fp_scene_" + s.id) : void 0;
+      const full = scene ? meetingRecordHtml(r, scene).replace('id="scroll-area"', "data-monitor-record-area") : (item.rawTranscript || []).map((t) => `<p class="life-detail-text"><span class="tiny muted">${esc(t.speakerLabel)} \xB7 ${esc(hm(t.at))}</span><br>${esc(t.text)}</p>`).join("") || `<p class="life-detail-text">${esc(item.summary)}</p>`;
+      const event = item.category === "life" ? collectRoleLife(r, at).events.find((e) => e.id === item.sourceEventIds[0]) : void 0;
+      const thoughts = event?.lifeRecord ? collectRoleLife(r, at).threads.filter((t) => t.requestId === event.lifeRecord.taskId && t.at <= event.at) : [];
+      dialog.innerHTML = `<form method="dialog" class="fruit-dialog-body"><div class="row between"><h2>${esc(item.title)}</h2><button class="btn small ghost" aria-label="\u5173\u95ED\u8BB0\u5F55">\u5173\u95ED</button></div><p class="tiny muted">${esc(dt(item.timestamp))}${item.where ? " \xB7 " + esc(item.where) : ""}</p>${item.artifact ? renderSafeFootprintArtifact(item.artifact) : ""}${full}${thoughts.length ? `<details><summary>\u90A3\u6B21\u8BA1\u5212\u65F6\u8BB0\u4E0B\u7684\u8BDD \xB7 \u4E3B\u89C2\u60F3\u6CD5</summary>${thoughts.map((t) => `<p class="life-detail-text">${esc(t.text)}<br><time class="tiny muted">${esc(dt(t.at))}</time></p>`).join("")}</details>` : ""}<details class="life-provenance"><summary>\u8BB0\u5F55\u4F9D\u636E</summary><p class="tiny muted">${esc(item.category === "drama" ? "\u8FD9\u662F\u73B0\u5B9E\u4E2D\u7684\u6392\u6F14\u53C2\u4E0E\u8BB0\u5F55\uFF0C\u5267\u5185\u5267\u60C5\u4E0D\u662F\u73B0\u5B9E\u4E8B\u5B9E\u3002" : item.category === "scene" ? "\u6309\u539F\u53D1\u8A00\u4E0E\u53D9\u8FF0\u4FDD\u7559\uFF0C\u4E0D\u5C06\u4E3B\u5F20\u89C6\u4E3A\u5916\u90E8\u8BC1\u5B9E\uFF1B\u7ED3\u675F\u4EA4\u4E92\u4E0D\u63A8\u65AD\u53CC\u65B9\u544A\u522B\u6216\u8C01\u79BB\u5F00\u3002" : "\u6765\u81EA\u6709\u6548\u7684\u5DF2\u4FDD\u5B58\u8BB0\u5F55\u3002")}${event?.lifeRecord && collectRoleLife(r, at).historicalProfileEventIds.has(event.id) ? " \u65E7\u6863\u6848\u4EC5\u89E3\u91CA\u5F53\u65F6\uFF0C\u4E0D\u80FD\u8BC1\u660E\u5F53\u524D\u804C\u4E1A\u3001\u5730\u70B9\u6216\u5173\u7CFB\u3002" : ""}</p><p class="tiny muted">${[...item.sourceEventIds, ...item.sourceMessageIds].map(esc).join(" \xB7 ")}</p>${event?.lifeRecord ? `<button type="button" class="btn small ghost" data-action="retractlife" data-id="${esc(event.id)}">\u64A4\u56DE\u6B64\u6A21\u62DF\u8BB0\u5F55</button>` : ""}</details></form>`;
+      dialog.addEventListener("click", (event2) => {
+        const target = event2.target.closest("[data-action=retractlife]");
+        if (!target || data !== world || role() !== r || view !== "monitor" || !checkWriteAccess()) return;
+        const record = collectRoleLife(r, now()).events.find((e) => e.id === target.dataset.id && e.lifeRecord);
+        if (!record || !confirm("\u64A4\u56DE\u8FD9\u6761\u6A21\u62DF\u751F\u6D3B\u8BB0\u5F55\uFF1F\u539F\u6587\u4F1A\u4FDD\u7559\uFF0C\u540E\u7EED\u804A\u5929\u548C\u65E5\u8BB0\u4E0D\u518D\u628A\u5B83\u5F53\u4F5C\u6709\u6548\u751F\u6D3B\u4E8B\u5B9E\u3002")) return;
+        const previous = record.status;
+        record.status = "retracted";
+        if (!save()) {
+          record.status = previous;
+          return;
+        }
+        dialog.close();
+        render(false);
+      });
+      dialog.addEventListener("close", () => {
+        dialog.remove();
+        if (data === world && role() === r && focus instanceof HTMLElement && focus.isConnected) focus.focus({ preventScroll: true });
+      }, { once: true });
+      document.body.append(dialog);
+      dialog.showModal();
     }
     function renderFocusSettlementModal() {
       if (!focusSettlementModalSessionId) return "";
@@ -19600,6 +19839,8 @@ channel.onmessage=async({data:job})=>{
           const pending = pendingFor(r);
           const a = activity(r, now());
           cap.textContent = pending ? `${pending} \u6761\u6D88\u606F\u7B49\u5F85\u56DE\u590D` : a.doing;
+          const state2 = document.querySelector(".widget-person small");
+          if (state2) state2.textContent = a.label + (a.where ? " \xB7 " + a.where : "");
         }
       }
     }
@@ -20220,7 +20461,7 @@ channel.onmessage=async({data:job})=>{
         if (!recovering && feeRisk && !window.confirm("\u6B64\u65E5\u671F\u7684\u65E5\u8BB0\u6B64\u524D\u53EF\u80FD\u5DF2\u7ECF\u8BA1\u8D39\u3002\u518D\u6B21\u751F\u6210\u53EF\u80FD\u4EA7\u751F\u7B2C\u4E8C\u6B21\u8D39\u7528\u3002" + (receipt?.state === "ready" ? "\u8FD9\u4F1A\u66FF\u6362\u76EE\u524D\u4FDD\u7559\u7684\u672A\u5F52\u6863\u6B63\u6587\u3002" : "") + "\u786E\u5B9A\u7EE7\u7EED\uFF1F")) return false;
         const { messages, facts, personal } = buildCharacterDiaryPrompt(r, world.user, dateKey);
         const memoryAt = Math.min(now(), getLocalDayBounds(dateKey).endMs), memoryStart = getLocalDayBounds(dateKey).startMs;
-        const memorySnapshot2 = () => roleMemoryText(r, memoryAt, "", { since: memoryStart });
+        const memorySnapshot2 = () => roleMemoryText(r, memoryAt, "", { since: memoryStart, includePrivate: false });
         const snapshot3 = JSON.stringify([world.user, facts, memorySnapshot2()]);
         const sourcesMatch = () => snapshot3 === JSON.stringify([world.user, collectDailyDiaryFacts(r, dateKey, true), memorySnapshot2()]) && personalTicketValid(r, personal);
         const sourceHash = await diarySourceHash(JSON.stringify([snapshot3, { ...personal, id: "" }]));
@@ -21532,6 +21773,10 @@ channel.onmessage=async({data:job})=>{
         if (r && r.id === b.dataset.roleId && r.scene?.id === b.dataset.sceneId) editMeetingPlace();
         return;
       }
+      if (act === "monitor-detail") {
+        if (view === "monitor" && b.isConnected && b.dataset.roleId === r?.id && b.dataset.id) openMonitorDetail(b.dataset.id);
+        return;
+      }
       if (act === "viewmeeting") {
         if (view === "chat" && b.isConnected && b.dataset.roleId === r?.id && r?.meetings?.some((p) => p.id === b.dataset.id && p.endedAt !== void 0)) {
           detailId = b.dataset.id;
@@ -21641,15 +21886,6 @@ channel.onmessage=async({data:job})=>{
           return;
         }
         if (data.settings.autonomousLife === false) lifeController?.abort();
-        render(false);
-        return;
-      }
-      if (act === "retractlife") {
-        const event = r?.events.find((e2) => e2.id === b.dataset.id && e2.kind === "life" && e2.lifeRecord);
-        if (!event || !confirm("\u64A4\u56DE\u8FD9\u6761\u6A21\u62DF\u751F\u6D3B\u8BB0\u5F55\uFF1F\u539F\u6587\u4F1A\u4FDD\u7559\uFF0C\u540E\u7EED\u804A\u5929\u548C\u65E5\u8BB0\u4E0D\u518D\u628A\u5B83\u5F53\u4F5C\u6709\u6548\u751F\u6D3B\u4E8B\u5B9E\u3002")) return;
-        const before = event.status;
-        event.status = "retracted";
-        if (!save()) event.status = before;
         render(false);
         return;
       }

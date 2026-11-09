@@ -2276,3 +2276,21 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
 .monitor-life .fp-date-display{min-width:0}
 .monitor-life .fp-nav-btn{flex-shrink:0}
 @media(max-width:420px){.monitor-life .fp-date-bar{gap:6px}.monitor-life .fp-nav-btn{padding:8px;font-size:12px}.monitor-life .fp-date-display strong{font-size:14px}}
+
+/* Daily life stays a single timeline; paper objects open without replacing history. */
+.monitor-life .life-timeline-item{display:grid;grid-template-columns:48px minmax(0,1fr);gap:12px;padding:14px 0;border:0;border-radius:0;background:transparent;box-shadow:none}
+.life-timeline-item>.fp-time-badge{align-self:start}
+.life-timeline-content{min-width:0;border-left:1px solid var(--line);padding:0 0 8px 15px}
+.life-record-open{display:block;width:100%;border:0;padding:0;background:transparent;color:var(--ink);text-align:left;cursor:pointer}
+.monitor-life .life-record-open h3{font-size:15px;margin:0 0 6px}
+.monitor-life .life-record-open .life-narrative{font-size:13px;margin:0 0 6px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.life-record-open:focus-visible,.fp-artifact-trigger:focus-visible{outline:2px solid var(--accent);outline-offset:4px;border-radius:8px}
+.fp-artifact-trigger{display:block;max-width:100%;width:260px;border:0;padding:0;margin-top:12px;background:transparent;cursor:pointer;text-align:left;color:var(--ink)}
+.fp-artifact-trigger .fp-artifact-card{max-height:160px;overflow:hidden;pointer-events:none;transform:rotate(-1deg);margin:0 0 7px}
+.fp-artifact-trigger>small{display:block;color:var(--muted);font-size:11px;text-align:center}
+.monitor-detail{max-width:min(600px,calc(100vw - 24px));max-height:85dvh;padding:0}
+.monitor-detail .fruit-dialog-body{padding:20px;overflow:auto;max-height:85dvh}
+.monitor-detail .meeting-record{padding:0;height:auto;overflow:visible}
+.life-detail-text{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.85}
+.monitor-life .life-private,.monitor-life .life-settings{border-top:1px solid var(--line);padding:14px 0;margin-top:10px;font-size:13px}
+.monitor-life .life-current-status{font-size:13px;line-height:1.6}

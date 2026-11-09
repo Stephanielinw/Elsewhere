@@ -5,7 +5,7 @@ import {nativePreset,isNativePreset} from './fruit/nativePreset';
 import {nativeBubbleRule,projectChatVoiceProfile,chatVoiceChoice} from './chatVoice';
 import {personalContext,collectRoleLife,personalDiaries} from './roleLife';
 import {projectRoleMemory,projectedUserFields,memoryFactText,eventSourceValid,relationshipContext,memoryMessageIndex,memoryRuleConflicts,compactRoleMemory} from './memory';
-import {readRoleMemory,roleMemoryText} from './roleMemoryView';
+import {readRoleMemory,roleMemoryText,roleCurrentState} from './roleMemoryView';
 import {asksPastExperience,memoryRelevance,memoryExcerpt,selectMemoryItems} from './contextBudget';
 import {createLiveNovelContext} from './novelContext';
 import {createFruitState} from './fruit/preset';
@@ -40,18 +40,10 @@ export function routine(
   r: Pick<RoleData, 'job'> & Partial<RoleData>,
   t: number
 ): { icon: string; where: string; doing: string; label: string } {
-  if (r.scene && !r.scene.endedAt && r.scene.startedAt <= t)
-    return {icon:'chat',where:r.scene.where,doing:'与对方当面交谈',label:'正在见面'};
-  if (r.play && !r.play.endedAt && r.play.startedAt <= t)
-    return {icon:'drama',where:'戏剧场景',doing:r.play.paused?'正在幕间讨论':'正在排演戏剧',label:r.play.paused?'幕间讨论':'戏剧演出'};
-  const life = r.id&&Array.isArray(r.chats)&&Array.isArray(r.diaries)&&Array.isArray(r.events)?collectRoleLife(r as RoleData,t):null;
-  const observation = (life?.events||[]).filter(e =>
-    !life!.historicalProfileEventIds.has(e.id)&&
-    e.kind === 'life' && e.at <= t && t - e.at <= 30 * 60000 &&
-    e.status !== 'retracted' && e.status !== 'superseded' &&
-    e.source && e.knownBy?.includes(r.id || '')
-  ).sort((a,b) => b.at - a.at)[0];
-  if (observation) return {icon:'clock',where:observation.where || '地点尚未确认',doing:`最近记录：${observation.detail}`,label:observation.title};
+  if(r.id&&Array.isArray(r.chats)&&Array.isArray(r.diaries)&&Array.isArray(r.events)){
+    const state=roleCurrentState(r as RoleData,t);
+    if(state.kind!=='unknown')return {icon:state.kind==='performance'?'drama':state.kind==='meeting'?'chat':'clock',where:state.where,doing:state.kind==='recent'?'最近记录：'+state.label.replace(/^最近：/,''):state.label,label:state.label};
+  }
   return {icon:'clock',where:'地点尚未确认',doing:'暂无可确认的活动记录',label:'当前活动未确认'};
 }
 
@@ -174,7 +166,6 @@ export function buildNativeContext(
     const p = r.play!;
     base = `你正在参与一段独立、封闭的虚构戏剧。仅作为剧中角色行动，不知道剧外的手机、聊天、角色本人真实身份、用户真实身份、日记或其他生活记录。剧名：${p.title}。世界规则与开场：${p.world}。用户在剧内的身份：${p.user}。你在剧内的身份：${p.char}。推进场景、表现人物心理与自身动作，不代替用户做出选择。剧内角色之间的关系仅以剧本及本场对白为准。`;
   } else {
-    const life=collectRoleLife(memoryRole,nowTs),trustedLife=new Set(life.events.map(e=>e.id));
     const a = routine(memoryRole, nowTs);
     const bridgedIds=new Set((kind==='scene'?recentMessages:[]).flatMap(m=>m.sourceMessageId?[m.sourceMessageId,m.id]:[]));
     const candidates=getRoleKnownEvents(r).filter(e=>{
@@ -182,8 +173,8 @@ export function buildNativeContext(
       // Only omit a verbatim record of the same visible source; summaries and facts remain candidates.
       const duplicate=e.kind==='chat'&&message&&e.detail===message.text&&e.at===message.at&&(!e.speaker||e.speaker===message.speaker)&&(!e.source||e.source==='chat');
       if(e.kind==='scene'&&(continuity.messageIds.has(e.messageId||'')||!e.messageId&&e.title==='这次见面结束'))return false;
-      if(kind==='chat'&&e.kind==='life')return false; // Read trusted life once through the shared private projection.
-      return eventSourceValid(memoryRole,e,nowTs,messageIndex,memory.supersededSources)&&!duplicate&&e.kind!=='drama'&&(e.kind!=='life'||trustedLife.has(e.id))&&e.at<=nowTs&&(!e.messageId||!bridgedIds.has(e.messageId));
+      if(e.kind==='life')return false; // Read trusted life once through the shared private projection.
+      return eventSourceValid(memoryRole,e,nowTs,messageIndex,memory.supersededSources)&&!duplicate&&e.kind!=='drama'&&e.at<=nowTs&&(!e.messageId||!bridgedIds.has(e.messageId));
     });
     if(kind!=='chat')recalled=retrieve(memoryRole,input,12,nowTs,candidates);
     if(kind==='chat'){
@@ -193,7 +184,7 @@ export function buildNativeContext(
       recalled=selectMemoryItems(ranked,e=>e.detail,past?1200:260,past?6:3);
     }
     facts = recalled
-      .map((e) => kind==='chat'?`[${e.id} · ${new Date(e.at).toISOString().slice(0,10)} · ${e.speaker==='char'?'角色原话/观点，非外部事实证实':e.speaker==='me'?'用户原话/报告':'有来源的事件'}] ${e.title}: ${e.detail}`:`[${dt(e.at)} | ${e.kind} | ${e.id} | ${e.speaker==='char'?'角色原话/观点，非外部事实证实':e.speaker==='me'?'用户原话/报告':life.historicalProfileEventIds.has(e.id)?'旧档案历史，当前身份、地点和关系以当前档案为准':'有来源的事件'}] ${e.title}: ${e.detail}`)
+      .map((e) => kind==='chat'?`[${e.id} · ${new Date(e.at).toISOString().slice(0,10)} · ${e.speaker==='char'?'角色原话/观点，非外部事实证实':e.speaker==='me'?'用户原话/报告':'有来源的事件'}] ${e.title}: ${e.detail}`:`[${dt(e.at)} | ${e.kind} | ${e.id} | ${e.speaker==='char'?'角色原话/观点，非外部事实证实':e.speaker==='me'?'用户原话/报告':'有来源的事件'}] ${e.title}: ${e.detail}`)
       .join('\n');
     const sharedDiaries = getSharedUserDiariesForRole(r)
       .filter(d=>d.at<=nowTs&&(d.sharedAt?.[r.id]??d.at)<=nowTs)
@@ -202,8 +193,9 @@ export function buildNativeContext(
       .join('\n');
 
     const phasedScene=kind==='scene'&&r.scene?.entryPhase;
-    const activity=r.scene?(phasedScene?'按有效原话继续见面场景':'与用户当面交谈'):kind==='chat'&&a.doing.startsWith('最近记录：')?'最近记录：'+a.label:a.doing;
-    base = `你在扮演名为${r.name}的虚构人物（不是AI助手），有独立生活、工作、偏好和主观感受。身份：${r.job}。所在区域与世界观：${r.place}。性格：${r.traits}。人设：${r.profile}。前史节点与未发生剧情边界：${r.canonNotes || '以用户设定为准'}。用户身份设定：${userIdentity}。你和用户目前的关系：${relationshipContext(memoryRole,nowTs,memory)}。此刻地点：${r.scene?(r.scene.locationEvidence||r.scene.agreement?scenePlaceAt(r,r.scene,nowTs):r.scene.where):a.where}。正在做：${activity}。当前日期时间：${dt(nowTs)}。保持人设一致，但不要机械附和，不替用户决定行为。禁止假装知道没有获悉的私事。所附历史是有来源的部分检索结果，不确定时不要编造。职业与世界设定只约束可能的活动，不代表当下已经发生；不得为所有角色套用固定的统一日程或编造具体行程。`;
+    const activity=kind==='scene'&&r.scene?(phasedScene?'按有效原话继续见面场景':'与用户当面交谈'):a.doing;
+    const whereabouts = kind==='scene'&&r.scene ? '此刻地点：'+(r.scene.locationEvidence||r.scene.agreement?scenePlaceAt(r,r.scene,nowTs):r.scene.where) : a.label.startsWith('最近：') ? '此刻地点：地点尚未确认。最近记录的地点：'+a.where : '此刻地点：'+a.where;
+    base = `你在扮演名为${r.name}的虚构人物（不是AI助手），有独立生活、工作、偏好和主观感受。身份：${r.job}。所在区域与世界观：${r.place}。性格：${r.traits}。人设：${r.profile}。前史节点与未发生剧情边界：${r.canonNotes || '以用户设定为准'}。用户身份设定：${userIdentity}。你和用户目前的关系：${relationshipContext(memoryRole,nowTs,memory)}。${whereabouts}。${a.label.startsWith('最近：')&&kind==='chat'?'活动记录':'正在做'}：${activity}。当前日期时间：${dt(nowTs)}。保持人设一致，但不要机械附和，不替用户决定行为。禁止假装知道没有获悉的私事。所附历史是有来源的部分检索结果，不确定时不要编造。职业与世界设定只约束可能的活动，不代表当下已经发生；不得为所有角色套用固定的统一日程或编造具体行程。`;
     const entry=phasedScene?encounterEntryContext(r,nowTs):undefined;
     if(entry)base+='\n\n'+entry;
     const agreement=r.scene?.agreement;
@@ -220,7 +212,8 @@ export function buildNativeContext(
     }
   }
 
-  if(kind!=='play')base+='\n\n'+roleMemoryText(memoryRole,nowTs,input,{excludeStage:kind==='scene'?r.scene?.id:kind==='intermission'?r.play?.id:undefined});
+  const sharedText=kind==='play'?'':roleMemoryText(memoryRole,nowTs,input,{excludeStage:kind==='scene'?r.scene?.id:kind==='intermission'?r.play?.id:undefined,includePrivate:kind!=='chat'});
+  if(sharedText)base+='\n\n'+sharedText;
   const memoryFragments:Record<string,string>={};
   if(kind!=='play'){
     const lines=memory.facts.map(f=>{
@@ -239,7 +232,7 @@ export function buildNativeContext(
     native_output_rule:kind==='play'?'这是独立戏剧世界，严格遵守本剧角色人设；不要透露戏外知识。':'这是面对面的文字小说，仅描述自己和环境，不替用户行动。'};
   if(options.profile&&(kind==='scene'||kind==='play'))values.native_output_rule+=`目标 ${options.profile.length.min}–${options.profile.length.max} 字，按剧情自然取舍，不凑字数。${options.profile.style?`文风：${options.profile.style}。`:''}`;
   const factsForContext:FruitContext['facts']=[
-    ...(kind!=='play'?[{id:'role-memory:'+r.id,text:roleMemoryText(memoryRole,nowTs,input,{excludeStage:kind==='scene'?r.scene?.id:kind==='intermission'?r.play?.id:undefined}),layer:'currentState' as const,at:nowTs,scope,knownBy:[r.id],active:true,revisionValid:true}]:[]),
+    ...(kind!=='play'?[{id:'role-memory:'+r.id,text:sharedText,layer:'currentState' as const,at:nowTs,scope,knownBy:[r.id],active:true,revisionValid:true}]:[]),
     {id:'identity:'+r.id,text:kind==='play'?`你在剧内的身份：${r.play!.char}`:kind==='intermission'?`你的身份:${r.job}，性格:${r.traits}，完整人设:${r.profile}`:`身份：${r.job}。所在区域与世界观：${r.place}。性格：${r.traits}。人设：${r.profile}。前史节点与未发生剧情边界：${r.canonNotes||'以用户设定为准'}`,layer:'identity',marker:'charDescription',at:nowTs,scope,knownBy:[r.id],active:true,revisionValid:true},
     {id:'relationship:'+r.id,text:kind==='play'?'剧内角色之间的关系仅以剧本及本场对白为准。':relationshipContext(memoryRole,nowTs,memory),layer:'relationship',at:nowTs,scope,knownBy:[r.id],active:true,revisionValid:true},
     {id:'state:'+r.id,text:kind==='play'?r.play!.world:dt(nowTs),layer:'currentState',at:nowTs,scope,knownBy:[r.id],active:true,revisionValid:true},

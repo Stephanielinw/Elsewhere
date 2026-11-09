@@ -94,6 +94,7 @@ import {
 } from './core/avatarFrames';
 import {
   buildFootprintCalendarMonth,
+  renderSafeFootprintArtifact,
   getOrBuildDailyFootprints,
   resolveSafeMonitorDateKey,
 } from './core/footprints';
@@ -1349,7 +1350,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
   }
 
   function activity(r: RoleData, t: number) {
-    const a = routine(r, t);
+    const raw = routine(r, t),a=raw.label==='当前活动未确认'?{...raw,label:'还没有新的生活记录',where:'',doing:'空白的时段暂不推测；有记录时会留在监控里。'}:raw;
     if(awaitingNainOpening(r))return {...a,label:'等待首条消息',where:r.place,doing:'尚未开始正式互动'};
     const f = activeFocus();
     if (
@@ -1866,7 +1867,10 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       const allowed=lifeEnabled()&&!isRoleInActiveFocus(r)&&!activeChatRequests.has(r.id)&&!novelTasks.has(r.id);
       if(!advanceLifePlans(r,now(),allowed,sources=>lifeSourcesValid(r,sources,now())))continue;
       if(!save()){r.lifePlans=before.plans;r.events=before.events;r.lifeTasks=before.tasks;return;}
-      if(view==='monitor'&&role()===r)render(false);
+      if(role()===r){
+        if(view==='monitor')render(false);
+        else if(view==='home')patchDynamicRegionsOnTick();
+      }
     }
   }
   function pumpRoleLife():void {
@@ -2860,9 +2864,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
  <button class="home-widget" data-action="openconversation" data-role-id="${esc(r.id)}"><div class="home-widget-top"><div class="widget-person">${avatarTag(
    r,
    'widget-avatar'
- )}<div><b>${esc(r.name)}</b><small>${esc(a.label)} · ${esc(
-        a.where
-      )}</small></div></div><span class="widget-arrow">›</span></div><div class="widget-divider"></div><div class="widget-bottom"><span class="widget-caption">${captionText}</span><span class="widget-action">${r.scene&&r.scene.endedAt===undefined?'返回见面':'打开聊天'} →</span></div></button>
+ )}<div><b>${esc(r.name)}</b><small>${esc(a.label)}${a.where?' · '+esc(a.where):''}</small></div></div><span class="widget-arrow">›</span></div><div class="widget-divider"></div><div class="widget-bottom"><span class="widget-caption">${captionText}</span><span class="widget-action">${r.scene&&r.scene.endedAt===undefined?'返回见面':'打开聊天'} →</span></div></button>
  <div class="shared-widgets" id="home-task-cards">${homeTasks.renderCards()}</div>
 
  ${
@@ -3510,30 +3512,45 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     const items=monitorItemsForDisplay(r,data.user,archive.items,at),life=collectRoleLife(r,cutoff);
     let state=lifeJournalError;
     if(!state)try{state=lifeTaskState(data.roles,r,at,Boolean(token.trim())&&canUseRealModel(data.settings),data.settings.autonomousLife!==false,[...readLifeJournal(localStorage),...lifeClaims.map(t=>data.roles.find(r=>r.id===t.roleId)?.lifeTasks?.find(x=>x.id===t.id)||t)],lifeBusy&&Boolean(lifeController));}catch{state='生活调用额度记录无法核验，自动推进已暂停。';}
-    const list=items.map(item=>{
-      const event=item.category==='life'?life.events.find(e=>e.id===item.sourceEventIds[0]):undefined;
-      const source=event?.lifeRecord?'生活模拟 · 已归档'+(life.historicalProfileEventIds.has(event.id)?' · 旧档案历史':''):item.category==='life'?'有来源的生活记录':item.category==='drama'?'排演参与 · 不计作戏内人生':'有效互动';
-      return `<article class="card footprint-card" data-testid="footprint-item" data-fp-category="${esc(item.category)}" data-fp-id="${esc(item.id)}">
-        <div class="row between"><time class="fp-time-badge">${esc(hm(item.timestamp))}</time><span class="tiny muted">${esc(source)}</span></div>
-        <h3>${esc(item.title)}</h3><p class="life-narrative">${esc(item.summary)}</p>${item.where?`<div class="tiny muted">${uiIcon('pin')}${esc(item.where)}</div>`:''}
-        <details class="life-provenance"><summary>来源与记录</summary><p class="tiny muted">${esc(dt(item.timestamp))} · ${esc(source)}</p>
-          ${(item.rawTranscript||[]).slice(0,3).map(t=>`<p class="tiny">${esc(t.speakerLabel)} · ${esc(t.text.slice(0,240))}</p>`).join('')}
-          ${event?.lifeRecord?`<div class="tiny muted">${event.lifeRecord.sources.map(s=>esc(s.kind+':'+s.id)).join(' · ')}</div><button class="btn small ghost" data-action="retractlife" data-id="${esc(event.id)}">撤回此模拟记录</button>`:''}
-        </details></article>`;
-    }).join('');
+    const list=items.map(item=>`<article class="footprint-card life-timeline-item" data-testid="footprint-item" data-fp-category="${esc(item.category)}" data-fp-id="${esc(item.id)}">
+      <time class="fp-time-badge">${esc(hm(item.timestamp))}</time><div class="life-timeline-content"><button type="button" class="life-record-open" data-action="monitor-detail" data-id="${esc(item.id)}" data-role-id="${esc(r.id)}" aria-label="查看${esc(item.title)}"><h3>${esc(item.title)}</h3><p class="life-narrative">${esc(item.summary)}</p>${item.where?`<span class="tiny muted">${uiIcon('pin')}${esc(item.where)}</span>`:''}</button>
+      ${item.artifact?`<button type="button" class="fp-artifact-trigger" data-action="monitor-detail" data-id="${esc(item.id)}" data-role-id="${esc(r.id)}" aria-label="查看${item.artifact.kind==='list'?'手写清单':'生活物件'}：${esc(item.artifact.header)}">${renderSafeFootprintArtifact(item.artifact)}<small>展开物件</small></button>`:''}</div></article>`).join('');
     const thoughts=life.threads.filter(t=>t.at<=cutoff).slice(0,3);
     return shell(`${header('生活监控','home')}<div class="viewport monitor-life">
       <div class="row between"><div><div class="label">DAILY FOOTPRINTS</div><h2>日常足迹</h2></div>${avatarTag(r,'avatar large')}</div>
-      <p class="sub">发生在${esc(r.name)}自己世界里的生活。没有记录的时段保持未知。</p>
+      <p class="sub life-current-status" data-testid="role-life-status">${esc(activity(r,at).label)}${activity(r,at).where?' · '+esc(activity(r,at).where):''}</p>
       <div class="fp-date-bar" data-testid="monitor-date-bar">
         <button class="btn small secondary fp-nav-btn" data-action="monitordate" data-date="${esc(shiftDateKey(monitorDateKey,-1))}" data-testid="monitor-prev-day" aria-label="前一天">‹ 前一天</button>
         <button class="fp-date-display" data-action="togglefootprintcal" data-testid="monitor-date-display"><strong>${esc(bounds.label)}</strong><small>${esc(monitorDateKey)} · ${monitorDateKey===today?'今天':'历史归档'} ▾</small></button>
         <button class="btn small secondary fp-nav-btn" data-action="monitordate" data-date="${esc(shiftDateKey(monitorDateKey,1))}" data-testid="monitor-next-day" ${monitorDateKey<today?'':'disabled'} aria-label="后一天">后一天 ›</button>
       </div>${renderFootprintCalendarDrawer(r,monitorDateKey)}
-      <div class="footprints-list" data-testid="footprints-list">${list||`<div class="card fp-empty-card" data-testid="footprint-calm-empty">${uiIcon('leaf')}<h3>尚无已归档的生活记录</h3><p>这不代表已确认整天无事发生。API 不可用时，不会补造活动。</p></div>`}</div>
-      ${thoughts.length?`<details class="card life-private" data-testid="life-private"><summary>私人关注 · 主观想法</summary><p class="tiny muted">这是${esc(r.name)}自己记下的想法、计划或判断，不等于外部事实，也不表示已经告诉了你。</p>${thoughts.map(t=>`<p>${esc(t.text)}<br><time class="tiny muted">${esc(dt(t.at))}</time></p>`).join('')}</details>`:''}
-      <details class="card life-settings" data-testid="life-settings"><summary>生活推进与调用额度</summary><p data-testid="life-state">${esc(state)}</p><p class="tiny muted">仅在网页打开且空闲时推进当天最近一段生活。每角色每天最多 1 次，全应用每天及最近 24 小时最多 2 次；失败计入额度，不自动重试。普通聊天与每篇日记仍各使用原有一次请求，额度独立计算。</p><button class="btn small secondary" data-action="toggleautonomouslife">${data.settings.autonomousLife===false?'恢复自动推进':'暂停自动推进'}</button></details>
+      <div class="footprints-list" data-testid="footprints-list">${list||`<div class="fp-empty-card" data-testid="footprint-calm-empty">${uiIcon('leaf')}<h3>这一天还没有留下记录</h3><p>空白不代表什么都没做；有依据的经历会留在这里。</p></div>`}</div>
+      ${thoughts.length?`<details class="life-private" data-testid="life-private"><summary>随手记下的话</summary><p class="tiny muted">这是${esc(r.name)}自己记下的想法、计划或判断，不等于外部事实，也不表示已经告诉了你。</p>${thoughts.map(t=>`<p>${esc(t.text)}<br><time class="tiny muted">${esc(dt(t.at))}</time></p>`).join('')}</details>`:''}
+      <details class="life-settings" data-testid="life-settings"><summary>生活设置与记录</summary><p data-testid="life-state">${esc(state)}</p><p class="tiny muted">网页打开且条件合适时执行生活意图；错过或中断的活动不会补写成已完成。每角色每天及最近 24 小时最多 1 次生活请求，全应用每天及最近 24 小时最多 2 次；失败计入额度，不自动重试。每次生活输出上限 2400 token（原为 1200，单次可能更贵），不增加请求次数。普通聊天、日记额度保持原规则。</p>${(r.lifeTasks||[]).slice(-3).map(t=>`<p class="tiny muted life-cost-row">${esc(t.dateKey)} · ${t.transport==='not-sent'?'确定未发送':t.transport==='returned'?'正文已返回':t.status==='attempted'||t.transport==='unknown'?'发送或结果未确认':'既有调用记录'} · 输出上限 ${t.outputTokenLimit||1200} token${t.usage?` · 服务商实报：输入 ${t.usage.input??'未提供'} / 输出 ${t.usage.output??'未提供'}`:' · 服务商未提供实际用量'}；计费以服务商为准。</p>`).join('')}<button class="btn small secondary" data-action="toggleautonomouslife">${data.settings.autonomousLife===false?'恢复自动推进':'暂停自动推进'}</button></details>
     </div>`);
+  }
+
+  function openMonitorDetail(id:string):void {
+    const r=role(),world=data;if(!r||view!=='monitor')return;
+    const at=now(),date=resolveSafeMonitorDateKey(monitorDateKey,at),item=monitorItemsForDisplay(r,data.user,getOrBuildDailyFootprints(r,date,at).items,at).find(i=>i.id===id);if(!item)return;
+    const dialog=document.createElement('dialog'),focus=document.activeElement;dialog.className='fruit-dialog monitor-detail';
+    const scene=item.category==='scene'?r.meetings?.find(s=>item.id==='fp_scene_'+s.id):undefined;
+    const full=scene?meetingRecordHtml(r,scene).replace('id="scroll-area"','data-monitor-record-area'):((item.rawTranscript||[]).map(t=>`<p class="life-detail-text"><span class="tiny muted">${esc(t.speakerLabel)} · ${esc(hm(t.at))}</span><br>${esc(t.text)}</p>`).join('')||`<p class="life-detail-text">${esc(item.summary)}</p>`);
+    const event=item.category==='life'?collectRoleLife(r,at).events.find(e=>e.id===item.sourceEventIds[0]):undefined;
+    const thoughts=event?.lifeRecord?collectRoleLife(r,at).threads.filter(t=>t.requestId===event.lifeRecord!.taskId&&t.at<=event.at):[];
+    dialog.innerHTML=`<form method="dialog" class="fruit-dialog-body"><div class="row between"><h2>${esc(item.title)}</h2><button class="btn small ghost" aria-label="关闭记录">关闭</button></div><p class="tiny muted">${esc(dt(item.timestamp))}${item.where?' · '+esc(item.where):''}</p>${item.artifact?renderSafeFootprintArtifact(item.artifact):''}${full}${thoughts.length?`<details><summary>那次计划时记下的话 · 主观想法</summary>${thoughts.map(t=>`<p class="life-detail-text">${esc(t.text)}<br><time class="tiny muted">${esc(dt(t.at))}</time></p>`).join('')}</details>`:''}<details class="life-provenance"><summary>记录依据</summary><p class="tiny muted">${esc(item.category==='drama'?'这是现实中的排演参与记录，剧内剧情不是现实事实。':item.category==='scene'?'按原发言与叙述保留，不将主张视为外部证实；结束交互不推断双方告别或谁离开。':'来自有效的已保存记录。')}${event?.lifeRecord&&collectRoleLife(r,at).historicalProfileEventIds.has(event.id)?' 旧档案仅解释当时，不能证明当前职业、地点或关系。':''}</p><p class="tiny muted">${[...item.sourceEventIds,...item.sourceMessageIds].map(esc).join(' · ')}</p>${event?.lifeRecord?`<button type="button" class="btn small ghost" data-action="retractlife" data-id="${esc(event.id)}">撤回此模拟记录</button>`:''}</details></form>`;
+    dialog.addEventListener('click', event => {
+      const target = (event.target as Element).closest<HTMLButtonElement>('[data-action=retractlife]');
+      if (!target || data !== world || role() !== r || view !== 'monitor' || !checkWriteAccess()) return;
+      const record = collectRoleLife(r, now()).events.find(e => e.id === target.dataset.id && e.lifeRecord);
+      if (!record || !confirm('撤回这条模拟生活记录？原文会保留，后续聊天和日记不再把它当作有效生活事实。')) return;
+      const previous = record.status;
+      record.status = 'retracted';
+      if (!save()) { record.status = previous; return; }
+      dialog.close();
+      render(false);
+    });
+    dialog.addEventListener('close',()=>{dialog.remove();if(data===world&&role()===r&&focus instanceof HTMLElement&&focus.isConnected)focus.focus({preventScroll:true});},{once:true});document.body.append(dialog);dialog.showModal();
   }
 
   function renderFocusSettlementModal(): string {
@@ -4717,6 +4734,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         const pending = pendingFor(r);
         const a = activity(r, now());
         cap.textContent = pending ? `${pending} 条消息等待回复` : a.doing;
+        const state=document.querySelector<HTMLElement>('.widget-person small');if(state)state.textContent=a.label+(a.where?' · '+a.where:'');
       }
     }
   }
@@ -5287,7 +5305,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         (receipt?.state==='ready'?'这会替换目前保留的未归档正文。':'')+'确定继续？'))return false;
       const {messages,facts,personal}=buildCharacterDiaryPrompt(r,world.user,dateKey);
       const memoryAt=Math.min(now(),getLocalDayBounds(dateKey).endMs),memoryStart=getLocalDayBounds(dateKey).startMs;
-      const memorySnapshot=()=>roleMemoryText(r,memoryAt,'',{since:memoryStart});
+      const memorySnapshot=()=>roleMemoryText(r,memoryAt,'',{since:memoryStart,includePrivate:false});
       const snapshot=JSON.stringify([world.user,facts,memorySnapshot()]);
       const sourcesMatch=()=>snapshot===JSON.stringify([world.user,collectDailyDiaryFacts(r,dateKey,true),memorySnapshot()])&&personalTicketValid(r,personal);
       const sourceHash=await diarySourceHash(JSON.stringify([snapshot,{...personal,id:''}]));
@@ -6515,6 +6533,9 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if(act==='edit-meeting-place'){
       if(r&&r.id===b.dataset.roleId&&r.scene?.id===b.dataset.sceneId)editMeetingPlace();return;
     }
+    if(act==='monitor-detail'){
+      if(view==='monitor'&&b.isConnected&&b.dataset.roleId===r?.id&&b.dataset.id)openMonitorDetail(b.dataset.id);return;
+    }
     if(act==='viewmeeting'){
       if(view==='chat'&&b.isConnected&&b.dataset.roleId===r?.id&&r?.meetings?.some(p=>p.id===b.dataset.id&&p.endedAt!==undefined)){detailId=b.dataset.id!;go('meetingdetail');}return;
     }
@@ -6607,11 +6628,6 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if(!save()){data.settings.autonomousLife=previous;return;}
       if(data.settings.autonomousLife===false)lifeController?.abort();
       render(false);return;
-    }
-    if(act==='retractlife'){
-      const event=r?.events.find(e=>e.id===b.dataset.id&&e.kind==='life'&&e.lifeRecord);
-      if(!event||!confirm('撤回这条模拟生活记录？原文会保留，后续聊天和日记不再把它当作有效生活事实。'))return;
-      const before=event.status;event.status='retracted';if(!save())event.status=before;render(false);return;
     }
     if (act === 'openframemodal') {
       const ownerType = b.dataset.owner === 'user' ? 'user' : 'role';

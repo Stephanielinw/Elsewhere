@@ -67,9 +67,9 @@ async function main(){
    if(!options.original)binding.profile.overrides.unused=false;
    if(options.disabled)binding.enabled=false;
    if(options.invalidReference)binding.profile.overrides['not-an-entry']=false;
-   const p=await ctx.newPage();p.setDefaultTimeout(8000);p.setDefaultNavigationTimeout(10000);await p.goto(url);trace('seed page loaded');
+   const p=await ctx.newPage();p.setDefaultTimeout(8000);p.setDefaultNavigationTimeout(10000);await p.clock.install({time:at});await p.goto(url);trace('seed page loaded');
    await p.evaluate(async({d,l,key,endpoint})=>{localStorage.setItem(key,JSON.stringify(d));localStorage.setItem('elsewhere-device-api-key-v1',JSON.stringify({endpoint,key:'SYNTHETIC_ONLY'}));await new Promise((yes,no)=>{const q=indexedDB.open('elsewhere-fruit-private-v1',2);q.onupgradeneeded=()=>{q.result.createObjectStore('documents');q.result.createObjectStore('preset-library');};q.onsuccess=()=>{const db=q.result,tx=db.transaction('preset-library','readwrite');tx.objectStore('preset-library').put(l,'current');tx.oncomplete=()=>{db.close();yes();};tx.onabort=()=>no(Error('isolated preset seed failed'));};});},{d,l:serializePresetLibrary(l),key,endpoint});
-   trace('preset seeded');const ready=()=>p.locator('#app[data-storage-state=ready][data-write-access=writer]').waitFor();await p.reload();trace('app loaded');await ready();trace('write access ready');await p.clock.install({time:at});
+   trace('preset seeded');const ready=()=>p.locator('#app[data-storage-state=ready][data-write-access=writer]').waitFor();await p.reload();trace('app loaded');await ready();trace('write access ready');
    await p.locator('[data-action=enter][data-id=ios-role]').click();await p.locator('[data-action=openconversation]').click();
    if(options.fault)await p.evaluate(f=>window.iosFault=f,options.fault);
    const saved=()=>p.evaluate(key=>JSON.parse(localStorage.getItem(key)),key),record=async()=>(await saved()).roles[0].scene;

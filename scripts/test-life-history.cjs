@@ -132,7 +132,11 @@ async function main(){
       for(const fields of [{name:'合成新名'},{job:'作家'},{traits:'外向'},{place:'新山城'},{profile:'新的写作背景'},{relationship:'新关系'},{canonNotes:'新的边界'}]){
         await t.edit(fields);await t.monitor();
         assert.equal(await t.lifeCards.count(),1,Object.keys(fields)[0]);
-        assert.match(await t.lifeCards.innerText(),/旧档案历史/);
+        await t.lifeCards.locator('[data-action=monitor-detail]').first().click();
+        const details=t.p.locator('dialog.monitor-detail .life-provenance');
+        await details.locator('summary').click();
+        assert.match(await details.innerText(),/旧档案.*仅解释当时/);
+        await t.p.getByRole('button',{name:'关闭记录',exact:true}).click();
         const r=await t.owner();assert.equal(JSON.stringify({events:r.events,tasks:r.lifeTasks}),original);
       }
       await t.reload();await t.monitor();assert.equal(await t.lifeCards.count(),1);
@@ -216,7 +220,8 @@ async function main(){
       assert.equal(t.posts.length,0);
     },{basis:true});
     await run('explicit history withdrawal stays withdrawn through rename and refresh',async t=>{
-      await t.monitor();await t.lifeCards.locator('summary').click();t.p.once('dialog',d=>d.accept());
+      await t.monitor();await t.lifeCards.locator('[data-action=monitor-detail]').first().click();
+      await t.p.locator('dialog.monitor-detail .life-provenance summary').click();t.p.once('dialog',d=>d.accept());
       await t.p.locator('[data-action=retractlife]').click();
       await t.edit({name:'合成新名'});await t.reload();await t.monitor();
       assert.equal(await t.lifeCards.count(),0);

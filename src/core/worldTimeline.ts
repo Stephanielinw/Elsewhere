@@ -15,7 +15,7 @@ export interface TimelineEntry {
  from:number;to:number;destination?:string;
 }
 export interface TimelineTicket {
- id:string;roleId:string;zone:string;at:number;start:number;end:number;cutoff:number;gaps:Span[];
+ id:string;roleId:string;zone:string;at:number;start:number;end:number;cutoff:number;gaps:Span[];historyStart?:number;
  profile:PersonalSource;life:boolean;mode:'chat'|'diary'|'thought';
 }
 interface Aux {
@@ -74,12 +74,17 @@ export function prepareTimeline(data:AppData,r:RoleData,at:number,id:string,mode
  const end=endMs+1,cutoff=Math.min(end,at,through),life=mode!=='thought'&&data.settings.autonomousLife!==false;
  if(mode==='diary'&&!life)return;
  const occupied=life?recordedSpans(r,cutoff):[];
- const gaps=life?missingSpans(start,cutoff,occupied).flatMap(([a,b])=>{
+ const previousStart=life&&mode==='chat'?worldDay(worldDate(start-1,zone),zone).startMs:start;
+ const onPreviousDay=(ts:number)=>ts>=previousStart&&ts<start;
+ const historyStart=mode==='chat'&&(occupied.some(([a,b])=>a<start&&b>previousStart)||
+  r.events.some(e=>e.lifeRecord?.timeline&&onPreviousDay(e.lifeRecord.timeline.generatedAt))||
+  r.chats.some(m=>m.status!=='retracted'&&onPreviousDay(m.at)))?previousStart:start;
+ const gaps=life?missingSpans(historyStart,cutoff,occupied).flatMap(([a,b])=>{
   const from=Math.ceil((a-start)/minute),to=Math.floor((b-start)/minute);
   return from<to?[[from,to] as Span]:[];
- }):[];
+ }).slice(0,24):[];
  const profile:PersonalSource={kind:'profile',id:r.id,at,version:profileValue(r)};
- const ticket:TimelineTicket={id,roleId:r.id,zone,at,start,end,cutoff,gaps,profile,life,mode};
+ const ticket:TimelineTicket={id,roleId:r.id,zone,at,start,end,cutoff,gaps,profile,life,mode,...(historyStart<start?{historyStart}:{})};
  const extra=Math.min(1536,128+32*Math.ceil(gaps.reduce((n,[a,b])=>n+b-a,0)/60)+48*gaps.length+(mode==='diary'?0:192));
  const present=timelineState(r,at);
  const rules=mode==='diary'?
@@ -88,7 +93,7 @@ export function prepareTimeline(data:AppData,r:RoleData,at:number,id:string,mode
  const fields=JSON.stringify({requestId:id,roleId:r.id,...(life?{life:[{id:'a',from:0,to:60,action:'sleep',where:'可选地点'}]}:{}),...(mode!=='diary'?{thought:'我当时的想法',thoughts:[{index:0,anchor:'正文原句',text:'我当时的想法'}]}:{})});
  const facts=mode==='thought'?'':JSON.stringify({worldTimeZone:zone,dayStart:start,cutoff,end,missingElapsedMinutes:gaps,knownRegion:r.place,current:present?.label,location:present?.where});
  const instruction=`[Elsewhere Timeline] 保持主要回复完整，把附带字段合并到已有 elsewhere_private_state JSON（标签拼写沿用上文）或在正文后附加 <elsewhere_private_state>${fields}</elsewhere_private_state>。只用 roleId、requestId 和给出的字段。心声不是对白。 ${rules}
-${life?'生活按世界日零点以来的实际分钟 from/to 划连续区间，优先补齐缺口，可用一个区间覆盖数小时；至多两个未来安排。动作 sleep/rest/work/eat/drink/walk/read/shop/social/travel。地点参考已有地区和当前位置，移动用 travel 加 destination。只创造低影响日常，不伪造玩家参与、重要承诺、关系、大额财产或他人的重要决定。正文不要声称候选活动已发生，避免与当前状态冲突。无把握留空。':''}
+${life?'生活按 dayStart 起算的实际分钟 from/to 划连续区间。只补给出的缺口；负数在上一世界日。一个区间可跨午夜和多个小时；至多两个未来安排。动作 sleep/rest/work/eat/drink/walk/read/shop/social/travel。地点参考已有地区和当前位置，移动用 travel 加 destination。只创造低影响日常，不伪造玩家参与、重要承诺、关系、大额财产或他人的重要决定。正文不要声称候选活动已发生，避免与当前状态冲突。无把握留空。':''}
 ${facts}
 [/Elsewhere Timeline]`;
  if(estimateTextTokens(instruction)>900)return;
@@ -141,6 +146,8 @@ export function applyTimeline(r:RoleData,ticket:TimelineTicket,payload:Aux|undef
  if(!validWorldZone(ticket.zone)||![ticket.at,ticket.start,ticket.end,ticket.cutoff,at].every(Number.isFinite)||
   ticket.start>ticket.cutoff||ticket.cutoff>ticket.at||ticket.at>at||ticket.cutoff>ticket.end||ticket.end-ticket.start>26*3600000||
   !Array.isArray(ticket.gaps)||ticket.gaps.some(gap=>!Array.isArray(gap)||gap.length!==2||!gap.every(Number.isInteger)))return result;
+ const historyStart=ticket.historyStart??ticket.start;
+ if(ticket.historyStart!==undefined&&(ticket.mode!=='chat'||!Number.isFinite(historyStart)||historyStart>=ticket.start||ticket.start-historyStart>26*3600000))return result;
  const claimsPlaces=r.events.map(e=>e.where).filter((s):s is string=>!!s&&s.length>=2);
  const occupied=[...recordedSpans(r,at),...blocked];
  const declaredAction=(Object.keys(actions) as Action[]).find(action=>
@@ -163,8 +170,8 @@ export function applyTimeline(r:RoleData,ticket:TimelineTicket,payload:Aux|undef
   const contradicts=active&&declaredAction&&action!==declaredAction||elapsed&&/我(?:早上|上午|中午|下午|晚上|刚才|之前)[^。！？\n]{0,24}(?:在|去|喝|吃|工作|休息|买|见)/.test(publicText)||active&&where&&claimsPlaces.some(place=>place!==where&&publicText.includes(place))||
    active&&where&&/我(?:现在|正在|就在|在)[^。！？\n]{1,28}(?:馆|店|家|公司|医院|车站|机场|公园)/.test(publicText)&&!publicText.includes(where);
   if(typeof key!=='string'||!/^[a-zA-Z0-9_-]{1,24}$/.test(key)||accepted.has(key)||!isAction(action)||
-   !Number.isInteger(item.from)||!Number.isInteger(item.to)||from<ticket.start||from>=ticket.end||
-   to>(elapsed?ticket.end:Math.max(ticket.end,ticket.at+12*3600000))||duration<minute||
+   !Number.isInteger(item.from)||!Number.isInteger(item.to)||from<historyStart||from>=ticket.end||
+   to>(elapsed?ticket.end:Math.max(ticket.end,ticket.at+12*3600000))||duration<minute||duration>26*3600000||
    (!elapsed&&!active&&!future)||!inGap||overlaps(from,to,occupied)||future&&planned>=2||
    hasUnsupportedLocation||where&&previous&&where!==previous||action==='travel'&&!validDestination||action!=='travel'&&item.destination!==undefined||
    ancient&&(action==='drink'||[where,destination].some(place=>place?.endsWith('咖啡馆')))||contradicts){

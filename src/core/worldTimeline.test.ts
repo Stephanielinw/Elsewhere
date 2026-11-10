@@ -118,3 +118,31 @@ test('current location does not validate a candidate that contradicts the public
  assert.equal(result.accepted.size,0);
  assert.equal(result.rejected,1);
 });
+
+test('a reopened phone turn offers yesterday’s gaps without converting missed plans into facts',()=>{
+ const {data,role}=setup(),at=midnight+21*hour,next=midnight+24*hour;
+ const first=prepareTimeline(data,role,at,'before-close','chat')!.ticket;
+ applyTimeline(role,first,{requestId:first.id,roleId:role.id,life:[
+  {id:'confirmed',from:0,to:1200,action:'rest',where:role.place},
+  {id:'missed',from:1320,to:1360,action:'read',where:role.place},
+ ]},at);
+ role.meetings=[{id:'meeting',startedAt:midnight+20*hour,endedAt:at,where:role.place,messages:[]}];
+ const reopen=next+853*minute;
+ advanceTimeline(role,reopen,true);
+ const second=prepareTimeline(data,role,reopen,'catch-up','chat')!.ticket;
+ assert.equal(second.start,next);
+ assert.deepEqual(second.gaps,[[-180,853]]);
+ assert.equal(role.events[1].lifeRecord?.timeline?.state,'expired');
+ const result=applyTimeline(role,second,{requestId:second.id,roleId:role.id,life:[
+  {id:'replace',from:-1440,to:-1430,action:'work'},
+  {id:'conflict',from:-240,to:-180,action:'work'},
+  {id:'pledge',from:-180,to:-160,action:'pledge'},
+  {id:'evening',from:-180,to:-120,action:'rest',where:role.place},
+  {id:'night',from:-120,to:480,action:'sleep',where:role.place},
+ ]},reopen);
+ assert.deepEqual([...result.accepted.keys()],['evening','night']);
+ assert.equal(result.rejected,3);
+ assert.equal(collectRoleLife(role,reopen).events.length,3);
+ assert.equal(prepareTimeline(data,role,reopen,'next-phone','chat')!.ticket.gaps[0][0],480);
+ assert.deepEqual(prepareTimeline(data,role,reopen,'next-diary','diary')!.ticket.gaps,[[480,853]]);
+});

@@ -145,6 +145,86 @@ async function cases(run){
   assert.equal(plan((await saved(t)).roles[0])[0].lifeRecord.timeline.state,'running');
   assert.equal(t.posts.length,1);
  });
+ await run('closed overnight and reopened: one phone POST fills both world dates',{
+  phoneFirst:true,at:Date.parse('2026-11-10T05:00:00Z'),zone:'Asia/Tokyo',alter:(r,w)=>{
+   seed(r,w);
+   const day=Date.parse('2026-11-09T08:00:00Z');
+   r.diaries=Array.from({length:9},(_,i)=>{const at=day-i*86400000;return {id:'diary'+i,speaker:'char',source:'manual',text:'合成既有日记',at,dateKey:new Date(at).toISOString().slice(0,10)};});
+   r.lastDiaryCheckDay='2026-11-09';
+   r.proactive={attempts:[{id:'prior-contact',roleId:r.id,at:day+1259*minute,status:'skipped',topicId:'fixture',topic:'既有记录',topicVersion:'fixture',chatVersion:'fixture'}],sentTopics:[]};
+   r.lifeTasks=[{id:'life:'+encodeURIComponent(r.id)+':2026-11-09',roleId:r.id,dateKey:'2026-11-09',at:day+1259*minute,from:day,to:day+1259*minute,status:'quiet'}];
+   r.meetings=[{id:'archived-evening-meeting',where:place,startedAt:day+1200*minute,endedAt:day+1260*minute,messages:[{id:'face-to-face',speaker:'me',text:'旧城咖啡馆的既有见面。',at:day+1220*minute,status:'active'}]}];
+  },
+  response:(p,n)=>{
+   const match=wire(p).match(/\{"worldTimeZone"[^\n]+\}/);
+   assert.ok(match,'Unexpected fixture POST '+n+' '+wire(p).slice(0,280));
+   const input=JSON.parse(match[0]);
+   if(n===1)return side(p,'晚安，合成计划已安排。',{life:[
+    {id:'confirmed',from:0,to:1200,action:'rest',where:place},
+    {id:'missed-read',from:1320,to:1350,action:'read',where:place},
+    {id:'missed-walk',from:1380,to:1410,action:'walk',where:place},
+   ]});
+   if(n===2){
+    assert.equal(input.worldTimeZone,'America/Los_Angeles');
+    assert.deepEqual(input.missingElapsedMinutes[0],[-180,854]);
+    return side(p,'今天聊得正好。',{life:[
+     {id:'duplicate',from:-1400,to:-1390,action:'eat',where:place},
+     {id:'conflict',from:-210,to:-190,action:'work',where:'旧城的工作地点'},
+     {id:'invented-pledge',from:-170,to:-150,action:'pledge',where:place},
+     {id:'outside-world',from:-160,to:-150,action:'read',where:'另一城的书店'},
+     {id:'late-evening',from:-180,to:-120,action:'read',where:place},
+     {id:'overnight',from:-120,to:480,action:'sleep',where:place},
+     {id:'breakfast',from:480,to:530,action:'eat',where:place},
+     {id:'now-coffee',from:854,to:900,action:'drink',where:place},
+    ]});
+   }
+   assert.deepEqual(input.missingElapsedMinutes,[[530,854]]);
+   assert.match(wire(p),/喝咖啡/);assert.match(wire(p),/旧城的咖啡馆/);
+   return side(p,'这次仍然只发一条。',{life:[
+    {id:'replay-night',from:-120,to:480,action:'sleep',where:place},
+    {id:'remaining',from:530,to:854,action:'work',where:place},
+   ]});
+  },
+ },async t=>{
+  const next=Date.parse('2026-11-10T08:00:00Z');
+  const byKey=r=>Object.fromEntries(records(r).map(e=>[e.lifeRecord.timeline.key,e]));
+  const report=r=>records(r).map(e=>({key:e.lifeRecord.timeline.key,state:e.lifeRecord.timeline.state,confirmed:e.lifeEvidence==='confirmed',from:(e.at-next)/minute,to:(e.lifeRecord.until-next)/minute,where:e.where}));
+  const enter=async()=>{await t.p.locator('[data-action=enter][data-id=novel-role]').click();await t.p.locator('.dock [data-view=chat]').click();if(!(await saved(t)).roles[0].chatTiming?.focused)await t.p.locator('[data-action=focuschat]').click();};
+  await t.p.locator('[data-action=focuschat]').click();await send(t,'安排今晚的普通活动');await t.waitPost();
+  await t.p.getByText('晚安，合成计划已安排。',{exact:true}).waitFor();
+  const before=(await saved(t)).roles[0],initial=byKey(before);
+  assert.equal(initial['missed-read'].lifeRecord.timeline.state,'pending');
+  assert.equal(initial['missed-walk'].lifeRecord.timeline.state,'pending');
+  await t.reopen(next+853*minute);await enter();await t.advance(2000);
+  const expired=byKey((await saved(t)).roles[0]);
+  for(const id of ['missed-read','missed-walk']){assert.equal(expired[id].lifeRecord.timeline.state,'expired');assert.equal(expired[id].lifeEvidence,undefined);}
+  assert.equal(t.posts.length,1);
+  await send(t,'今天聊聊近况吧');await t.waitPost(2);
+  await t.p.getByText('今天聊得正好。',{exact:true}).waitFor();
+  const caught=(await saved(t)).roles[0],events=byKey(caught);
+  assert.deepEqual(Object.keys(events).sort(),['confirmed','missed-read','missed-walk','late-evening','overnight','breakfast','now-coffee'].sort());
+  assert.deepEqual(events.confirmed,initial.confirmed);assert.deepEqual(caught.meetings,before.meetings);
+  assert.equal(events.overnight.at,next-120*minute);assert.equal(events.overnight.lifeRecord.until,next+480*minute);
+  assert.equal(events['now-coffee'].lifeRecord.timeline.state,'running');
+  await app(t,'监控');
+  await current(t).filter({hasText:'喝咖啡'}).waitFor();
+  await t.p.getByTestId('monitor-prev-day').click();
+  await t.p.getByTestId('footprint-item').filter({hasText:'阅读'}).waitFor();
+  await t.p.getByTestId('footprint-item').filter({hasText:'睡觉'}).waitFor();
+  await t.p.locator('[data-action=view][data-view=home]').first().click();
+  assert.match(await t.p.locator('.home-widget').innerText(),/喝咖啡/);
+  await t.p.locator('[data-home-page="1"]').click();await t.p.getByRole('button',{name:'打开定位'}).click();
+  assert.match(await t.p.getByTestId('role-location').innerText(),/喝咖啡[\s\S]*旧城的咖啡馆/);
+  await t.reopen(next+856*minute);await enter();assert.equal(t.posts.length,2);
+  assert.deepEqual(report((await saved(t)).roles[0]),report(caught));
+  await send(t,'现在在做什么？');await t.waitPost(3);
+  await t.p.getByText('这次仍然只发一条。',{exact:true}).waitFor();
+  const final=(await saved(t)).roles[0];
+  assert.equal(records(final).length,8);assert.equal(new Set(records(final).map(e=>e.id)).size,8);
+  assert.equal(byKey(final)['remaining'].lifeRecord.timeline.state,'ended');
+  assert.equal(byKey(final)['replay-night'],undefined);
+  console.log('OVERNIGHT '+JSON.stringify({zone:'America/Los_Angeles',relativeTo:'2026-11-10 00:00',before:report(before),expired:report((await saved(t)).roles[0]).filter(e=>e.state==='expired'),catchUpRejected:['duplicate','conflict','invented-pledge','outside-world'],afterCatchUp:report(caught),final:report(final),modelPosts:t.posts.length,extraBackfillPosts:0}));
+ });
  await run('invalid optional metadata keeps the normal reply and creates no thought',{
   phoneFirst:true,alter:seed,content:'正常正文保留。\n<elsewhere_private_state>{坏掉的JSON}</elsewhere_private_state>',
  },async t=>{

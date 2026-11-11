@@ -12,7 +12,7 @@ import {prepareSceneReply,splitSceneReply,sceneReplyMatches,resolveSceneReply} f
 import {phoneMessagesAt,messageSourceIndex,stageMessagesAt,scenePlaceAt} from './core/messageProvenance';
 import {identityName,identityContext,buildNativeContext,compileNativeConversation,compileNovelConversation,compileOpeningPrompt,type NativePromptOptions} from './core/prompt';
 import {ConversationCompileError,requestMessages,promptStructure,type ConversationCompilation} from './core/conversationPrompt';
-import {loadRequestPreset} from './core/fruit/library';
+import {loadElsewhereRequestPreset as loadRequestPreset} from './core/presetLibrary';
 import {PresetPreparationError} from './core/fruit/presetIssue';
 import type {FruitPreset} from './core/fruit/types';
 import {createNovelTasks,commitNovelReply,prepareNovelRegeneration,parseNovelResponse,NovelOutputError,safeNovelText,novelRequestTimeout,novelSamplingParameters,novelSourceKey,type NovelKind} from './core/novelGeneration';
@@ -164,7 +164,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     const messages=mode==='meeting'?encounterHistory(r,stage.messages):getActiveMessages(stage.messages),index=messages.findIndex(m=>m.id===messageId);if(index<0)return null;
     return {roleId,stageId,mode,message:messages[index],depth:messages.slice(index+1).filter(m=>m.speaker!=='note').length,names:mode==='theatre'&&'char'in stage?{char:stage.char,user:stage.user}:{char:r.name,user:identityName(data,r)}};
   });
-  const fruitManager = createFruitManager({currentRole:()=>{const r=role();return r?{id:r.id,name:r.name}:null;},roles:()=>data.roles.map(r=>({id:r.id,name:r.name})),leave:()=>go('home'),legacyInfo:()=>{const p=role()?.preset||data.preset;return p?`旧版原生附加预设仍按既有存档生效：${p.name}（${p.prompts.length} 条）。小说选择不改写它，不将果实注入手机聊天。`:'';}});
+  const fruitManager = createFruitManager({currentRole:()=>{const r=role();return r?{id:r.id,name:r.name}:null;},roles:()=>data.roles.map(r=>({id:r.id,name:r.name})),leave:()=>go('home'),legacyExport:()=>({global:data.preset,roles:data.roles.filter(r=>r.preset).map(r=>({roleId:r.id,preset:r.preset}))})});
   const terminalApi = createTerminalApi({settings:()=>data.settings,key:()=>token,notify:message=>notify(message),save:(settings,key)=>{
     if(!saveSession.current())throw new Error(saveError());
     const previous=data.settings,previousKey=localStorage.getItem(DEVICE_API_KEY);
@@ -1722,7 +1722,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     });
   }
   async function compileRequest(r:RoleData,kind:'chat'|'scene'|'play'|'intermission',build:(options:RequestPromptOptions)=>ConversationCompilation,valid:()=>boolean,novel?:{signal:AbortSignal;stage?:(phase:NovelPhase)=>void}){
-    let skipLegacyOnce=false;
+    let skipLegacyOnce=true;
     while(true){
       const mode=kind==='scene'?'meeting':kind==='play'?'theatre':kind;
       novel?.stage?.('preparing');
@@ -1731,7 +1731,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if(!valid())throw new Error('请求来源已变化，未发送');
       try{
         const compileStarted=performance.now();
-        const compilation=build({profile:snapshot.profile,skipLegacyOnce,preset:snapshot.preset,presetId:snapshot.actualPresetId});
+        const compilation=build({profile:snapshot.profile,skipLegacyOnce:true,preset:snapshot.preset,presetId:snapshot.actualPresetId,elsewherePreset:snapshot.elsewherePreset});
         if(novel?.stage)syslog('novel-lifecycle','预设编译完成',{roleId:null,mode:kind,compileMs:Math.round(performance.now()-compileStarted),promptMessages:compilation.messages.length,estimatedInputTokens:estimateTextTokens(compilation.messages.map(m=>m.content).join('\n')),requestedCharacters:snapshot.profile.length.max,presetId:snapshot.actualPresetId});
         promptTraces.set(r.id,{...promptStructure(compilation),profileRevision:snapshot.revision,requestedPresetId:snapshot.requestedPresetId,actualPresetId:snapshot.actualPresetId,profileOwnerRoleId:snapshot.roleId,profileSource:snapshot.configSource,actualPresetHash:snapshot.presetHash,profileBaseHash:snapshot.profileBaseHash,...(kind==='chat'?{voice:chatVoiceSummary(describeChatVoice(snapshot.profile,r,data.preset),skipLegacyOnce)}:{})});
         const messages=requestMessages(compilation);
@@ -4588,7 +4588,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     return shell(`${header('终端','home')}<div class="viewport terminal-page"><details class="card terminal-settings" open><summary><span>01｜API 与模型</span>${uiIcon('down')}</summary><div id="terminal-api-root"></div></details><details class="card terminal-settings" data-style-panel><summary><span>02｜外观与主题</span>${uiIcon('down')}</summary><div data-style-body="appearance"></div></details><details class="card terminal-settings" data-style-panel><summary><span>03｜聊天气泡自定义</span>${uiIcon('down')}</summary><div data-style-body="bubbles"></div></details><details class="card terminal-other-settings terminal-settings"><summary><span>04｜其他手机设置</span>${uiIcon('down')}</summary>${cards.frames}${cards.logs}${cards.backup}</details></div>`);
   }
   function screenPresets(): string {
-    return shell(`${header('预设','home')}<div class="viewport"><div class="h2">预设</div><p class="sub">为当前角色选择一份小说预设，见面与正式演出共用。手机与幕间保持原生；正则和第三方脚本不执行。即时设置自动保存，正文确认后提交。</p><div class="card" id="fruit-preset-root"></div></div>`);
+    return shell(`${header('预设','home')}<div class="viewport"><div class="h2">预设</div><p class="sub">创建、编写和整理 Elsewhere 原生预设。共享本体与角色独立覆盖分别保存。</p><div class="card" id="fruit-preset-root"></div></div>`);
   }
   function phoneSettingsCards() {
     const r=role()!;
@@ -5095,11 +5095,11 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       const messages=await compileRequest(r,kind,options=>{
         selected.value=options;
         const result=compileNovelConversation(data,source,kind,input,{...options,nowTs:at});
-        if(options.presetId!=='native')try{novelSamplingParameters(options.preset);}catch(error){result.valid=false;result.status='blocked';result.diagnostics.push({code:'model-parameter-invalid',severity:'error',message:error instanceof Error?error.message:'预设采样参数无效'});}
+        if(!options.elsewherePreset&&options.presetId!=='native')try{novelSamplingParameters(options.preset);}catch(error){result.valid=false;result.status='blocked';result.diagnostics.push({code:'model-parameter-invalid',severity:'error',message:error instanceof Error?error.message:'预设采样参数无效'});}
         selected.compiled=result;return result;
       },valid,{signal:task.controller.signal,stage:update});
       const options=selected.value;if(!options?.profile||!valid())throw new Error('场景来源已变化，未发送');
-      const thirdParty=options.presetId!=='native';
+      const thirdParty=!options.elsewherePreset&&options.presetId!=='native';
       update('checking');
       let prepared:Awaited<ReturnType<typeof prepareSceneReply>>|undefined;
       if(kind==='scene'&&!regenerateId&&!source.play&&selected.compiled){const context=buildNativeContext(data,source,'scene',input,{nowTs:at});prepared=await readModelBeforeDeadline(()=>prepareSceneReply(source,data.user,createSceneObservation(source,context,buildNativeContext(data,source,'chat','',{nowTs:at}),identityContext(data,source)),selected.compiled!,{requestId:task.id,now:at}),task.controller.signal,false,30_000);}

@@ -30,7 +30,8 @@ test('global budget permits only two attempts per rolling day, and role cooldown
  assert.ok(claimProactive(roles,roles[2],at+86400001,true));
 });
 
-test('new user message, source edits and entering another stage invalidate a late outreach',()=>{
+test('new user message, source edits and entering another stage invalidate a late outreach',t=>{
+ t.mock.timers.enable({apis:['Date'],now:at});
  for(const change of ['new-message','source','scene','role']){const r=fixture(),task=claimProactive([r],r,at,true)!;assert.equal(proactiveTaskValid(r,task),true);
   if(change==='new-message')r.chats.push({id:'new',speaker:'me',text:'认真说件事',at:at+100});
   if(change==='source')r.events[0].status='retracted';

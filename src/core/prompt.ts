@@ -266,14 +266,14 @@ export function buildNativeContext(
 }
 export function compileNativeConversation(data:AppData,r:RoleData,kind:'chat'|'scene'|'play'|'intermission',input:string,options:NativePromptOptions={}):ConversationCompilation {
   const profile=options.profile||createFruitState().profiles.meeting;
-  return compileConversationPrompt(nativePreset(kind==='play'||kind==='intermission'?'theatre':'meeting'),kind==='chat'?projectChatVoiceProfile(profile,chatVoiceChoice(r.chatVoice)):profile,buildNativeContext(data,r,kind,input,options),{purpose:'request'});
+  return compileConversationPrompt(nativePreset(kind==='play'||kind==='intermission'?'theatre':'meeting'),kind==='chat'?projectChatVoiceProfile(profile,chatVoiceChoice(r.chatVoice)):profile,buildNativeContext(data,r,kind,input,options),{purpose:'request',elsewherePreset:options.elsewherePreset});
 }
 export function compileNovelConversation(data:AppData,r:RoleData,kind:'scene'|'play',input:string,options:NativePromptOptions&{preset:FruitPreset}):ConversationCompilation {
   if(isNativePreset(options.preset))return compileNativeConversation(data,r,kind,input,options);
   const context=createLiveNovelContext(data,r,kind,buildNativeContext(data,r,kind,input,options),input);
   return compileConversationPrompt(options.preset,options.profile||createFruitState().profiles.meeting,context,{purpose:'request'});
 }
-export interface NativePromptOptions {isFocused?:boolean;nowTs?:number;profile?:FruitProfile;currentInputs?:ChatMessage[];skipLegacyOnce?:boolean;openingTask?:string;preferredPlayId?:string}
+export interface NativePromptOptions {elsewherePreset?:import('./elsewherePreset').ElsewherePreset;isFocused?:boolean;nowTs?:number;profile?:FruitProfile;currentInputs?:ChatMessage[];skipLegacyOnce?:boolean;openingTask?:string;preferredPlayId?:string}
 export function compileOpeningPrompt(data:AppData,r:RoleData,at:number,options:NativePromptOptions={}){
  const copy={...r,chats:[],events:[]};
  return compileNativeConversation(data,copy,'chat','',{...options,nowTs:at,openingTask:`所在区域/世界观：${r.place||'以角色设定为准'}。\n向对方发送第一条手机消息，由你主动发出。必须严格符合性格、关系起点和已有前史，不假装已经有过未发生的对话。采用自然的纯手机消息格式，按本人的打字习惯决定是否分条，不写环境旁白或动作括号，不使用千篇一律的客服寒暄。`});

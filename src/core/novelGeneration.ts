@@ -1,3 +1,4 @@
+import {parseNativeNovelText} from './nativeNovelOutput';
 import {permittedNovelSections} from './novelDocument';
 import type {ChatMessage,RoleData,SceneData,PlayData} from './types';
 import type {FruitPreset,FruitProfile} from './fruit/types';
@@ -77,7 +78,7 @@ export async function readNovelResponse(response:Response,profile:FruitProfile,t
 export function parseNovelResponse(text:string,profile:FruitProfile,thirdParty:boolean){
  const extracted=splitSceneReply(text),raw=extracted.text;
  if(!raw)throw new Error('小说正文为空，原记录保留');
- if(!thirdParty){const parsed=parseFruitOutput(raw),safe=parsed.content;if(!safe||/<\/?[\p{L}][^>]*(?:>|$)/u.test(safe))throw new NovelOutputError(safeNovelText(raw));return {text:safe,warnings:[] as string[],sections:undefined,auxiliary:undefined,...(extracted.payload?{sceneEvent:extracted.payload}:{})};}
+ if(!thirdParty){let safe:string;try{safe=parseNativeNovelText(raw);}catch{throw new NovelOutputError(safeNovelText(raw));}return {text:safe,warnings:[] as string[],sections:undefined,auxiliary:undefined,...(extracted.payload?{sceneEvent:extracted.payload}:{})};}
  const parsed=parseFruitOutput(raw);
  if(!parsed.content||/<\/?[\p{L}][^>]*(?:>|$)/u.test(parsed.content))throw new NovelOutputError(parsed.safeText&&!/<\/?[\p{L}][^>]*(?:>|$)/u.test(parsed.safeText)?parsed.safeText:'');
  const auxiliary:Pick<NonNullable<ChatMessage['novelOutput']>,'scene'|'summary'|'characters'|'choices'|'generatedAuxiliary'>={};

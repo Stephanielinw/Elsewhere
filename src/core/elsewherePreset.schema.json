@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Elsewhere Preset V1",
+  "description": "entries 数组为编译顺序。导入还检查 ID 唯一、min <= max 和 UTF-8 文件大小不超过 8 MiB。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "schemaVersion",
+    "id",
+    "name",
+    "description",
+    "entries",
+    "settings"
+  ],
+  "properties": {
+    "format": {
+      "const": "elsewhere-preset"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "not": {
+        "enum": [
+          "__proto__",
+          "prototype",
+          "constructor"
+        ]
+      },
+      "pattern": "^[^\\u0000-\\u001f]+$"
+    },
+    "name": {
+      "type": "string",
+      "maxLength": 200,
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "entries": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "role",
+          "enabled",
+          "content"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "not": {
+              "enum": [
+                "__proto__",
+                "prototype",
+                "constructor"
+              ]
+            },
+            "pattern": "^[^\\u0000-\\u001f]+$"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "role": {
+            "enum": [
+              "system",
+              "user",
+              "assistant"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 128000
+          }
+        }
+      }
+    },
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "meeting",
+        "theatre"
+      ],
+      "properties": {
+        "meeting": {
+          "$ref": "#/$defs/settings"
+        },
+        "theatre": {
+          "$ref": "#/$defs/settings"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "length",
+        "style"
+      ],
+      "properties": {
+        "length": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "min",
+            "max"
+          ],
+          "properties": {
+            "min": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50000
+            },
+            "max": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50000
+            }
+          }
+        },
+        "style": {
+          "type": "string",
+          "maxLength": 2000
+        }
+      }
+    }
+  }
+}

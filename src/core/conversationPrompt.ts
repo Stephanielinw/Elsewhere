@@ -6,6 +6,7 @@ import { FruitMacroError, FruitMacroResolver } from './fruit/macros';
 import { FRUIT_MARKERS, validateProfile } from './fruit/preset';
 import type { FruitCompilation, FruitCompiledMessage, FruitContext, FruitLength, FruitPreset, FruitProfile } from './fruit/types';
 import {memoryRuleConflicts,type MemoryDecision} from './memory';
+import {validateElsewherePreset,type ElsewherePreset} from './elsewherePreset';
 
 export interface ConversationContext extends Omit<FruitContext,'source'|'mode'> {
  source:'isolated-fixture'|'native-live'|'novel-live';mode:ConversationMode;memoryDenied?:{id:string;value:string}[];
@@ -24,7 +25,7 @@ export function requestMessages(result:ConversationCompilation):{role:'system'|'
  return result.messages.map(({role,content})=>({role,content}));
 }
 export function promptStructure(result:ConversationCompilation){
- return {engine:result.engine,mode:result.mode,status:result.status,messages:result.messages.map((m,index)=>({order:index+1,role:m.role,source:m.sourceId==='current-input'?'本轮用户输入':m.marker==='chatHistory'?'有效历史':m.sourceId.startsWith('legacy:')?'旧附加预设':m.sourceId.startsWith('custom:')?'自建规则':result.origin==='third-party'?'预设条目与授权上下文':'原生上下文与规则'})),diagnostics:result.diagnostics.map(d=>({code:d.code,severity:d.severity})),protocol:'编译保留角色；代理转换未经验证，Puppy 的 System 降级风险仍未解决'};
+ return {engine:result.engine,mode:result.mode,status:result.status,messages:result.messages.map((m,index)=>({order:index+1,role:m.role,source:m.sourceId==='current-input'?'本轮用户输入':m.marker==='chatHistory'?'有效历史':m.sourceId.startsWith('legacy:')?'旧附加预设':m.sourceId.startsWith('preset:')?'预设条目（用户配置）':m.sourceId.startsWith('custom:')?'自建规则':result.origin==='third-party'?'预设条目与授权上下文':'原生上下文与规则'})),diagnostics:result.diagnostics.map(d=>({code:d.code,severity:d.severity})),protocol:'编译保留角色；代理转换未经验证，Puppy 的 System 降级风险仍未解决'};
 }
 function prepareNativePreset(preset:FruitPreset,context:ConversationContext):FruitPreset {
  const legacy=context.native?.legacy;if(!legacy)return preset;
@@ -55,7 +56,7 @@ function finishNativeMessages(result:ConversationCompilation,context:Conversatio
 function replaceLength(text:string,length:FruitLength):string {
   return text.replace(/((?:正文(?:需求|要求|篇幅|字数|长度)?[：:\s]*(?:字数)?|需求字数|完整场面可写)[：:\s]*)[\d,，]+\s*[-–—~～至到]\s*[\d,，]+\s*字/g,`$1${length.min}–${length.max}字`).replace(/2[,.，]?200\s*[-–—~～至到]\s*2[,.，]?500\s*字/g,`${length.min}–${length.max}字`);
 }
-export function compileConversationPrompt(preset:FruitPreset,rawProfile:FruitProfile,context:ConversationContext,options:{purpose?:'preview'|'request';lengthOverride?:FruitLength;rng?:()=>number;format?:'native'}={}):ConversationCompilation {
+export function compileConversationPrompt(preset:FruitPreset,rawProfile:FruitProfile,context:ConversationContext,options:{purpose?:'preview'|'request';lengthOverride?:FruitLength;rng?:()=>number;format?:'native';elsewherePreset?:ElsewherePreset}={}):ConversationCompilation {
   const native=isNativePreset(preset),purpose=options.purpose||'preview',liveNovel=isLiveNovelContext(context)&&context.source==='novel-live'&&(context.mode==='meeting'||context.mode==='theatre');
   const profile=validateProfile({...rawProfile,length:options.lengthOverride||rawProfile.length});
   preset=applyFruitProfile(preset,profile);
@@ -148,6 +149,13 @@ export function compileConversationPrompt(preset:FruitPreset,rawProfile:FruitPro
     result.messages.push(...bucket);if(i<relative.length)result.messages.push(relative[i]);
   }
   if(native)finishNativeMessages(result,context,legacyInjections);
+  if(native&&options.elsewherePreset&&(context.mode==='meeting'||context.mode==='theatre')){
+    const p=validateElsewherePreset(options.elsewherePreset);
+    const entries=p.entries.filter(e=>e.enabled&&e.content.trim()).map((e,index)=>({role:e.role,content:e.content,sourceId:'preset:'+p.id+':'+e.id,sourceName:e.name,orderIndex:index}));
+    for(const e of entries)for(const conflict of memoryRuleConflicts(e.content,context.memoryDenied||[]))result.diagnostics.push({code:'memory-config-conflict',severity:'error',sourceId:e.sourceId,message:'预设条目与用户已确认纠正冲突：'+conflict});
+    const index=result.messages.findIndex(m=>m.marker==='chatHistory'||m.sourceId==='native-format'||m.sourceId==='current-input');
+    result.messages.splice(index<0?result.messages.length:index,0,...entries);
+  }
   const guard=`Elsewhere ${context.mode==='meeting'?'Meeting Novel：保留真实 Canon 与当前人生连续性':'Theatre Performance：仅当前剧本和戏内身份，禁止演员私密知识进入戏内，戏内事件不改写演员 Canon'}。只使用已授权的来源，不将推测写成正式事实。正文以 <content> 包裹；目标 ${profile.length.min}–${profile.length.max} 字，按剧情自然取舍，不凑字数。${profile.style?`文风：${profile.style}。`:''}不生成 snow 小剧场。${profile.output.scene?'必要场景信息可用 <status_bar>。':'只输出正文，不输出场景辅助块。'}${profile.output.summary?'可附简短 <meow_FM> 摘要，仅供折叠展示，不自动成为记忆。':''}${profile.output.characters?'可附 <profile> 人物辅助信息。':''}${profile.output.auxiliary?'生成的 ECoT 等只属于生成辅助文本，不是模型内部推理或正式心理记忆。':'关闭的辅助块不展示、不保存；预设若生成辅助标签，必须与 content 正文分隔，不能混入正文。'}`;
   const finalGuard=options.format==='native'?`Elsewhere 原生小说预览：保留当前模式身份与时间边界；目标 ${profile.length.min}–${profile.length.max} 字，不替用户行动。${profile.style?`文风：${profile.style}`:''}不自动写入正式历史。`:guard;
   if(!native){

@@ -4588,7 +4588,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     return shell(`${header('终端','home')}<div class="viewport terminal-page"><details class="card terminal-settings" open><summary><span>01｜API 与模型</span>${uiIcon('down')}</summary><div id="terminal-api-root"></div></details><details class="card terminal-settings" data-style-panel><summary><span>02｜外观与主题</span>${uiIcon('down')}</summary><div data-style-body="appearance"></div></details><details class="card terminal-settings" data-style-panel><summary><span>03｜聊天气泡自定义</span>${uiIcon('down')}</summary><div data-style-body="bubbles"></div></details><details class="card terminal-other-settings terminal-settings"><summary><span>04｜其他手机设置</span>${uiIcon('down')}</summary>${cards.frames}${cards.logs}${cards.backup}</details></div>`);
   }
   function screenPresets(): string {
-    return shell(`${header('预设','home')}<div class="viewport"><div class="h2">预设</div><p class="sub">创建、编写和整理 Elsewhere 原生预设。共享本体与角色独立覆盖分别保存。</p><div class="card" id="fruit-preset-root"></div></div>`);
+    return shell(`${header('预设','home')}<div class="viewport"><div id="fruit-preset-root"></div></div>`);
   }
   function phoneSettingsCards() {
     const r=role()!;

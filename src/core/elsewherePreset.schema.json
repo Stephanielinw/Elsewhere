@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Elsewhere Preset V1",
-  "description": "entries 数组为编译顺序。导入还检查 ID 唯一、min <= max 和 UTF-8 文件大小不超过 8 MiB。",
+  "description": "entries 数组为编译顺序。分组只用于显示。V1 导入兼容旧双模式 settings；正式导出以条目保存篇幅和文风。",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -10,8 +10,7 @@
     "id",
     "name",
     "description",
-    "entries",
-    "settings"
+    "entries"
   ],
   "properties": {
     "format": {
@@ -44,7 +43,7 @@
     },
     "entries": {
       "type": "array",
-      "maxItems": 128,
+      "maxItems": 130,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -87,6 +86,10 @@
           "content": {
             "type": "string",
             "maxLength": 128000
+          },
+          "group": {
+            "type": "string",
+            "maxLength": 100
           }
         }
       }

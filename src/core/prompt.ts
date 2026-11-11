@@ -231,7 +231,7 @@ export function buildNativeContext(
     native_life:kind==='chat'?'这段交流发生在你自己的生活中。从已有经历、关系与关切形成自己的判断，再决定此刻值得说什么；可以同意、保留意见、纠正自己或谈起自己的事，也可以只简短回应。认真参与对方正在讨论的事，不为展示自主性强行转题。私人关注不等于需要公开，打算不等于已经做过。':isFocused?'当前处于「专心聊」状态，双方都在手机前专注交谈，请自然连贯地回应；仍保有自己的性格与主见。':'你仍在照常生活，不必总是立刻有空；但不要声称已执行未发生的行动。',
     native_novel_rule:kind==='play'?'使用中文进行自然的沉浸式叙事。推进场景、表现人物心理与自身动作，不代替用户做出选择。':'你正在和用户面对面相处，采用文字小说式描写场景与自己的言语动作。回复使用自然中文。只写你自己的回应，不替用户行动。',
     native_output_rule:kind==='play'?'这是独立戏剧世界，严格遵守本剧角色人设；不要透露戏外知识。':'这是面对面的文字小说，仅描述自己和环境，不替用户行动。'};
-  if(options.profile&&(kind==='scene'||kind==='play'))values.native_output_rule+=`目标 ${options.profile.length.min}–${options.profile.length.max} 字，按剧情自然取舍，不凑字数。${options.profile.style?`文风：${options.profile.style}。`:''}`;
+  if(options.profile&&!options.elsewherePreset&&(kind==='scene'||kind==='play'))values.native_output_rule+=`目标 ${options.profile.length.min}–${options.profile.length.max} 字，按剧情自然取舍，不凑字数。${options.profile.style?`文风：${options.profile.style}。`:''}`;
   const factsForContext:FruitContext['facts']=[
     ...(kind!=='play'?[{id:'role-memory:'+r.id,text:sharedText,layer:'currentState' as const,at:nowTs,scope,knownBy:[r.id],active:true,revisionValid:true}]:[]),
     {id:'identity:'+r.id,text:kind==='play'?`你在剧内的身份：${r.play!.char}`:kind==='intermission'?`你的身份:${r.job}，性格:${r.traits}，完整人设:${r.profile}`:`身份：${r.job}。所在区域与世界观：${r.place}。性格：${r.traits}。人设：${r.profile}。前史节点与未发生剧情边界：${r.canonNotes||'以用户设定为准'}`,layer:'identity',marker:'charDescription',at:nowTs,scope,knownBy:[r.id],active:true,revisionValid:true},

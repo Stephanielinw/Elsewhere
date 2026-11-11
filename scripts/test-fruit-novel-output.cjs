@@ -1,6 +1,6 @@
 const assert=require('node:assert/strict');
 const {pathToFileURL}=require('node:url');
-const {chromium}=require('playwright');
+const {chromium,webkit}=require('playwright');
 const fs=require('node:fs');
 const url=process.env.TEST_URL||pathToFileURL(process.cwd()+'/dist/Elsewhere_Phase1_Standalone.html').href;
 const endpoint='https://novel-hang-fixture.invalid/v1',key='elsewhere-v01',at=Date.parse('2026-11-06T22:00:00Z');
@@ -11,12 +11,13 @@ async function main(extraCases){
  const {nativePreset}=await import('../src/core/fruit/nativePreset.ts');
  const raw=new TextEncoder().encode(JSON.stringify({name:'Synthetic complex fruit V6.4X',prompts:[{identifier:'base',name:'正文规则',role:'system',content:'合成独立小说规则：<content> 包裹正文。',enabled:true},...Array.from({length:100},(_,i)=>({identifier:'synthetic'+i,name:'合成条目'+i,role:'system',content:'合成规则 '+i+'：保留现有行为。'.repeat(8),enabled:true})),...['charDescription','personaDescription','worldInfoBefore','worldInfoAfter','scenario','chatHistory'].map(identifier=>({identifier,name:identifier,role:'system',content:'',marker:true,enabled:true}))],prompt_order:[{character_id:100000,order:['base',...Array.from({length:100},(_,i)=>'synthetic'+i),'charDescription','personaDescription','worldInfoBefore','worldInfoAfter','scenario','chatHistory'].map(identifier=>({identifier,enabled:true}))}]}));
  const fruit=await parseFruitPreset(raw,'Synthetic-V6.4X.json',at);
- const browser=await chromium.launch({executablePath:chromium.executablePath(),ignoreDefaultArgs:['--disable-back-forward-cache']});
+ const engine=extraCases&&process.env.TEST_BROWSER==='webkit'?webkit:chromium;
+ const browser=await engine.launch(engine===chromium?{executablePath:chromium.executablePath(),ignoreDefaultArgs:['--disable-back-forward-cache']}:{});
  const deadline=setTimeout(()=>{console.error('Novel lifecycle suite deadline');void browser.close();setTimeout(()=>process.exit(1),1000);},240000),results=[];
  async function run(label,options,check){
   if(process.env.TEST_CASE&&!label.includes(process.env.TEST_CASE))return;
   const at=options.at??Date.parse('2026-11-06T22:00:00Z');
-  const ctx=await browser.newContext({viewport:{width:options.width||390,height:844},timezoneId:options.zone||'America/Los_Angeles',serviceWorkers:'block',ignoreHTTPSErrors:true,isMobile:true,hasTouch:true});
+  const ctx=await browser.newContext({viewport:{width:options.width||390,height:844},timezoneId:options.zone||'America/Los_Angeles',serviceWorkers:'block',ignoreHTTPSErrors:true,isMobile:!options.desktop,hasTouch:!options.desktop});
   const posts=[],errors=[];let boot=true,release;const held=new Promise(r=>release=r);
   try{
    await ctx.addInitScript(({endpoint,fault,refuseReply,refuseCurtain})=>{

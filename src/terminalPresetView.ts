@@ -60,3 +60,53 @@ export function renderPromptEditor(prompt:FruitPrompt,original:FruitPrompt|undef
   const locked=Boolean(reason||prompt.marker),disabled=locked?'disabled':'';
   return `<span class="fruit-eyebrow">${isNew?'CUSTOM PROMPT':'PROMPT EDITOR'}</span><h2 id="fruit-dialog-title">${isNew?'添加 Prompt':'编辑 Prompt'}</h2><p class="fruit-dialog-lead">只编辑当前角色小说覆盖，原始 JSON 保持不变。点击保存条目后才提交正文。</p>${reason?`<p class="fruit-notice">${esc(reason)}</p>`:''}${prompt.marker?'<p class="fruit-notice">必要 Marker 受保护，只读查看。</p>':''}<form data-prompt-editor novalidate><input type="hidden" name="identifier" value="${esc(prompt.identifier)}"><div class="terminal-field-grid"><label>Prompt 名称<input class="field" name="prompt-name" maxlength="500" value="${esc(prompt.name)}" ${disabled}></label><label>Role<select class="field" name="prompt-role" ${disabled}>${['system','assistant','user'].map(role=>`<option ${prompt.role===role?'selected':''}>${role}</option>`).join('')}</select></label></div><label class="terminal-label">Prompt 内容<textarea class="field terminal-prompt-editor" name="prompt-content" ${disabled}>${esc(prompt.content)}</textarea></label><label class="terminal-label">Position<select class="field" name="prompt-position" ${disabled}><option value="0" ${prompt.position===0?'selected':''}>Relative · 相对列表位置</option><option value="1" ${prompt.position===1?'selected':''}>In-Chat · 对话内注入</option></select></label><div class="terminal-field-grid" data-editor-depth ${prompt.position!==1?'hidden':''}><label>Depth<input class="field" name="prompt-depth" type="number" min="0" max="10000" value="${prompt.depth}" ${disabled}></label><label>Order<input class="field" name="prompt-order" type="number" min="0" max="10000" value="${prompt.injectionOrder}" ${disabled}></label></div><details class="fruit-subdetails"><summary>原始条目详情 · 高级设置</summary><dl class="fruit-technical"><dt>ID</dt><dd>${esc(prompt.identifier)}</dd><dt>分组</dt><dd>${esc(prompt.group)}</dd><dt>Marker</dt><dd>${prompt.marker?'是':'否'}</dd><dt>来源</dt><dd>${isNew||!original?'用户自建':'作者原件'}</dd></dl>${original?fruitPre(original.content):''}</details><p role="alert" data-editor-status class="fruit-notice" hidden></p><div class="terminal-editor-actions">${!locked?`<button class="fruit-button fruit-primary">保存条目</button>${original?'<button type="button" class="fruit-button" data-terminal-action="restore-entry">恢复此条原版</button>':''}`:''}<button type="button" class="fruit-button" data-terminal-action="close-dialog">取消 / 关闭</button></div></form>`;
 }
+
+import type {ElsewherePreset, PresetItem} from './core/elsewherePreset';
+
+export function renderNativePromptList(preset: ElsewherePreset, base: ElsewherePreset, locked: boolean) {
+  if (!preset.entries.length) return '<p class="terminal-caption" data-empty-prompts>还没有 Prompt。点击「添加 Prompt」开始。</p>';
+  let html = '';
+  let group = '';
+  let run = 0;
+  for (const [index, entry] of preset.entries.entries()) {
+    const name = esc(entry.name);
+    const id = esc(entry.id);
+    const label = entry.group?.trim() || 'Prompt 条目';
+    if (label !== group) {
+      if (run) html += '</div></details>';
+      group = label;
+      html += `<details class="terminal-prompt-group" data-prompt-group="${esc(label + '-' + ++run)}" open><summary>${esc(label)}<span>折叠 / 展开</span></summary><div>`;
+    }
+    const original = base.entries.find(item => item.id === entry.id);
+    const modified = preset !== base && JSON.stringify(original) !== JSON.stringify(entry);
+    const disabled = locked ? 'disabled' : '';
+    html += `<div class="terminal-prompt-row${modified ? ' is-modified' : ''}" data-prompt-row="${id}" data-search="${esc(entry.name + ' ' + label)}">
+      <button type="button" class="terminal-drag" data-prompt-drag="${id}" draggable="${!locked}" aria-label="拖动${name}" ${disabled}>${uiIcon('drag')}</button>
+      <button type="button" class="terminal-prompt-name native-prompt-name" data-prompt-edit="${id}"><b>${name}</b></button>
+      <div class="terminal-prompt-actions">
+        <button type="button" data-prompt-move="up" data-id="${id}" aria-label="上移${name}" ${locked || index === 0 ? 'disabled' : ''}>${uiIcon('up')}</button>
+        <button type="button" data-prompt-move="down" data-id="${id}" aria-label="下移${name}" ${locked || index === preset.entries.length - 1 ? 'disabled' : ''}>${uiIcon('down')}</button>
+        <label class="terminal-row-switch"><input type="checkbox" class="fruit-switch" data-prompt-enabled="${id}" aria-label="启用${name}" ${entry.enabled ? 'checked' : ''} ${disabled}></label>
+        <button type="button" data-prompt-edit="${id}" aria-label="编辑${name}">${uiIcon('edit')}</button>
+      </div>
+    </div>`;
+  }
+  return html + '</div></details>';
+}
+
+export function renderNativePromptEditor(entry: PresetItem, isNew: boolean, locked: boolean) {
+  const disabled = locked ? 'disabled' : '';
+  return `<form data-prompt-editor>
+    <div class="terminal-field-grid">
+      <label>Prompt 名称<input class="field" name="prompt-name" required maxlength="200" value="${esc(entry.name)}" ${disabled}></label>
+      <label>Role<select class="field" name="prompt-role" ${disabled}>${['system','assistant','user'].map(role => `<option ${entry.role === role ? 'selected' : ''}>${role}</option>`).join('')}</select></label>
+    </div>
+    <label class="terminal-label">Prompt 内容<textarea class="field terminal-prompt-editor" name="prompt-content" maxlength="128000" ${disabled}></textarea></label>
+    <label class="terminal-label">分组（可选）<input class="field" name="prompt-group" maxlength="100" value="${esc(entry.group || '')}" ${disabled}></label>
+    <p role="alert" data-editor-status class="fruit-notice" hidden></p>
+    <div class="terminal-editor-actions">
+      ${locked ? '' : `<button class="fruit-button fruit-primary">保存条目</button>${isNew ? '' : '<button type="button" class="fruit-button" data-entry-action="copy">复制条目</button><button type="button" class="fruit-button" data-entry-action="delete">删除条目</button>'}`}
+      <button type="button" class="fruit-button" data-dialog-close>${locked ? '关闭' : '取消 / 关闭'}</button>
+    </div>
+  </form>`;
+}

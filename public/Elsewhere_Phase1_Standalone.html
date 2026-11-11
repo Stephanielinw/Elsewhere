@@ -2302,7 +2302,10 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
 .reply-thought-dialog{max-width:min(28rem,calc(100vw - 36px))}
 .reply-thought-dialog p{white-space:pre-wrap;overflow-wrap:anywhere}
 
-.native-presets{max-width:800px;margin:auto;min-width:0}.preset-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;margin-bottom:12px}.preset-tabs button{border:1px solid var(--line);background:var(--surface2);color:var(--muted);padding:12px 3px;border-radius:12px;font:inherit;font-size:12px}.preset-tabs button.active{color:var(--ink);background:color-mix(in srgb,var(--accent) 17%,var(--surface));border-color:var(--accent)}.native-presets section,.preset-catalog article,.preset-entry{border:1px solid var(--line);border-radius:16px;padding:14px;margin:14px 0;background:var(--surface)}.native-presets label{display:block;margin:12px 0;font-size:13px}.native-presets .field{width:100%;min-width:0;box-sizing:border-box;font-size:16px}.native-presets fieldset{min-width:0;padding:8px;border:1px solid var(--line);border-radius:12px;margin:12px 0}.preset-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.preset-actions .btn{min-height:40px;white-space:normal}.preset-length{display:grid;grid-template-columns:1fr 1fr;gap:8px}.preset-scope-notice{border-left:3px solid var(--accent);padding:12px;background:var(--surface2);border-radius:8px;line-height:1.7}.preset-scope-notice p{margin:6px 0 0}.preset-entry-content{min-height:140px;max-height:60dvh;resize:vertical;line-height:1.7;overflow:auto}.native-presets [data-preset-status]{min-height:1.5em;overflow-wrap:anywhere}.native-presets h3,.native-presets p,.preset-dialog p{overflow-wrap:anywhere}.native-presets details{margin:16px 0}.preset-dialog{max-width:min(34rem,calc(100vw - 24px))}.preset-dialog .preset-actions{justify-content:flex-end}
+/* The preset page uses the same list and dialog spacing as the original terminal editor. */
+.native-preset-title { margin: 10px 0 0; font-size: 15px; overflow-wrap: anywhere; }
+.native-prompt-name { border: 0; padding: 0; background: transparent; color: var(--ink); text-align: left; cursor: pointer; }
+.native-preset-dialog .terminal-prompt-editor { font-size: 16px; resize: vertical; }
 
 </style>
 <script id="theme-boot">
@@ -3307,12 +3310,12 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
     return (r.lifePlans || []).filter((plan) => lifePlanShape(r, plan) && plan.acceptedAt <= at && lifeSourcesValid(r, plan.sources, at)).flatMap((plan) => plan.intents.filter((step) => step.status === "running" && Number.isFinite(step.startedAt) && Number.isFinite(step.until) && step.startedAt <= at && step.until > step.startedAt).map((step) => [step.startedAt, step.until]));
   }
   function recordedSpans(r, at) {
-    const entries = r.events.filter((e) => e.lifeRecord?.version === 3 && ["ended", "running", "interrupted"].includes(e.lifeRecord.timeline?.state || ""));
+    const entries2 = r.events.filter((e) => e.lifeRecord?.version === 3 && ["ended", "running", "interrupted"].includes(e.lifeRecord.timeline?.state || ""));
     return [
       ...occupancy(r, at),
       ...legacyRunningSpans(r, at),
       ...collectRoleLife(r, at).events.filter((e) => e.lifeRecord?.version !== 3).map((e) => [e.at, e.lifeRecord?.until ?? e.at + 1]),
-      ...entries.map((e) => [e.at, e.lifeRecord.until])
+      ...entries2.map((e) => [e.at, e.lifeRecord.until])
     ];
   }
   function missingSpans(from, to, occupied) {
@@ -6202,55 +6205,55 @@ ${prevLogs}` : "",
   var MEDIA_DB = "elsewhere-media-v1";
   var MEDIA_STORE = "blobs";
   function createMediaSources(read2) {
-    const entries = /* @__PURE__ */ new Map();
+    const entries2 = /* @__PURE__ */ new Map();
     const prune = (active) => {
-      for (const [id2, entry2] of entries) if (!active.has(id2)) {
+      for (const [id2, entry2] of entries2) if (!active.has(id2)) {
         if (entry2.url) URL.revokeObjectURL(entry2.url);
-        entries.delete(id2);
+        entries2.delete(id2);
       }
     };
     return {
       get(id2) {
-        const prior = entries.get(id2);
+        const prior = entries2.get(id2);
         if (prior) return prior.pending || Promise.resolve(prior.url);
         const entry2 = {};
-        entries.set(id2, entry2);
+        entries2.set(id2, entry2);
         entry2.pending = read2(id2).then((blob) => {
-          if (entries.get(id2) !== entry2) return void 0;
+          if (entries2.get(id2) !== entry2) return void 0;
           if (!blob) {
-            entries.delete(id2);
+            entries2.delete(id2);
             return void 0;
           }
           entry2.url = URL.createObjectURL(blob);
           entry2.pending = void 0;
           return entry2.url;
         }).catch((error) => {
-          if (entries.get(id2) === entry2) entries.delete(id2);
+          if (entries2.get(id2) === entry2) entries2.delete(id2);
           throw error;
         });
         return entry2.pending;
       },
       async getDecoded(id2) {
-        const url = await this.get(id2), entry2 = entries.get(id2);
+        const url = await this.get(id2), entry2 = entries2.get(id2);
         if (!url || !entry2) return void 0;
         if (entry2.decoded) return url;
         if (!entry2.decoding) {
           const image = new Image();
           image.src = url;
           entry2.decoding = image.decode().then(() => {
-            if (entries.get(id2) !== entry2) return void 0;
+            if (entries2.get(id2) !== entry2) return void 0;
             entry2.decoded = image;
             return url;
           }).catch((error) => {
             entry2.decoding = void 0;
-            if (entries.get(id2) !== entry2) return void 0;
+            if (entries2.get(id2) !== entry2) return void 0;
             throw error;
           });
         }
         return entry2.decoding;
       },
       peek(id2) {
-        const entry2 = entries.get(id2);
+        const entry2 = entries2.get(id2);
         return entry2?.decoded ? entry2.url : void 0;
       },
       prune,
@@ -11614,8 +11617,11 @@ ${formatMessageContentForModel(m, base.char, base.user)}`, at: m.at, scope, know
   };
 
   // src/core/elsewherePreset.ts
-  var PRESET_MAX_BYTES = 8 * 1024 * 1024;
+  var PRESET_MAX_ENTRIES = 130;
+  var PRESET_MAX_BYTES = 8 * 1024 * 1024 + 16 * 1024;
   var modes = ["meeting", "theatre"];
+  var itemFields = ["name", "role", "enabled", "content", "group"];
+  var encoder = new TextEncoder();
   var presetObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
   var presetId = (v) => typeof v === "string" && v.length > 0 && v.length <= 200 && !["__proto__", "constructor", "prototype"].includes(v) && !/[\u0000-\u001f]/.test(v);
   function fields(v, allowed, label2) {
@@ -11633,120 +11639,200 @@ ${formatMessageContentForModel(m, base.char, base.user)}`, at: m.at, scope, know
     return { length: { min, max }, style: text2(v.style, 2e3, "\u6587\u98CE") };
   }
   function item(v) {
-    fields(v, ["id", "name", "role", "enabled", "content"], "\u6761\u76EE");
+    fields(v, ["id", ...itemFields], "\u6761\u76EE");
     if (!presetId(v.id) || !["system", "user", "assistant"].includes(String(v.role)) || typeof v.enabled !== "boolean") throw Error("\u6761\u76EE ID\u3001\u6D88\u606F\u89D2\u8272\u6216\u542F\u7528\u72B6\u6001\u65E0\u6548");
-    return { id: v.id, name: text2(v.name, 200, "\u6761\u76EE\u540D\u79F0", true), role: v.role, enabled: v.enabled, content: text2(v.content, 128e3, "\u6761\u76EE\u6B63\u6587") };
+    return {
+      id: v.id,
+      name: text2(v.name, 200, "\u6761\u76EE\u540D\u79F0", true),
+      role: v.role,
+      enabled: v.enabled,
+      content: text2(v.content, 128e3, "\u6761\u76EE\u6B63\u6587"),
+      ...v.group === void 0 ? {} : { group: text2(v.group, 100, "\u5206\u7EC4") }
+    };
+  }
+  function entries(v) {
+    if (!Array.isArray(v) || v.length > PRESET_MAX_ENTRIES) throw Error(`\u6761\u76EE\u8D85\u8FC7 ${PRESET_MAX_ENTRIES} \u4E2A\u6216\u683C\u5F0F\u65E0\u6548`);
+    const result = v.map(item);
+    if (new Set(result.map((e) => e.id)).size !== result.length) throw Error("\u6761\u76EE ID \u91CD\u590D");
+    return result;
   }
   function validateElsewherePreset(v) {
     if (!presetObject(v) || v.format !== "elsewhere-preset" || v.schemaVersion !== 1) throw Error("\u8BF7\u9009\u62E9 Elsewhere \u539F\u751F\u9884\u8BBE V1 JSON");
-    fields(v, ["format", "schemaVersion", "id", "name", "description", "entries", "settings"], "\u9884\u8BBE");
-    if (!presetId(v.id) || !Array.isArray(v.entries) || v.entries.length > 128) throw Error("\u9884\u8BBE ID \u65E0\u6548\u6216\u6761\u76EE\u8D85\u8FC7 128 \u4E2A");
-    const entries = v.entries.map(item);
-    if (new Set(entries.map((e) => e.id)).size !== entries.length) throw Error("\u6761\u76EE ID \u91CD\u590D");
-    fields(v.settings, modes, "\u6A21\u5F0F\u8BBE\u7F6E");
-    const preset = { format: "elsewhere-preset", schemaVersion: 1, id: v.id, name: text2(v.name, 200, "\u9884\u8BBE\u540D\u79F0", true), description: text2(v.description, 2e3, "\u7B80\u4ECB"), entries, settings: { meeting: settings(v.settings.meeting), theatre: settings(v.settings.theatre) } };
-    if (new TextEncoder().encode(JSON.stringify(preset)).length > PRESET_MAX_BYTES) throw Error("\u9884\u8BBE\u8D85\u8FC7 8 MiB");
+    fields(v, ["format", "schemaVersion", "id", "name", "description", "entries"], "\u9884\u8BBE");
+    if (!presetId(v.id)) throw Error("\u9884\u8BBE ID \u65E0\u6548");
+    const preset = { format: "elsewhere-preset", schemaVersion: 1, id: v.id, name: text2(v.name, 200, "\u9884\u8BBE\u540D\u79F0", true), description: text2(v.description, 2e3, "\u7B80\u4ECB"), entries: entries(v.entries) };
+    if (encoder.encode(JSON.stringify(preset)).length > PRESET_MAX_BYTES) throw Error("\u9884\u8BBE\u6587\u4EF6\u8D85\u8FC7\u5927\u5C0F\u9650\u5236");
     return preset;
   }
+  function readPreset(v) {
+    if (!presetObject(v) || !Object.hasOwn(v, "settings")) return validateElsewherePreset(v);
+    const { settings: old, ...rest } = v;
+    fields(old, modes, "\u65E7\u6A21\u5F0F\u8BBE\u7F6E");
+    return { ...validateElsewherePreset(rest), settings: { meeting: settings(old.meeting), theatre: settings(old.theatre) } };
+  }
   function builtinPreset() {
-    const base = { length: { min: 600, max: 1200 }, style: "" };
-    return { format: "elsewhere-preset", schemaVersion: 1, id: "native", name: "Elsewhere \u5185\u7F6E\u57FA\u7840", description: "\u6CBF\u7528 Elsewhere \u7684\u4EBA\u7269\u3001\u6765\u6E90\u4E0E\u5C0F\u8BF4\u57FA\u7840\u89C4\u5219\u3002\u590D\u5236\u540E\u53EF\u7F16\u8F91\u3002", entries: [], settings: { meeting: structuredClone(base), theatre: structuredClone(base) } };
+    return { format: "elsewhere-preset", schemaVersion: 1, id: "native", name: "Elsewhere \u5185\u7F6E\u57FA\u7840", description: "\u6CBF\u7528 Elsewhere \u7684\u4EBA\u7269\u3001\u6765\u6E90\u4E0E\u5C0F\u8BF4\u57FA\u7840\u89C4\u5219\u3002\u590D\u5236\u540E\u53EF\u7F16\u8F91\u3002", entries: [] };
   }
   function emptyPresetLibrary() {
-    return { schemaVersion: 1, revision: 0, presets: [builtinPreset()], defaults: { meeting: "native", theatre: "native" }, bindings: {} };
+    return { schemaVersion: 2, revision: 0, presets: [builtinPreset()], defaultPresetId: "native", bindings: {} };
   }
-  function parseElsewherePreset(raw) {
-    if (!raw.length || raw.length > PRESET_MAX_BYTES) throw Error("\u8BF7\u9009\u62E9\u4E0D\u8D85\u8FC7 8 MiB \u7684 JSON");
-    let v;
+  function readElsewherePresetFile(raw) {
+    if (!raw.length || raw.length > PRESET_MAX_BYTES) throw Error("\u9884\u8BBE JSON \u4E3A\u7A7A\u6216\u8D85\u8FC7\u5927\u5C0F\u9650\u5236");
+    let value;
     try {
-      v = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw).replace(/^\uFEFF/, ""));
+      value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
     } catch {
       throw Error("JSON \u65E0\u6CD5\u8BFB\u53D6\uFF0C\u8BF7\u9009\u62E9\u5B8C\u6574\u7684\u9884\u8BBE\u6587\u4EF6");
     }
-    return validateElsewherePreset(v);
+    return readPreset(value);
   }
   function exportElsewherePreset(p) {
-    const preset = validateElsewherePreset(p), encoder = new TextEncoder(), pretty = encoder.encode(JSON.stringify(preset, null, 2));
+    const preset = validateElsewherePreset(p);
+    const pretty = encoder.encode(JSON.stringify(preset, null, 2));
     return pretty.length <= PRESET_MAX_BYTES ? pretty : encoder.encode(JSON.stringify(preset));
   }
-  function validatePresetOverride(v, p) {
-    fields(v, ["entries", "order", "settings"], "\u89D2\u8272\u8986\u76D6");
-    const next = {};
+  function unifyElsewherePreset(p, mode, lengthOverride = false) {
+    if (!("settings" in p)) return p;
+    const { settings: old, ...base } = p;
+    const { length, style } = old[mode];
+    const result = { ...base, entries: [...base.entries] };
+    function add(id2, name, content) {
+      let entryId = id2;
+      let suffix = 2;
+      while (result.entries.some((e) => e.id === entryId)) entryId = `${id2}-${suffix++}`;
+      result.entries.push({ id: entryId, name, content, role: "system", enabled: true });
+    }
+    if (p.id !== "native" || lengthOverride) add("previous-length", "\u6B63\u6587\u7BC7\u5E45", `\u76EE\u6807 ${length.min}\u2013${length.max} \u5B57\uFF0C\u6309\u5267\u60C5\u81EA\u7136\u53D6\u820D\uFF0C\u4E0D\u51D1\u5B57\u6570\u3002`);
+    if (style.trim()) add("previous-style", "\u6587\u98CE\u8981\u6C42", `\u6587\u98CE\uFF1A${style}`);
+    return validateElsewherePreset(result);
+  }
+  function applyOverride(base, override) {
+    const effective = [...base.entries.filter((e) => !override.hidden?.includes(e.id)).map((e) => ({ ...e, ...override.entries?.[e.id] })), ...override.added || []];
+    const byId = new Map(effective.map((e) => [e.id, e]));
+    return { ...base, entries: override.order ? override.order.map((id2) => byId.get(id2)) : effective };
+  }
+  function validateOverride(v, p, legacy2 = false) {
+    fields(v, legacy2 ? ["entries", "order", "settings"] : ["entries", "order", "added", "hidden"], "\u89D2\u8272\u8986\u76D6");
+    const result = {};
     if (v.entries !== void 0) {
-      if (!presetObject(v.entries) || Object.keys(v.entries).length > 128) throw Error("\u6761\u76EE\u8986\u76D6\u65E0\u6548");
-      next.entries = {};
+      if (!presetObject(v.entries)) throw Error("\u6761\u76EE\u8986\u76D6\u65E0\u6548");
+      result.entries = {};
       for (const [id2, patch] of Object.entries(v.entries)) {
         const source = p.entries.find((e) => e.id === id2);
         if (!source) throw Error("\u8986\u76D6\u5F15\u7528\u7684\u6761\u76EE\u4E0D\u5B58\u5728");
-        fields(patch, ["name", "role", "enabled", "content"], "\u6761\u76EE\u8986\u76D6");
+        fields(patch, itemFields, "\u6761\u76EE\u8986\u76D6");
         item({ ...source, ...patch });
-        next.entries[id2] = { ...patch };
+        result.entries[id2] = { ...patch };
       }
+    }
+    if (v.added !== void 0) {
+      result.added = entries(v.added);
+      if (result.added.some((e) => p.entries.some((x) => x.id === e.id))) throw Error("\u89D2\u8272\u81EA\u5EFA\u6761\u76EE ID \u91CD\u590D");
+    }
+    if (v.hidden !== void 0) {
+      if (!Array.isArray(v.hidden) || new Set(v.hidden).size !== v.hidden.length || v.hidden.some((id2) => !p.entries.some((e) => e.id === id2))) throw Error("\u89D2\u8272\u9690\u85CF\u5F15\u7528\u65E0\u6548");
+      result.hidden = [...v.hidden];
     }
     if (v.order !== void 0) {
-      if (!Array.isArray(v.order) || v.order.length !== p.entries.length || new Set(v.order).size !== v.order.length || v.order.some((id2) => !p.entries.some((e) => e.id === id2))) throw Error("\u89D2\u8272\u6392\u5E8F\u5F15\u7528\u65E0\u6548");
-      next.order = [...v.order];
+      const effective = applyOverride(p, result).entries;
+      if (!Array.isArray(v.order) || v.order.length !== effective.length || new Set(v.order).size !== v.order.length || v.order.some((id2) => !effective.some((e) => e.id === id2))) throw Error("\u89D2\u8272\u6392\u5E8F\u5F15\u7528\u65E0\u6548");
+      result.order = [...v.order];
     }
-    if (v.settings !== void 0) {
-      fields(v.settings, ["length", "style"], "\u8BBE\u7F6E\u8986\u76D6");
-      next.settings = {};
-      if (v.settings.style !== void 0) next.settings.style = text2(v.settings.style, 2e3, "\u6587\u98CE");
-      if (v.settings.length !== void 0) {
-        fields(v.settings.length, ["min", "max"], "\u5B57\u6570\u8986\u76D6");
-        next.settings.length = {};
-        for (const field of ["min", "max"]) {
-          const value = v.settings.length[field];
-          if (value === void 0) continue;
-          if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 5e4) throw Error("\u5B57\u6570\u8986\u76D6\u65E0\u6548");
-          next.settings.length[field] = value;
-        }
-      }
-    }
-    return next;
+    return result;
   }
-  function resolvePreset(l, roleId, mode) {
-    const b = l.bindings[roleId]?.[mode], id2 = b && b.presetId !== "inherit" ? b.presetId : l.defaults[mode];
+  function presetOverride(base, edited) {
+    const changed = {};
+    const added = edited.entries.filter((e) => !base.entries.some((x) => x.id === e.id));
+    const hidden = base.entries.filter((e) => !edited.entries.some((x) => x.id === e.id)).map((e) => e.id);
+    for (const entry2 of edited.entries) {
+      const source = base.entries.find((x) => x.id === entry2.id);
+      if (!source) continue;
+      const patch = Object.fromEntries(itemFields.filter((k) => (entry2[k] ?? "") !== (source[k] ?? "")).map((k) => [k, entry2[k] ?? ""]));
+      if (Object.keys(patch).length) changed[entry2.id] = patch;
+    }
+    const result = {
+      ...Object.keys(changed).length ? { entries: changed } : {},
+      ...added.length ? { added } : {},
+      ...hidden.length ? { hidden } : {}
+    };
+    const order = edited.entries.map((e) => e.id);
+    if (JSON.stringify(order) !== JSON.stringify(applyOverride(base, result).entries.map((e) => e.id))) result.order = order;
+    return result;
+  }
+  function resolvePreset(l, roleId) {
+    const b = Object.hasOwn(l.bindings, roleId) ? l.bindings[roleId] : void 0;
+    const id2 = b && b.presetId !== "inherit" ? b.presetId : l.defaultPresetId;
     const p = l.presets.find((p2) => p2.id === id2);
     if (!p) throw Error("\u9884\u8BBE\u9009\u62E9\u5DF2\u5931\u6548\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9");
-    const o = validatePresetOverride(b?.overrides || {}, p), byId = new Map(p.entries.map((e) => [e.id, e]));
-    const effective = settings({ ...p.settings[mode], ...o.settings, length: { ...p.settings[mode].length, ...o.settings?.length } });
-    return { ...structuredClone(p), entries: (o.order || p.entries.map((e) => e.id)).map((id3) => ({ ...byId.get(id3), ...o.entries?.[id3] })), settings: { ...p.settings, [mode]: effective } };
+    return applyOverride(p, b?.overrides || {});
   }
-  function validatePresetLibrary(v) {
-    fields(v, ["schemaVersion", "revision", "presets", "defaults", "bindings", "taskProfiles", "legacyNotice"], "\u9884\u8BBE\u5E93");
-    if (v.schemaVersion !== 1 || !Number.isSafeInteger(v.revision) || Number(v.revision) < 0 || !Array.isArray(v.presets) || !v.presets.length || v.presets.length > 20 || !presetObject(v.bindings) || Object.keys(v.bindings).length > 500) throw Error("\u9884\u8BBE\u5E93\u7ED3\u6784\u65E0\u6548\uFF0C\u539F\u6570\u636E\u4FDD\u7559");
-    const presets = v.presets.map(validateElsewherePreset);
-    if (new Set(presets.map((p) => p.id)).size !== presets.length || presets.filter((p) => p.id === "native").length !== 1) throw Error("\u9884\u8BBE ID \u6216\u5185\u7F6E\u57FA\u7840\u65E0\u6548");
-    if (JSON.stringify(presets.find((p) => p.id === "native")) !== JSON.stringify(builtinPreset())) throw Error("\u5185\u7F6E\u57FA\u7840\u4E0D\u80FD\u88AB\u66FF\u6362");
-    fields(v.defaults, modes, "\u9ED8\u8BA4\u9884\u8BBE");
-    const defaults3 = { meeting: String(v.defaults.meeting), theatre: String(v.defaults.theatre) };
-    if (modes.some((m) => !presets.some((p) => p.id === defaults3[m]))) throw Error("\u9ED8\u8BA4\u9884\u8BBE\u4E0D\u5B58\u5728");
-    const l = { schemaVersion: 1, revision: Number(v.revision), presets, defaults: defaults3, bindings: {}, ...v.taskProfiles === void 0 ? {} : { taskProfiles: structuredClone(v.taskProfiles) }, ...v.legacyNotice === true ? { legacyNotice: true } : {} };
-    for (const [roleId, bindings] of Object.entries(v.bindings)) {
-      if (!presetId(roleId)) throw Error("\u89D2\u8272 ID \u65E0\u6548");
-      fields(bindings, modes, "\u89D2\u8272\u6A21\u5F0F");
-      l.bindings[roleId] = {};
-      for (const mode of modes) {
-        const b = bindings[mode];
-        if (b === void 0) continue;
-        fields(b, ["presetId", "overrides"], "\u89D2\u8272\u9009\u62E9");
-        const id2 = b.presetId === "inherit" ? defaults3[mode] : b.presetId, p = presets.find((p2) => p2.id === id2);
-        if (!p) throw Error("\u89D2\u8272\u9884\u8BBE\u5F15\u7528\u5931\u6548");
-        l.bindings[roleId][mode] = { presetId: String(b.presetId), overrides: validatePresetOverride(b.overrides, p) };
-        resolvePreset(l, roleId, mode);
-      }
+  function legacyBinding(value, presets, defaultId, mode) {
+    fields(value, ["presetId", "overrides"], "\u65E7\u89D2\u8272\u9009\u62E9");
+    const source = presets.find((p) => p.id === (value.presetId === "inherit" ? defaultId : value.presetId));
+    if (!source || !("settings" in source)) throw Error("\u65E7\u89D2\u8272\u9884\u8BBE\u5F15\u7528\u5931\u6548");
+    const override = validateOverride(value.overrides, source, true);
+    const patch = presetObject(value.overrides) ? value.overrides.settings : void 0;
+    let effective = source.settings[mode];
+    let lengthOverride = false;
+    if (patch !== void 0) {
+      fields(patch, ["length", "style"], "\u8BBE\u7F6E\u8986\u76D6");
+      if (patch.length !== void 0) fields(patch.length, ["min", "max"], "\u5B57\u6570\u8986\u76D6");
+      lengthOverride = presetObject(patch.length) && Object.keys(patch.length).length > 0;
+      effective = settings({ ...effective, ...patch, length: { ...effective.length, ...presetObject(patch.length) ? patch.length : {} } });
     }
-    return l;
+    const edited = unifyElsewherePreset({ ...source, entries: applyOverride(source, override).entries, settings: { ...source.settings, [mode]: effective } }, mode, lengthOverride);
+    return { presetId: String(value.presetId), sourceId: source.id, edited };
+  }
+  function validatePresetLibrary(v, source = "meeting") {
+    const legacy2 = presetObject(v) && v.schemaVersion === 1;
+    fields(v, ["schemaVersion", "revision", "presets", legacy2 ? "defaults" : "defaultPresetId", "bindings", "taskProfiles", "legacyNotice"], "\u9884\u8BBE\u5E93");
+    if (!legacy2 && v.schemaVersion !== 2 || !Number.isSafeInteger(v.revision) || Number(v.revision) < 0 || !Array.isArray(v.presets) || !v.presets.length || v.presets.length > 20 || !presetObject(v.bindings) || Object.keys(v.bindings).length > 500) throw Error("\u9884\u8BBE\u5E93\u7ED3\u6784\u65E0\u6548\uFF0C\u539F\u6570\u636E\u4FDD\u7559");
+    const old = v.presets.map(legacy2 ? readPreset : validateElsewherePreset);
+    if (legacy2 && old.some((p) => !("settings" in p))) throw Error("\u65E7\u9884\u8BBE\u7F3A\u5C11\u6A21\u5F0F\u8BBE\u7F6E");
+    const presets = old.map((p) => unifyElsewherePreset(p, source));
+    if (new Set(presets.map((p) => p.id)).size !== presets.length) throw Error("\u9884\u8BBE ID \u91CD\u590D");
+    if (JSON.stringify(presets.find((p) => p.id === "native")) !== JSON.stringify(builtinPreset())) throw Error("\u5185\u7F6E\u57FA\u7840\u4E0D\u80FD\u88AB\u66FF\u6362");
+    let defaultPresetId = v.defaultPresetId;
+    const legacyDefaults = {};
+    if (legacy2) {
+      const defaults3 = v.defaults;
+      fields(defaults3, modes, "\u65E7\u9ED8\u8BA4\u9884\u8BBE");
+      for (const mode of modes) {
+        if (!old.some((p) => p.id === defaults3[mode])) throw Error("\u65E7\u9ED8\u8BA4\u9884\u8BBE\u4E0D\u5B58\u5728");
+        legacyDefaults[mode] = String(defaults3[mode]);
+      }
+      defaultPresetId = legacyDefaults[source];
+    }
+    if (!presetId(defaultPresetId) || !presets.some((p) => p.id === defaultPresetId)) throw Error("\u9ED8\u8BA4\u9884\u8BBE\u4E0D\u5B58\u5728");
+    const result = { schemaVersion: 2, revision: Number(v.revision), presets, defaultPresetId, bindings: {}, ...v.taskProfiles === void 0 ? {} : { taskProfiles: structuredClone(v.taskProfiles) }, ...v.legacyNotice === true ? { legacyNotice: true } : {} };
+    for (const [roleId, value] of Object.entries(v.bindings)) {
+      if (!presetId(roleId)) throw Error("\u89D2\u8272 ID \u65E0\u6548");
+      if (legacy2) {
+        fields(value, modes, "\u65E7\u89D2\u8272\u6A21\u5F0F");
+        for (const mode of modes) {
+          if (value[mode] === void 0) continue;
+          const b = legacyBinding(value[mode], old, legacyDefaults[mode], mode);
+          if (mode === source) result.bindings[roleId] = { presetId: b.presetId, overrides: presetOverride(presets.find((p) => p.id === b.sourceId), b.edited) };
+        }
+      } else {
+        fields(value, ["presetId", "overrides"], "\u89D2\u8272\u9009\u62E9");
+        const p = presets.find((p2) => p2.id === (value.presetId === "inherit" ? defaultPresetId : value.presetId));
+        if (!p) throw Error("\u89D2\u8272\u9884\u8BBE\u5F15\u7528\u5931\u6548");
+        result.bindings[roleId] = { presetId: String(value.presetId), overrides: validateOverride(value.overrides, p) };
+      }
+      validateElsewherePreset(resolvePreset(result, roleId));
+    }
+    return result;
   }
   function importElsewherePreset(l, input) {
     if (l.presets.length >= 20) throw Error("\u9884\u8BBE\u5E93\u6700\u591A\u4FDD\u5B58 20 \u4EFD\uFF0C\u8BF7\u5148\u5BFC\u51FA\u548C\u6574\u7406");
     const p = validateElsewherePreset(input);
-    if (l.presets.some((e) => e.id === p.id)) p.id = crypto.randomUUID();
-    const base = p.name;
+    if (p.id === "inherit" || l.presets.some((e) => e.id === p.id)) p.id = crypto.randomUUID();
+    const name = p.name;
     let n = 2;
     while (l.presets.some((e) => e.name === p.name)) {
       const suffix = "\uFF08" + n++ + "\uFF09";
-      p.name = base.slice(0, 200 - suffix.length) + suffix;
+      p.name = name.slice(0, 200 - suffix.length) + suffix;
     }
     return { ...l, presets: [...l.presets, p] };
   }
@@ -11756,19 +11842,24 @@ ${formatMessageContentForModel(m, base.char, base.user)}`, at: m.at, scope, know
     if (!l.presets.some((e) => e.id === p.id)) throw Error("\u539F\u9884\u8BBE\u4E0D\u5B58\u5728");
     const next = structuredClone(l);
     next.presets = next.presets.map((e) => e.id === p.id ? p : e);
-    for (const [roleId, slots] of Object.entries(next.bindings)) for (const mode of modes) {
-      const b = slots[mode];
-      if (!b || (b.presetId === "inherit" ? l.defaults[mode] : b.presetId) !== p.id) continue;
-      if (b.overrides.entries) b.overrides.entries = Object.fromEntries(Object.entries(b.overrides.entries).filter(([id2]) => p.entries.some((e) => e.id === id2)));
-      if (b.overrides.order) {
-        const order = b.overrides.order.filter((id2) => p.entries.some((e) => e.id === id2));
-        for (let i = 0; i < p.entries.length; i++) if (!order.includes(p.entries[i].id)) {
-          const successor = p.entries.slice(i + 1).find((e) => order.includes(e.id));
-          order.splice(successor ? order.indexOf(successor.id) : order.length, 0, p.entries[i].id);
+    for (const [roleId, binding] of Object.entries(next.bindings)) {
+      if ((binding.presetId === "inherit" ? l.defaultPresetId : binding.presetId) !== p.id) continue;
+      const o = binding.overrides;
+      const remains = (id2) => p.entries.some((e) => e.id === id2);
+      if (o.entries) o.entries = Object.fromEntries(Object.entries(o.entries).filter(([id2]) => remains(id2)));
+      if (o.hidden) o.hidden = o.hidden.filter(remains);
+      if (o.order) {
+        const natural = applyOverride(p, { ...o, order: void 0 }).entries.map((e) => e.id);
+        const order = o.order.filter((id2) => natural.includes(id2));
+        for (const [index, id2] of natural.entries()) {
+          if (order.includes(id2)) continue;
+          const successor = natural.slice(index + 1).find((id3) => order.includes(id3));
+          order.splice(successor ? order.indexOf(successor) : order.length, 0, id2);
         }
-        b.overrides.order = order;
+        o.order = order;
       }
-      resolvePreset(next, roleId, mode);
+      validateOverride(o, p);
+      validateElsewherePreset(resolvePreset(next, roleId));
     }
     return next;
   }
@@ -11777,12 +11868,10 @@ ${formatMessageContentForModel(m, base.char, base.user)}`, at: m.at, scope, know
     if (!l.presets.some((p) => p.id === id2)) throw Error("\u9884\u8BBE\u4E0D\u5B58\u5728");
     const next = structuredClone(l);
     next.presets = next.presets.filter((p) => p.id !== id2);
-    for (const mode of modes) {
-      if (next.defaults[mode] === id2) next.defaults[mode] = "native";
-    }
-    for (const slots of Object.values(next.bindings)) for (const mode of modes) {
-      const b = slots[mode];
-      if (b && (b.presetId === id2 || b.presetId === "inherit" && l.defaults[mode] === id2)) slots[mode] = { presetId: b.presetId === id2 ? "native" : "inherit", overrides: {} };
+    if (next.defaultPresetId === id2) next.defaultPresetId = "native";
+    for (const [roleId, b] of Object.entries(next.bindings)) {
+      if (b.presetId === id2) next.bindings[roleId] = { presetId: "native", overrides: {} };
+      else if (b.presetId === "inherit" && l.defaultPresetId === id2) next.bindings[roleId] = { presetId: "inherit", overrides: {} };
     }
     return next;
   }
@@ -11809,13 +11898,13 @@ ${formatMessageContentForModel(m, base.char, base.user)}`, at: m.at, scope, know
     const legacy2 = context.native?.legacy;
     if (!legacy2) return preset;
     const prompts = [...preset.prompts], order = preset.order.filter((e) => e.identifier !== "chatHistory");
-    const index = preset.order.findIndex((e) => e.identifier === "chatHistory"), entries = [];
+    const index = preset.order.findIndex((e) => e.identifier === "chatHistory"), entries2 = [];
     let inserted = false;
     for (const [i, p] of legacy2.prompts.entries()) {
       if (!p.enabled) continue;
       if (p.marker) {
         if (/chatHistory/i.test(p.identifier || "") && !inserted) {
-          entries.push({ identifier: "chatHistory", enabled: true });
+          entries2.push({ identifier: "chatHistory", enabled: true });
           inserted = true;
         }
         continue;
@@ -11823,10 +11912,10 @@ ${formatMessageContentForModel(m, base.char, base.user)}`, at: m.at, scope, know
       if (!p.content) continue;
       const id2 = "legacy:" + i, role = p.role === "user" || p.role === "assistant" ? p.role : "system";
       prompts.push({ identifier: id2, name: p.name || "\u65E7\u9644\u52A0\u6761\u76EE " + (i + 1), role, content: p.content, marker: false, originalEnabled: true, position: Number(p.injection_position) === 1 ? 1 : 0, depth: Math.max(0, Number(p.injection_depth) || 0), injectionOrder: i, group: "\u65E7\u9644\u52A0\u9884\u8BBE", styleEntry: false });
-      entries.push({ identifier: id2, enabled: true });
+      entries2.push({ identifier: id2, enabled: true });
     }
-    if (!inserted) entries.push({ identifier: "chatHistory", enabled: true });
-    order.splice(Math.max(0, index), 0, ...entries);
+    if (!inserted) entries2.push({ identifier: "chatHistory", enabled: true });
+    order.splice(Math.max(0, index), 0, ...entries2);
     return { ...preset, prompts, order };
   }
   function finishNativeMessages(result, context, legacy2) {
@@ -11865,7 +11954,7 @@ ${formatMessageContentForModel(m, base.char, base.user)}`, at: m.at, scope, know
 ${f.text}`).join("\n");
     const lastUser = [...history].reverse().find((h) => h.role === "user");
     const valueSources = { description: facts.filter((f) => markerFor(f) === "charDescription").map((f) => f.id), personality: facts.filter((f) => markerFor(f) === "charPersonality").map((f) => f.id), scenario: facts.filter((f) => markerFor(f) === "scenario").map((f) => f.id), lastusermessage: lastUser ? [lastUser.id] : [] };
-    const values = { native_novel_rule: "\u91C7\u7528\u6587\u5B57\u5C0F\u8BF4\u5F0F\u63CF\u5199\uFF0C\u53EA\u5199\u81EA\u5DF1\u7684\u56DE\u5E94\uFF0C\u4E0D\u66FF\u5BF9\u65B9\u884C\u52A8\u3002", native_output_rule: `\u4FDD\u7559\u5F53\u524D\u6A21\u5F0F\u8EAB\u4EFD\u4E0E\u65F6\u95F4\u8FB9\u754C\uFF1B\u76EE\u6807 ${profile2.length.min}\u2013${profile2.length.max} \u5B57\u3002${profile2.style ? `\u6587\u98CE\uFF1A${profile2.style}` : ""}`, user: context.user, char: context.char, date: new Date(context.now).toISOString().slice(0, 10), time: new Date(context.now).toISOString().slice(11, 16), lastusermessage: lastUser?.text || "", description: markerText("charDescription"), personality: markerText("charPersonality"), scenario: markerText("scenario"), mesexamples: context.examples.map((x) => x.text).join("\n") };
+    const values = { native_novel_rule: "\u91C7\u7528\u6587\u5B57\u5C0F\u8BF4\u5F0F\u63CF\u5199\uFF0C\u53EA\u5199\u81EA\u5DF1\u7684\u56DE\u5E94\uFF0C\u4E0D\u66FF\u5BF9\u65B9\u884C\u52A8\u3002", native_output_rule: options.elsewherePreset ? "\u4FDD\u7559\u5F53\u524D\u6A21\u5F0F\u8EAB\u4EFD\u4E0E\u65F6\u95F4\u8FB9\u754C\u3002" : `\u4FDD\u7559\u5F53\u524D\u6A21\u5F0F\u8EAB\u4EFD\u4E0E\u65F6\u95F4\u8FB9\u754C\uFF1B\u76EE\u6807 ${profile2.length.min}\u2013${profile2.length.max} \u5B57\u3002${profile2.style ? `\u6587\u98CE\uFF1A${profile2.style}` : ""}`, user: context.user, char: context.char, date: new Date(context.now).toISOString().slice(0, 10), time: new Date(context.now).toISOString().slice(11, 16), lastusermessage: lastUser?.text || "", description: markerText("charDescription"), personality: markerText("charPersonality"), scenario: markerText("scenario"), mesexamples: context.examples.map((x) => x.text).join("\n") };
     Object.assign(values, context.native?.values);
     const resolver = new FruitMacroResolver(values, options.rng, profile2.style ? { "\u5F53\u524D\u6587\u98CE": profile2.style } : {});
     if (native) {
@@ -11981,10 +12070,10 @@ ${f.text}`).join("\n");
     if (native) finishNativeMessages(result, context, legacyInjections);
     if (native && options.elsewherePreset && (context.mode === "meeting" || context.mode === "theatre")) {
       const p = validateElsewherePreset(options.elsewherePreset);
-      const entries = p.entries.filter((e) => e.enabled && e.content.trim()).map((e, index2) => ({ role: e.role, content: e.content, sourceId: "preset:" + p.id + ":" + e.id, sourceName: e.name, orderIndex: index2 }));
-      for (const e of entries) for (const conflict of memoryRuleConflicts(e.content, context.memoryDenied || [])) result.diagnostics.push({ code: "memory-config-conflict", severity: "error", sourceId: e.sourceId, message: "\u9884\u8BBE\u6761\u76EE\u4E0E\u7528\u6237\u5DF2\u786E\u8BA4\u7EA0\u6B63\u51B2\u7A81\uFF1A" + conflict });
+      const entries2 = p.entries.filter((e) => e.enabled && e.content.trim()).map((e, index2) => ({ role: e.role, content: e.content, sourceId: "preset:" + p.id + ":" + e.id, sourceName: e.name, orderIndex: index2 }));
+      for (const e of entries2) for (const conflict of memoryRuleConflicts(e.content, context.memoryDenied || [])) result.diagnostics.push({ code: "memory-config-conflict", severity: "error", sourceId: e.sourceId, message: "\u9884\u8BBE\u6761\u76EE\u4E0E\u7528\u6237\u5DF2\u786E\u8BA4\u7EA0\u6B63\u51B2\u7A81\uFF1A" + conflict });
       const index = result.messages.findIndex((m) => m.marker === "chatHistory" || m.sourceId === "native-format" || m.sourceId === "current-input");
-      result.messages.splice(index < 0 ? result.messages.length : index, 0, ...entries);
+      result.messages.splice(index < 0 ? result.messages.length : index, 0, ...entries2);
     }
     const guard = `Elsewhere ${context.mode === "meeting" ? "Meeting Novel\uFF1A\u4FDD\u7559\u771F\u5B9E Canon \u4E0E\u5F53\u524D\u4EBA\u751F\u8FDE\u7EED\u6027" : "Theatre Performance\uFF1A\u4EC5\u5F53\u524D\u5267\u672C\u548C\u620F\u5185\u8EAB\u4EFD\uFF0C\u7981\u6B62\u6F14\u5458\u79C1\u5BC6\u77E5\u8BC6\u8FDB\u5165\u620F\u5185\uFF0C\u620F\u5185\u4E8B\u4EF6\u4E0D\u6539\u5199\u6F14\u5458 Canon"}\u3002\u53EA\u4F7F\u7528\u5DF2\u6388\u6743\u7684\u6765\u6E90\uFF0C\u4E0D\u5C06\u63A8\u6D4B\u5199\u6210\u6B63\u5F0F\u4E8B\u5B9E\u3002\u6B63\u6587\u4EE5 <content> \u5305\u88F9\uFF1B\u76EE\u6807 ${profile2.length.min}\u2013${profile2.length.max} \u5B57\uFF0C\u6309\u5267\u60C5\u81EA\u7136\u53D6\u820D\uFF0C\u4E0D\u51D1\u5B57\u6570\u3002${profile2.style ? `\u6587\u98CE\uFF1A${profile2.style}\u3002` : ""}\u4E0D\u751F\u6210 snow \u5C0F\u5267\u573A\u3002${profile2.output.scene ? "\u5FC5\u8981\u573A\u666F\u4FE1\u606F\u53EF\u7528 <status_bar>\u3002" : "\u53EA\u8F93\u51FA\u6B63\u6587\uFF0C\u4E0D\u8F93\u51FA\u573A\u666F\u8F85\u52A9\u5757\u3002"}${profile2.output.summary ? "\u53EF\u9644\u7B80\u77ED <meow_FM> \u6458\u8981\uFF0C\u4EC5\u4F9B\u6298\u53E0\u5C55\u793A\uFF0C\u4E0D\u81EA\u52A8\u6210\u4E3A\u8BB0\u5FC6\u3002" : ""}${profile2.output.characters ? "\u53EF\u9644 <profile> \u4EBA\u7269\u8F85\u52A9\u4FE1\u606F\u3002" : ""}${profile2.output.auxiliary ? "\u751F\u6210\u7684 ECoT \u7B49\u53EA\u5C5E\u4E8E\u751F\u6210\u8F85\u52A9\u6587\u672C\uFF0C\u4E0D\u662F\u6A21\u578B\u5185\u90E8\u63A8\u7406\u6216\u6B63\u5F0F\u5FC3\u7406\u8BB0\u5FC6\u3002" : "\u5173\u95ED\u7684\u8F85\u52A9\u5757\u4E0D\u5C55\u793A\u3001\u4E0D\u4FDD\u5B58\uFF1B\u9884\u8BBE\u82E5\u751F\u6210\u8F85\u52A9\u6807\u7B7E\uFF0C\u5FC5\u987B\u4E0E content \u6B63\u6587\u5206\u9694\uFF0C\u4E0D\u80FD\u6DF7\u5165\u6B63\u6587\u3002"}`;
     const finalGuard = options.format === "native" ? `Elsewhere \u539F\u751F\u5C0F\u8BF4\u9884\u89C8\uFF1A\u4FDD\u7559\u5F53\u524D\u6A21\u5F0F\u8EAB\u4EFD\u4E0E\u65F6\u95F4\u8FB9\u754C\uFF1B\u76EE\u6807 ${profile2.length.min}\u2013${profile2.length.max} \u5B57\uFF0C\u4E0D\u66FF\u7528\u6237\u884C\u52A8\u3002${profile2.style ? `\u6587\u98CE\uFF1A${profile2.style}` : ""}\u4E0D\u81EA\u52A8\u5199\u5165\u6B63\u5F0F\u5386\u53F2\u3002` : guard;
@@ -12425,7 +12514,7 @@ ${facts || "\u6682\u65E0"}`;
       native_novel_rule: kind === "play" ? "\u4F7F\u7528\u4E2D\u6587\u8FDB\u884C\u81EA\u7136\u7684\u6C89\u6D78\u5F0F\u53D9\u4E8B\u3002\u63A8\u8FDB\u573A\u666F\u3001\u8868\u73B0\u4EBA\u7269\u5FC3\u7406\u4E0E\u81EA\u8EAB\u52A8\u4F5C\uFF0C\u4E0D\u4EE3\u66FF\u7528\u6237\u505A\u51FA\u9009\u62E9\u3002" : "\u4F60\u6B63\u5728\u548C\u7528\u6237\u9762\u5BF9\u9762\u76F8\u5904\uFF0C\u91C7\u7528\u6587\u5B57\u5C0F\u8BF4\u5F0F\u63CF\u5199\u573A\u666F\u4E0E\u81EA\u5DF1\u7684\u8A00\u8BED\u52A8\u4F5C\u3002\u56DE\u590D\u4F7F\u7528\u81EA\u7136\u4E2D\u6587\u3002\u53EA\u5199\u4F60\u81EA\u5DF1\u7684\u56DE\u5E94\uFF0C\u4E0D\u66FF\u7528\u6237\u884C\u52A8\u3002",
       native_output_rule: kind === "play" ? "\u8FD9\u662F\u72EC\u7ACB\u620F\u5267\u4E16\u754C\uFF0C\u4E25\u683C\u9075\u5B88\u672C\u5267\u89D2\u8272\u4EBA\u8BBE\uFF1B\u4E0D\u8981\u900F\u9732\u620F\u5916\u77E5\u8BC6\u3002" : "\u8FD9\u662F\u9762\u5BF9\u9762\u7684\u6587\u5B57\u5C0F\u8BF4\uFF0C\u4EC5\u63CF\u8FF0\u81EA\u5DF1\u548C\u73AF\u5883\uFF0C\u4E0D\u66FF\u7528\u6237\u884C\u52A8\u3002"
     };
-    if (options.profile && (kind === "scene" || kind === "play")) values.native_output_rule += `\u76EE\u6807 ${options.profile.length.min}\u2013${options.profile.length.max} \u5B57\uFF0C\u6309\u5267\u60C5\u81EA\u7136\u53D6\u820D\uFF0C\u4E0D\u51D1\u5B57\u6570\u3002${options.profile.style ? `\u6587\u98CE\uFF1A${options.profile.style}\u3002` : ""}`;
+    if (options.profile && !options.elsewherePreset && (kind === "scene" || kind === "play")) values.native_output_rule += `\u76EE\u6807 ${options.profile.length.min}\u2013${options.profile.length.max} \u5B57\uFF0C\u6309\u5267\u60C5\u81EA\u7136\u53D6\u820D\uFF0C\u4E0D\u51D1\u5B57\u6570\u3002${options.profile.style ? `\u6587\u98CE\uFF1A${options.profile.style}\u3002` : ""}`;
     const factsForContext = [
       ...kind !== "play" ? [{ id: "role-memory:" + r.id, text: sharedText, layer: "currentState", at: nowTs, scope, knownBy: [r.id], active: true, revisionValid: true }] : [],
       { id: "identity:" + r.id, text: kind === "play" ? `\u4F60\u5728\u5267\u5185\u7684\u8EAB\u4EFD\uFF1A${r.play.char}` : kind === "intermission" ? `\u4F60\u7684\u8EAB\u4EFD:${r.job}\uFF0C\u6027\u683C:${r.traits}\uFF0C\u5B8C\u6574\u4EBA\u8BBE:${r.profile}` : `\u8EAB\u4EFD\uFF1A${r.job}\u3002\u6240\u5728\u533A\u57DF\u4E0E\u4E16\u754C\u89C2\uFF1A${r.place}\u3002\u6027\u683C\uFF1A${r.traits}\u3002\u4EBA\u8BBE\uFF1A${r.profile}\u3002\u524D\u53F2\u8282\u70B9\u4E0E\u672A\u53D1\u751F\u5267\u60C5\u8FB9\u754C\uFF1A${r.canonNotes || "\u4EE5\u7528\u6237\u8BBE\u5B9A\u4E3A\u51C6"}`, layer: "identity", marker: "charDescription", at: nowTs, scope, knownBy: [r.id], active: true, revisionValid: true },
@@ -12690,13 +12779,13 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
   var STORE2 = "preset-library";
   var KEY = "current";
   function migrateLegacyLibrary(legacy2, native) {
-    const entries = [{ id: "native", kind: "native", preset: native, profiles: createFruitState().profiles, enabled: true }];
-    if (legacy2.preset) entries.push({ id: "legacy-fruit", kind: "fruit", preset: legacy2.preset, profiles: structuredClone(legacy2.profiles), enabled: legacy2.enabled });
-    return { schema: 2, revision: 0, selectedId: legacy2.preset ? "legacy-fruit" : "native", defaults: { meeting: "native", theatre: "native" }, entries };
+    const entries2 = [{ id: "native", kind: "native", preset: native, profiles: createFruitState().profiles, enabled: true }];
+    if (legacy2.preset) entries2.push({ id: "legacy-fruit", kind: "fruit", preset: legacy2.preset, profiles: structuredClone(legacy2.profiles), enabled: legacy2.enabled });
+    return { schema: 2, revision: 0, selectedId: legacy2.preset ? "legacy-fruit" : "native", defaults: { meeting: "native", theatre: "native" }, entries: entries2 };
   }
   async function decodePresetLibrary(value, native) {
     if (!object3(value) || value.schema !== 2 && value.schema !== 3 || !Number.isInteger(value.revision) || Number(value.revision) < 1 || !Array.isArray(value.entries) || value.entries.length < 1 || value.entries.length > 20 || typeof value.selectedId !== "string" || !object3(value.defaults)) throw new Error("\u9884\u8BBE\u5E93\u8BB0\u5F55\u635F\u574F\uFF0C\u5DF2\u4FDD\u7559\u539F\u6570\u636E\uFF0C\u672A\u81EA\u52A8\u91CD\u7F6E");
-    const ids = /* @__PURE__ */ new Set(), entries = [];
+    const ids = /* @__PURE__ */ new Set(), entries2 = [];
     for (const item2 of value.entries) {
       if (!object3(item2) || typeof item2.id !== "string" || !item2.id || item2.id.length > 200 || ["__proto__", "constructor", "prototype"].includes(item2.id) || ids.has(item2.id) || !["native", "fruit", "st"].includes(String(item2.kind)) || typeof item2.enabled !== "boolean" || item2.archived !== void 0 && typeof item2.archived !== "boolean" || !object3(item2.profiles)) throw new Error("\u9884\u8BBE\u5E93\u6761\u76EE\u65E0\u6548\uFF0C\u539F\u4EF6\u4FDD\u7559");
       ids.add(item2.id);
@@ -12704,10 +12793,10 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
       const preset = item2.kind === "native" ? native : await parseFruitPreset(item2.raw, item2.fileName, item2.importedAt), profiles = { meeting: validateProfile(item2.profiles.meeting), theatre: validateProfile(item2.profiles.theatre) };
       for (const mode of ["meeting", "theatre"]) applyFruitProfile(item2.kind === "native" && isNativePreset(native) ? nativePreset(mode) : preset, profiles[mode]);
       const kind = item2.kind === "native" ? "native" : item2.kind === "fruit" ? "fruit" : "st";
-      entries.push({ id: item2.id, kind, preset, profiles, enabled: item2.enabled, ...item2.archived ? { archived: true } : {} });
+      entries2.push({ id: item2.id, kind, preset, profiles, enabled: item2.enabled, ...item2.archived ? { archived: true } : {} });
     }
-    if (entries.filter((e) => e.kind === "native").length !== 1 || !entries.some((e) => e.id === "native" && e.kind === "native") || !ids.has(value.selectedId) || typeof value.defaults.meeting !== "string" || typeof value.defaults.theatre !== "string" || !ids.has(value.defaults.meeting) || !ids.has(value.defaults.theatre)) throw new Error("\u9884\u8BBE\u9009\u62E9\u6216\u9ED8\u8BA4\u503C\u65E0\u6548\uFF0C\u539F\u8BB0\u5F55\u4FDD\u7559");
-    const library = { schema: value.schema, revision: Number(value.revision), selectedId: value.selectedId, defaults: { meeting: value.defaults.meeting, theatre: value.defaults.theatre }, entries };
+    if (entries2.filter((e) => e.kind === "native").length !== 1 || !entries2.some((e) => e.id === "native" && e.kind === "native") || !ids.has(value.selectedId) || typeof value.defaults.meeting !== "string" || typeof value.defaults.theatre !== "string" || !ids.has(value.defaults.meeting) || !ids.has(value.defaults.theatre)) throw new Error("\u9884\u8BBE\u9009\u62E9\u6216\u9ED8\u8BA4\u503C\u65E0\u6548\uFF0C\u539F\u8BB0\u5F55\u4FDD\u7559");
+    const library = { schema: value.schema, revision: Number(value.revision), selectedId: value.selectedId, defaults: { meeting: value.defaults.meeting, theatre: value.defaults.theatre }, entries: entries2 };
     if (value.schema === 3) {
       if (!Array.isArray(value.versions) || value.versions.length > 100) throw new Error("\u9884\u8BBE\u7248\u672C\u5907\u4EFD\u635F\u574F\uFF0C\u539F\u4EF6\u4FDD\u7559");
       const versions = [], hashes = /* @__PURE__ */ new Set();
@@ -12836,6 +12925,7 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
   // src/core/presetLibrary.ts
   var STORE3 = "elsewhere-presets";
   var CURRENT = "current";
+  var UPGRADE = "before-shared-novel";
   function legacyArchive(library, document2, recovery, migration) {
     return { ...library === void 0 ? {} : { library }, ...document2 === void 0 ? {} : { document: document2 }, ...recovery === void 0 ? {} : { recovery }, ...migration === void 0 ? {} : { migration } };
   }
@@ -12867,18 +12957,20 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
     if (!presetObject(value)) throw Error("\u539F\u751F\u4EFB\u52A1\u914D\u7F6E\u65E0\u6548\uFF0C\u539F\u6570\u636E\u4FDD\u7559\u3002");
     return { meeting: validateProfile(value.meeting), theatre: validateProfile(value.theatre) };
   }
-  function migrateElsewhereLibrary(archive) {
-    const l = emptyPresetLibrary(), old = archive.library;
+  function migrateElsewhereLibrary(archive, source = "meeting") {
+    const defaults3 = createFruitState().profiles;
+    const builtin = { ...builtinPreset(), settings: { meeting: { length: defaults3.meeting.length, style: defaults3.meeting.style }, theatre: { length: defaults3.theatre.length, style: defaults3.theatre.style } } };
+    const l = { schemaVersion: 1, revision: 0, presets: [builtin], defaults: { meeting: "native", theatre: "native" }, bindings: {}, taskProfiles: void 0, legacyNotice: false }, old = archive.library;
     if (presetObject(old) && Array.isArray(old.entries)) {
       const native = old.entries.find((v) => presetObject(v) && v.kind === "native");
       if (presetObject(native)) {
         const profiles = taskProfiles(native.profiles);
         l.taskProfiles = profiles;
         const base = { ...builtinPreset(), id: "upgraded-native", name: "\u65E7\u539F\u751F\u57FA\u7840\u8BBE\u7F6E", description: "\u4FDD\u7559\u65E7\u539F\u751F\u5B57\u6570\u548C\u6587\u98CE\u3002\u65E7\u6761\u76EE\u7F16\u8F91\u548C\u6392\u5E8F\u4FDD\u7559\u5728\u5F52\u6863\u4E2D\uFF0C\u672A\u81EA\u52A8\u8F6C\u6362\u3002", settings: { meeting: { length: profiles.meeting.length, style: profiles.meeting.style }, theatre: { length: profiles.theatre.length, style: profiles.theatre.style } } };
-        const settingsChanged = JSON.stringify(base.settings) !== JSON.stringify(builtinPreset().settings);
+        const settingsChanged = JSON.stringify(base.settings) !== JSON.stringify(builtin.settings);
         if (settingsChanged) l.presets.push(base);
-        const legacy2 = presetObject(old.legacyNovel) ? old.legacyNovel : old, defaults3 = presetObject(legacy2.defaults) ? legacy2.defaults : {};
-        for (const mode of ["meeting", "theatre"]) if (defaults3[mode] === "native" && settingsChanged) l.defaults[mode] = base.id;
+        const legacy2 = presetObject(old.legacyNovel) ? old.legacyNovel : old, defaults4 = presetObject(legacy2.defaults) ? legacy2.defaults : {};
+        for (const mode of ["meeting", "theatre"]) if (defaults4[mode] === "native" && settingsChanged) l.defaults[mode] = base.id;
         if (presetObject(old.roleNovel)) for (const [roleId, value] of Object.entries(old.roleNovel)) {
           if (!presetId(roleId) || !presetObject(value) || value.useLegacy === true) continue;
           if (value.presetId !== "native") {
@@ -12893,10 +12985,10 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
       }
     }
     if (archive.library !== void 0 || archive.document !== void 0) l.legacyNotice = true;
-    return l;
+    return validatePresetLibrary(l, source);
   }
-  function checked(value) {
-    const l = validatePresetLibrary(value);
+  function checked(value, source = "meeting") {
+    const l = validatePresetLibrary(value, source);
     if (l.taskProfiles !== void 0) l.taskProfiles = taskProfiles(l.taskProfiles);
     return l;
   }
@@ -12935,10 +13027,28 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
     }
   }
   var ElsewherePresetRepository = class {
+    constructor() {
+      this.upgradePending = false;
+    }
     async load(signal) {
       const result = await read(signal);
       this.legacySeen = result.archive;
+      this.upgradePending = presetObject(result.current) && result.current.schemaVersion === 1;
       return result.current === void 0 ? migrateElsewhereLibrary(result.archive) : checked(result.current);
+    }
+    async upgradeBackup() {
+      const db = await openFruitDatabaseReadonly();
+      if (!db) return;
+      try {
+        if (!db.objectStoreNames.contains(STORE3)) return;
+        return await new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE3, "readonly"), q = tx.objectStore(STORE3).get(UPGRADE);
+          tx.oncomplete = () => resolve(q.result);
+          tx.onabort = () => reject(Error("\u5347\u7EA7\u524D\u5907\u4EFD\u8BFB\u53D6\u5931\u8D25"));
+        });
+      } finally {
+        db.close();
+      }
     }
     async archive() {
       const db = await openFruitDatabaseReadonly();
@@ -12971,11 +13081,11 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
         db.close();
       }
     }
-    async save(candidate, expectedRevision, replaceArchive) {
+    async save(candidate, expectedRevision, replaceArchive, importedBackup) {
       const next = checked({ ...candidate, revision: expectedRevision + 1 }), db = await openDatabase();
       try {
         await new Promise((resolve, reject) => {
-          const tx = db.transaction([STORE3, "documents", "preset-library"], "readwrite"), store2 = tx.objectStore(STORE3), q = store2.get(CURRENT), archive = store2.get("legacy");
+          const tx = db.transaction([STORE3, "documents", "preset-library"], "readwrite"), store2 = tx.objectStore(STORE3), q = store2.get(CURRENT), archive = store2.get("legacy"), previous = store2.get("previous"), upgrade = store2.get(UPGRADE);
           const oldLibrary = tx.objectStore("preset-library").get("current"), oldDocument = tx.objectStore("documents").get("current"), recovery = tx.objectStore("documents").get("role-preset-before-restore"), migration = tx.objectStore("documents").get("terminal-ux-migration-backup");
           let reason = "\u9884\u8BBE\u672A\u4FDD\u5B58\uFF0C\u539F\u5E93\u548C\u4FEE\u6539\u4FDD\u7559\u3002";
           migration.onsuccess = () => {
@@ -12992,6 +13102,10 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
                 tx.abort();
                 return;
               }
+              if (upgrade.result === void 0) {
+                if (presetObject(old) && old.schemaVersion === 1) store2.put({ library: old, ...previous.result === void 0 ? {} : { previous: previous.result } }, UPGRADE);
+                else if (importedBackup) store2.put(importedBackup, UPGRADE);
+              }
               if (old !== void 0) store2.put({ library: old, archive: archive.result || legacy2 }, "previous");
               if (archive.result === void 0 || replaceArchive !== void 0) store2.put(replaceArchive || legacy2, "legacy");
               store2.put(next, CURRENT);
@@ -13003,6 +13117,7 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
           tx.onabort = () => reject(Error(reason));
           tx.onerror = () => reject(Error(reason));
         });
+        this.upgradePending = false;
         return next;
       } finally {
         db.close();
@@ -13011,13 +13126,15 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
   };
   async function loadElsewhereRequestPreset(mode, roleId, signal) {
     const l = await new ElsewherePresetRepository().load(signal), slot = mode === "theatre" || mode === "intermission" ? "theatre" : "meeting";
-    const novel = mode === "meeting" || mode === "theatre", p = novel ? resolvePreset(l, roleId, slot) : void 0;
+    const novel = mode === "meeting" || mode === "theatre", p = novel ? resolvePreset(l, roleId) : void 0;
     const hash = p ? Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(p)))), (b) => b.toString(16).padStart(2, "0")).join("") : "native";
-    const profile2 = novel ? { ...createFruitState().profiles[slot], ...p.settings[slot] } : taskProfiles(l.taskProfiles)[slot];
+    const profile2 = novel ? createFruitState().profiles[slot] : taskProfiles(l.taskProfiles)[slot];
     return { profile: profile2, preset: nativePreset(slot), elsewherePreset: p, revision: l.revision, requestedPresetId: p?.id || "native", actualPresetId: p?.id || "native", roleId, configSource: novel ? "elsewhere-v1" : "native-task", presetHash: hash, profileBaseHash: hash };
   }
-  function encodeNativeLibraryBackup(library, archive) {
-    const raw = JSON.stringify({ format: "elsewhere-preset-library", schemaVersion: 1, library: checked(library), archive }, (_key, v) => {
+  function encodeNativeLibraryBackup(library, archive, beforeSharedNovel) {
+    const validated = checked(library);
+    const original = presetObject(library) && library.schemaVersion === 1 ? library : validated;
+    const raw = JSON.stringify({ format: "elsewhere-preset-library", schemaVersion: 1, library: original, archive, ...beforeSharedNovel ? { beforeSharedNovel } : {} }, (_key, v) => {
       if (!(v instanceof Uint8Array)) return v;
       let s = "";
       for (let i = 0; i < v.length; i += 32768) s += String.fromCharCode(...v.subarray(i, i + 32768));
@@ -13027,7 +13144,7 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
     if (bytes.length > 64 * 1024 * 1024) throw Error("\u9884\u8BBE\u5E93\u5907\u4EFD\u8D85\u8FC7 64 MiB\uFF0C\u8BF7\u5206\u522B\u5BFC\u51FA\u9884\u8BBE\u548C\u65E7\u539F\u4EF6\u3002");
     return bytes;
   }
-  async function decodeNativeLibraryBackup(raw) {
+  async function decodeNativeLibraryBackup(raw, source = "meeting") {
     if (!raw.length || raw.length > 64 * 1024 * 1024) throw Error("\u5E93\u5907\u4EFD\u5E94\u4E3A\u4E0D\u8D85\u8FC7 64 MiB \u7684 JSON");
     let doc;
     try {
@@ -13044,10 +13161,17 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
     if (presetObject(doc) && doc.kind === "Elsewhere private preset library" && doc.version === 1) {
       await decodePresetLibraryBackup(raw, nativePreset("meeting"));
       const archive = { library: doc.library };
-      return { library: checked(migrateElsewhereLibrary(archive)), archive };
+      return { library: checked(migrateElsewhereLibrary(archive, source)), archive };
     }
     if (!presetObject(doc) || doc.format !== "elsewhere-preset-library" || doc.schemaVersion !== 1 || !presetObject(doc.archive)) throw Error("\u8BF7\u9009\u62E9 Elsewhere \u79C1\u6709\u5E93\u5907\u4EFD");
-    return { library: checked(doc.library), archive: doc.archive };
+    const library = checked(doc.library, source);
+    const imported = doc.beforeSharedNovel;
+    if (imported !== void 0) {
+      if (!presetObject(imported) || !presetObject(imported.library) || imported.library.schemaVersion !== 1) throw Error("\u5347\u7EA7\u524D\u5907\u4EFD\u683C\u5F0F\u65E0\u6548");
+      checked(imported.library);
+    }
+    const upgradeBackup = presetObject(doc.library) && doc.library.schemaVersion === 1 ? { library: doc.library } : imported;
+    return { library, archive: doc.archive, upgradeBackup };
   }
   function legacyOriginals(archive) {
     const out = [], seen = /* @__PURE__ */ new Set();
@@ -14493,8 +14617,8 @@ channel.onmessage=async({data:job})=>{
         for (const target of targets) queue = queue.then(() => display(target));
         return;
       }
-      observer = new IntersectionObserver((entries) => {
-        for (const entry2 of entries) if (entry2.isIntersecting) {
+      observer = new IntersectionObserver((entries2) => {
+        for (const entry2 of entries2) if (entry2.isIntersecting) {
           observer?.unobserve(entry2.target);
           queue = queue.then(() => display(entry2.target));
         }
@@ -15232,120 +15356,284 @@ channel.onmessage=async({data:job})=>{
     } };
   }
 
+  // src/terminalPresetView.ts
+  function renderNativePromptList(preset, base, locked) {
+    if (!preset.entries.length) return '<p class="terminal-caption" data-empty-prompts>\u8FD8\u6CA1\u6709 Prompt\u3002\u70B9\u51FB\u300C\u6DFB\u52A0 Prompt\u300D\u5F00\u59CB\u3002</p>';
+    let html = "";
+    let group = "";
+    let run = 0;
+    for (const [index, entry2] of preset.entries.entries()) {
+      const name = escHtml(entry2.name);
+      const id2 = escHtml(entry2.id);
+      const label2 = entry2.group?.trim() || "Prompt \u6761\u76EE";
+      if (label2 !== group) {
+        if (run) html += "</div></details>";
+        group = label2;
+        html += `<details class="terminal-prompt-group" data-prompt-group="${escHtml(label2 + "-" + ++run)}" open><summary>${escHtml(label2)}<span>\u6298\u53E0 / \u5C55\u5F00</span></summary><div>`;
+      }
+      const original = base.entries.find((item2) => item2.id === entry2.id);
+      const modified = preset !== base && JSON.stringify(original) !== JSON.stringify(entry2);
+      const disabled = locked ? "disabled" : "";
+      html += `<div class="terminal-prompt-row${modified ? " is-modified" : ""}" data-prompt-row="${id2}" data-search="${escHtml(entry2.name + " " + label2)}">
+      <button type="button" class="terminal-drag" data-prompt-drag="${id2}" draggable="${!locked}" aria-label="\u62D6\u52A8${name}" ${disabled}>${uiIcon("drag")}</button>
+      <button type="button" class="terminal-prompt-name native-prompt-name" data-prompt-edit="${id2}"><b>${name}</b></button>
+      <div class="terminal-prompt-actions">
+        <button type="button" data-prompt-move="up" data-id="${id2}" aria-label="\u4E0A\u79FB${name}" ${locked || index === 0 ? "disabled" : ""}>${uiIcon("up")}</button>
+        <button type="button" data-prompt-move="down" data-id="${id2}" aria-label="\u4E0B\u79FB${name}" ${locked || index === preset.entries.length - 1 ? "disabled" : ""}>${uiIcon("down")}</button>
+        <label class="terminal-row-switch"><input type="checkbox" class="fruit-switch" data-prompt-enabled="${id2}" aria-label="\u542F\u7528${name}" ${entry2.enabled ? "checked" : ""} ${disabled}></label>
+        <button type="button" data-prompt-edit="${id2}" aria-label="\u7F16\u8F91${name}">${uiIcon("edit")}</button>
+      </div>
+    </div>`;
+    }
+    return html + "</div></details>";
+  }
+  function renderNativePromptEditor(entry2, isNew, locked) {
+    const disabled = locked ? "disabled" : "";
+    return `<form data-prompt-editor>
+    <div class="terminal-field-grid">
+      <label>Prompt \u540D\u79F0<input class="field" name="prompt-name" required maxlength="200" value="${escHtml(entry2.name)}" ${disabled}></label>
+      <label>Role<select class="field" name="prompt-role" ${disabled}>${["system", "assistant", "user"].map((role) => `<option ${entry2.role === role ? "selected" : ""}>${role}</option>`).join("")}</select></label>
+    </div>
+    <label class="terminal-label">Prompt \u5185\u5BB9<textarea class="field terminal-prompt-editor" name="prompt-content" maxlength="128000" ${disabled}></textarea></label>
+    <label class="terminal-label">\u5206\u7EC4\uFF08\u53EF\u9009\uFF09<input class="field" name="prompt-group" maxlength="100" value="${escHtml(entry2.group || "")}" ${disabled}></label>
+    <p role="alert" data-editor-status class="fruit-notice" hidden></p>
+    <div class="terminal-editor-actions">
+      ${locked ? "" : `<button class="fruit-button fruit-primary">\u4FDD\u5B58\u6761\u76EE</button>${isNew ? "" : '<button type="button" class="fruit-button" data-entry-action="copy">\u590D\u5236\u6761\u76EE</button><button type="button" class="fruit-button" data-entry-action="delete">\u5220\u9664\u6761\u76EE</button>'}`}
+      <button type="button" class="fruit-button" data-dialog-close>${locked ? "\u5173\u95ED" : "\u53D6\u6D88 / \u5173\u95ED"}</button>
+    </div>
+  </form>`;
+  }
+
   // src/fruitManager.ts
-  var modes2 = ["meeting", "theatre"];
-  var modeLabel = (m) => m === "meeting" ? "\u9762\u5BF9\u9762" : "\u620F\u4E2D\u620F";
   function createFruitManager(context) {
-    const repository = new ElsewherePresetRepository(), drafts = /* @__PURE__ */ new Map(), draftOriginals = /* @__PURE__ */ new Map();
-    let host = null, library = null, archive = {}, tab = "library", scope = "shared", selected = "native", actor = null, busy = false, status = "", epoch = 0;
-    let importing, dialog = null;
-    const key2 = () => JSON.stringify([actor?.id, selected, scope]);
-    const base = () => library?.presets.find((p) => p.id === selected);
-    const original = () => scope === "shared" ? structuredClone(base()) : resolvePreset({ ...library, defaults: { ...library.defaults, [scope]: selected }, bindings: { ...library.bindings, [actor.id]: { ...library.bindings[actor.id], [scope]: { presetId: selected, overrides: library.bindings[actor.id]?.[scope]?.presetId === selected || library.bindings[actor.id]?.[scope]?.presetId === "inherit" && library.defaults[scope] === selected ? library.bindings[actor.id][scope].overrides : {} } } } }, actor.id, scope);
-    const draft = () => drafts.get(key2()) || original();
-    const dirty = () => drafts.has(key2());
-    const remember = () => {
-      if (!draftOriginals.has(key2())) draftOriginals.set(key2(), original());
-    };
+    const repository = new ElsewherePresetRepository();
+    const drafts = /* @__PURE__ */ new Map();
+    const collapsed = /* @__PURE__ */ new Set();
+    let host = null;
+    let actor = null;
+    let library = null;
+    let archive = {};
+    let upgrade;
+    let scope = "role";
+    let busy = false, reload = true, status = "", search = "", onlyEnabled = false, dragId = "", fileRead = 0;
+    let dialog = null;
+    const effective = () => resolvePreset(library, actor.id);
+    const base = () => library.presets.find((p) => p.id === effective().id);
+    const key2 = () => JSON.stringify([actor?.id, actor && library ? effective().id : "", scope]);
+    const original = () => scope === "shared" ? base() : effective();
+    const edited = () => drafts.get(key2())?.edited || original();
+    const locked = () => scope === "shared" && base().id === "native";
     const error = (e) => e instanceof Error ? e.message : "\u64CD\u4F5C\u672A\u5B8C\u6210\uFF0C\u539F\u6570\u636E\u4FDD\u7559\u3002";
+    const toolbar = (action, label2, css = "") => `<button type="button" class="fruit-button ${css}" data-preset-action="${action}">${label2}</button>`;
+    const viewport = () => host?.closest(".viewport");
+    const references = () => context.roles().filter((r) => resolvePreset(library, r.id).id === base().id).map((r) => r.name);
     function feedback() {
-      if (!host) return;
-      const node = host.querySelector("[data-preset-status]");
-      if (node) node.textContent = status || (dirty() ? "\u4FEE\u6539\u5C1A\u672A\u4FDD\u5B58" : "\u5DF2\u4FDD\u5B58");
-      const reload = host.querySelector("[data-preset-conflict-reload]");
-      if (reload) reload.hidden = !/其他标签页|另一页面/.test(status);
-      host.setAttribute("aria-busy", String(busy));
-      for (const button of host.querySelectorAll("button")) button.disabled = busy || button.dataset.locked === "true";
-    }
-    function download2(bytes, name) {
-      const url = URL.createObjectURL(new Blob([Uint8Array.from(bytes)], { type: "application/json" })), a = document.createElement("a");
-      a.href = url;
-      a.download = presetFilename(name.replace(/\.json$/i, ""));
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 2e3);
-    }
-    function ask(title, body, choices) {
-      dialog?.close();
-      dialog?.remove();
-      return new Promise((resolve) => {
-        const d = document.createElement("dialog");
-        dialog = d;
-        d.className = "fruit-dialog preset-dialog";
-        d.innerHTML = `<div class="fruit-dialog-body"><h2>${escHtml(title)}</h2><p>${escHtml(body)}</p><div class="preset-actions">${choices.map((c) => `<button type="button" class="btn secondary" data-choice="${escHtml(c.id)}">${escHtml(c.label)}</button>`).join("")}</div></div>`;
-        let done = false;
-        const finish = (value) => {
-          if (done) return;
-          done = true;
-          d.close();
-          d.remove();
-          if (dialog === d) dialog = null;
-          resolve(value);
-        };
-        d.addEventListener("cancel", (event) => {
-          event.preventDefault();
-          finish("cancel");
-        });
-        d.addEventListener("click", (event) => {
-          const b = event.target.closest("[data-choice]");
-          if (b) finish(b.dataset.choice);
-          else if (event.target === d) finish("cancel");
-        });
-        document.body.append(d);
-        d.showModal();
-      });
-    }
-    function snapshot3() {
-      const active = document.activeElement;
-      return { field: active && host?.contains(active) ? active.dataset.presetField : void 0, start: active?.selectionStart, end: active?.selectionEnd, scroll: host?.closest(".viewport")?.scrollTop || 0 };
-    }
-    function restore(s) {
-      const container = host?.closest(".viewport");
-      if (container) container.scrollTop = s.scroll;
-      if (s.field) {
-        const field = Array.from(host?.querySelectorAll("[data-preset-field]") || []).find((f) => f.dataset.presetField === s.field);
-        if (field) {
-          field.focus({ preventScroll: true });
-          if (field instanceof HTMLTextAreaElement || field.type === "text") field.setSelectionRange(s.start || 0, s.end || 0);
+      const node = host?.querySelector("[data-preset-status]");
+      if (node) node.textContent = busy ? "\u6B63\u5728\u4FDD\u5B58\u6216\u8BFB\u53D6\u2026" : status || (drafts.has(key2()) ? "\u4FEE\u6539\u5C1A\u672A\u4FDD\u5B58" : "\u5DF2\u4FDD\u5B58");
+      const retry = host?.querySelector("[data-preset-conflict-reload]");
+      if (retry) retry.hidden = !/其他标签页|另一页面/.test(status);
+      host?.setAttribute("aria-busy", String(busy));
+      for (const control of host?.querySelectorAll("button,input,select") || []) {
+        if (busy && !control.disabled) {
+          control.disabled = true;
+          control.dataset.presetBusy = "true";
+        } else if (!busy && control.dataset.presetBusy) {
+          control.disabled = false;
+          delete control.dataset.presetBusy;
         }
       }
     }
+    function filter() {
+      const query = search.trim().toLowerCase();
+      for (const row of host?.querySelectorAll("[data-prompt-row]") || []) {
+        row.hidden = !!(query && !row.dataset.search?.toLowerCase().includes(query)) || onlyEnabled && !row.querySelector("[data-prompt-enabled]")?.checked;
+      }
+      for (const group of host?.querySelectorAll("[data-prompt-group]") || []) {
+        group.hidden = !group.querySelector("[data-prompt-row]:not([hidden])");
+        group.open = !!query || !collapsed.has(group.dataset.promptGroup);
+      }
+    }
+    function renderList(focusId) {
+      const list = host?.querySelector("[data-terminal-list]");
+      const vp = viewport(), scroll = vp?.scrollTop || 0;
+      if (list) list.innerHTML = renderNativePromptList(edited(), base(), locked());
+      filter();
+      feedback();
+      if (focusId) {
+        const row = Array.from(list?.querySelectorAll("[data-prompt-row]") || []).find((row2) => row2.dataset.promptRow === focusId);
+        row?.querySelector("[data-prompt-edit]")?.focus({ preventScroll: true });
+      }
+      if (vp) vp.scrollTop = scroll;
+    }
     function options(id2, inherit = false) {
-      return (inherit ? '<option value="inherit">\u8DDF\u968F\u6A21\u5F0F\u9ED8\u8BA4</option>' : "") + library.presets.map((p) => `<option value="${escHtml(p.id)}" ${p.id === id2 ? "selected" : ""}>${escHtml(p.name)}</option>`).join("");
-    }
-    function references(id2) {
-      return context.roles().flatMap((role) => modes2.filter((mode) => resolvePreset(library, role.id, mode).id === id2).map((mode) => role.name + " \xB7 " + modeLabel(mode)));
-    }
-    function settingsHtml(p) {
-      return modes2.map((mode) => `<fieldset ${scope !== "shared" && scope !== mode ? "hidden" : ""}><legend>${modeLabel(mode)}\u8BBE\u7F6E</legend><div class="preset-length"><label>\u6700\u5C11\u5B57\u6570<input type="number" class="field" min="1" max="50000" data-preset-field="${mode}.min" value="${p.settings[mode].length.min}"></label><label>\u6700\u591A\u5B57\u6570<input type="number" class="field" min="1" max="50000" data-preset-field="${mode}.max" value="${p.settings[mode].length.max}"></label></div><label>\u6587\u98CE\u5907\u6CE8<textarea class="field" rows="2" data-preset-field="${mode}.style">${escHtml(p.settings[mode].style)}</textarea></label></fieldset>`).join("");
+      return (inherit ? `<option value="inherit" ${id2 === "inherit" ? "selected" : ""}>\u8DDF\u968F\u9ED8\u8BA4\u9884\u8BBE</option>` : "") + library.presets.map((p) => `<option value="${escHtml(p.id)}" ${p.id === id2 ? "selected" : ""}>${escHtml(p.name)}</option>`).join("");
     }
     function render() {
       if (!host) return;
-      const saved = snapshot3();
-      if (!library) {
-        host.innerHTML = `<p role="status" data-preset-status>${escHtml(status || "\u6B63\u5728\u8BFB\u53D6\u9884\u8BBE\u2026")}</p><button class="btn secondary" data-preset-action="reload">\u91CD\u65B0\u8BFB\u53D6</button><button class="btn secondary" data-preset-action="export-legacy-backup">\u5BFC\u51FA\u65E7\u5E93\u62A2\u6551\u5907\u4EFD</button>`;
+      const vp = viewport(), scroll = vp?.scrollTop || 0;
+      const toolsOpen = host.querySelector("[data-preset-tools]")?.open;
+      const backupOpen = host.querySelector("[data-preset-backups]")?.open;
+      if (!library || !actor) {
+        host.innerHTML = `<p class="terminal-library-status" role="status" data-preset-status></p>${toolbar("reload", "\u91CD\u65B0\u8BFB\u53D6")}${toolbar("rescue", "\u5BFC\u51FA\u65E7\u9884\u8BBE\u5F52\u6863\u5907\u4EFD")}`;
+        feedback();
         return;
       }
-      const p = base() || library.presets[0];
-      selected = p.id;
-      let body = "";
-      if (tab === "library") body = `<div class="preset-actions"><button class="btn" data-preset-action="new">\u65B0\u5EFA\u7A7A\u767D\u9884\u8BBE</button><button class="btn secondary" data-preset-action="builtin-copy">\u590D\u5236\u5185\u7F6E\u57FA\u7840</button></div><section><h3>\u6A21\u5F0F\u9ED8\u8BA4\u9884\u8BBE</h3>${modes2.map((mode) => `<label>${modeLabel(mode)}<select class="field" data-preset-default="${mode}">${options(library.defaults[mode])}</select></label>`).join("")}</section><section><h3>${escHtml(actor?.name || "\u5F53\u524D\u89D2\u8272")}\u7684\u9009\u62E9</h3>${modes2.map((mode) => `<label>${modeLabel(mode)}<select class="field" data-preset-binding="${mode}">${options(library.bindings[actor.id]?.[mode]?.presetId || "inherit", true)}</select></label>`).join("")}</section><div class="preset-catalog">${library.presets.map((item2) => `<article data-preset-id="${escHtml(item2.id)}"><h3>${escHtml(item2.name)}</h3><p>${escHtml(item2.description)}</p><small>${item2.entries.length} \u4E2A\u6761\u76EE</small><div class="preset-actions"><button class="btn secondary" data-preset-action="edit" data-id="${escHtml(item2.id)}">${item2.id === "native" ? "\u67E5\u770B\u5185\u7F6E\u57FA\u7840" : "\u7F16\u8F91\u9884\u8BBE"}</button><button class="btn secondary" data-preset-action="copy" data-id="${escHtml(item2.id)}">\u590D\u5236\u9884\u8BBE</button>${item2.id === "native" ? "" : `<button class="btn ghost" data-preset-action="delete" data-id="${escHtml(item2.id)}">\u5220\u9664\u9884\u8BBE</button>`}</div></article>`).join("")}</div><details><summary>\u5907\u4EFD\u3001\u6062\u590D\u4E0E\u65E7\u9884\u8BBE\u5F52\u6863</summary><p>\u65E7\u539F\u4EF6\u4E0E\u914D\u7F6E\u4FDD\u7559\u5728\u672C\u673A\uFF0C\u53EF\u4E0B\u8F7D\u5907\u4EFD\u3002</p><div class="preset-actions"><button class="btn secondary" data-preset-action="export-library">\u5BFC\u51FA\u79C1\u6709\u5E93\u5907\u4EFD</button><label class="btn secondary">\u6062\u590D\u79C1\u6709\u5E93\u5907\u4EFD<input type="file" data-preset-restore accept=".json,application/json" hidden></label><button class="btn secondary" data-preset-action="restore-previous">\u6062\u590D\u4E0A\u6B21\u4FEE\u6539\u524D\u7248\u672C</button>${context.legacyExport ? '<button class="btn secondary" data-preset-action="export-world-legacy">\u5BFC\u51FA\u5B58\u6863\u65E7\u9644\u52A0\u9884\u8BBE</button>' : ""}</div>${legacyOriginals(archive).map((a) => `<p>${escHtml(a.name)} <button class="btn small secondary" data-preset-action="legacy-raw" data-id="${escHtml(a.id)}">\u4E0B\u8F7D\u539F\u4EF6</button></p>`).join("") || "<p>\u6CA1\u6709\u65E7\u7B2C\u4E09\u65B9\u539F\u4EF6\u3002</p>"}</details>`;
-      if (tab === "edit") {
-        const d = draft(), locked = p.id === "native" && scope === "shared", refs = references(p.id);
-        body = `<label>\u7F16\u8F91\u8303\u56F4<select class="field" data-preset-scope><option value="shared" ${scope === "shared" ? "selected" : ""}>\u4FEE\u6539\u5171\u4EAB\u9884\u8BBE\u672C\u4F53</option>${modes2.map((mode) => `<option value="${mode}" ${scope === mode ? "selected" : ""}>${escHtml(actor?.name)} \xB7 ${modeLabel(mode)}\u72EC\u7ACB\u8986\u76D6</option>`).join("")}</select></label><div class="preset-scope-notice" data-preset-scope-notice>${scope === "shared" ? `<b>\u4FEE\u6539\u4F1A\u5F71\u54CD\u4F7F\u7528\u6B64\u9884\u8BBE\u7684\u89D2\u8272</b><p>${escHtml(refs.join("\u3001") || "\u5F53\u524D\u4E16\u754C\u5C1A\u65E0\u89D2\u8272\u4F7F\u7528")}\u3002\u5176\u4ED6\u4E16\u754C\u4E2D\u4F7F\u7528\u540C\u4E00\u9884\u8BBE\u7684\u89D2\u8272\u4E5F\u4F1A\u7EE7\u627F\u672A\u8986\u76D6\u7684\u4FEE\u6539\u3002</p>` : `<b>\u4EC5\u4FEE\u6539 ${escHtml(actor?.name)} \xB7 ${modeLabel(scope)}\u7684\u72EC\u7ACB\u8986\u76D6</b><p>\u5176\u4ED6\u89D2\u8272\u4E0E\u6A21\u5F0F\u7EE7\u7EED\u4F7F\u7528\u5404\u81EA\u914D\u7F6E\u3002</p>`}</div>${locked ? '<p>\u5185\u7F6E\u57FA\u7840\u53D7\u4FDD\u62A4\uFF0C\u8BF7\u590D\u5236\u540E\u7F16\u8F91\u3002</p><button class="btn" data-preset-action="builtin-copy">\u590D\u5236\u5185\u7F6E\u57FA\u7840</button>' : ""}<div class="preset-editor" data-editor-locked="${locked}"><label>\u9884\u8BBE\u540D\u79F0<input type="text" class="field" data-preset-field="name" value="${escHtml(d.name)}" ${scope !== "shared" || locked ? "disabled" : ""}></label><label>\u7B80\u4ECB<textarea class="field" rows="2" data-preset-field="description" ${scope !== "shared" || locked ? "disabled" : ""}>${escHtml(d.description)}</textarea></label><fieldset ${locked ? "disabled" : ""}>${settingsHtml(d)}<div class="preset-entry-list">${d.entries.map((entry2, i) => `<article class="preset-entry" data-entry-id="${escHtml(entry2.id)}"><div class="row between"><strong>\u6761\u76EE ${i + 1}</strong><label><input type="checkbox" data-preset-field="entry.${i}.enabled" ${entry2.enabled ? "checked" : ""}> \u542F\u7528</label></div><label>\u6761\u76EE\u540D\u79F0<input type="text" class="field" data-preset-field="entry.${i}.name" value="${escHtml(entry2.name)}"></label><label>\u6D88\u606F\u89D2\u8272<select class="field" data-preset-field="entry.${i}.role">${["system", "user", "assistant"].map((role) => `<option ${entry2.role === role ? "selected" : ""}>${role}</option>`).join("")}</select></label><label>\u6B63\u6587<textarea class="field preset-entry-content" rows="6" data-preset-field="entry.${i}.content">${escHtml(entry2.content)}</textarea></label><div class="preset-actions"><button type="button" class="btn small secondary" data-preset-action="up" data-index="${i}" ${i === 0 ? 'data-locked="true" disabled' : ""} aria-label="\u4E0A\u79FB\u6761\u76EE ${i + 1}">\u4E0A\u79FB</button><button type="button" class="btn small secondary" data-preset-action="down" data-index="${i}" ${i === d.entries.length - 1 ? 'data-locked="true" disabled' : ""} aria-label="\u4E0B\u79FB\u6761\u76EE ${i + 1}">\u4E0B\u79FB</button>${scope === "shared" ? `<button class="btn small secondary" data-preset-action="duplicate-entry" data-index="${i}">\u590D\u5236\u6761\u76EE</button><button class="btn small ghost" data-preset-action="delete-entry" data-index="${i}">\u5220\u9664\u6761\u76EE</button>` : ""}</div></article>`).join("")}</div>${scope === "shared" ? '<button type="button" class="btn secondary" data-preset-action="add-entry">\u65B0\u589E\u6761\u76EE</button>' : ""}</fieldset><div class="preset-actions"><button type="button" class="btn" data-preset-action="save" ${locked ? 'data-locked="true" disabled' : ""}>${scope === "shared" ? "\u4FDD\u5B58\u5171\u4EAB\u9884\u8BBE" : "\u4EC5\u4FDD\u5B58\u6B64\u89D2\u8272\u8986\u76D6"}</button>${scope !== "shared" ? '<button class="btn secondary" data-preset-action="inherit">\u6062\u590D\u7EE7\u627F\u503C</button>' : ""}</div></div>`;
-      }
-      if (tab === "import") body = `<h3>\u5BFC\u5165\u9884\u8BBE</h3><p>\u9009\u62E9 Elsewhere \u539F\u751F\u9884\u8BBE V1 JSON\uFF0C\u6587\u4EF6\u4EC5\u5728\u672C\u673A\u8BFB\u53D6\u3002</p><label class="btn secondary">\u9009\u62E9 JSON \u6587\u4EF6<input type="file" accept=".json,application/json" data-native-import aria-label="\u9009\u62E9 JSON \u6587\u4EF6" hidden></label>${importing ? `<section data-import-preview><h3>${escHtml(importing.name)}</h3><p>${escHtml(importing.description)}</p><p>${importing.entries.length} \u4E2A\u6761\u76EE \xB7 \u683C\u5F0F V1</p>${library.presets.some((p2) => p2.id === importing.id) ? "<p>\u9884\u8BBE ID \u5DF2\u5B58\u5728\uFF0C\u5C06\u4EE5\u65B0 ID \u52A0\u5165\u526F\u672C\u3002</p>" : ""}${library.presets.some((p2) => p2.name === importing.name) ? "<p>\u540C\u540D\u9884\u8BBE\u5C06\u9644\u52A0\u7F16\u53F7\u3002</p>" : ""}<button class="btn" data-preset-action="confirm-import">\u786E\u8BA4\u5BFC\u5165</button></section>` : ""}`;
-      if (tab === "export") body = `<h3>\u5BFC\u51FA\u9884\u8BBE</h3><label>\u9009\u62E9\u9884\u8BBE<select class="field" data-preset-export-select>${options(selected)}</select></label><p>${escHtml(p.name)} \xB7 ${p.entries.length} \u4E2A\u5DF2\u4FDD\u5B58\u6761\u76EE</p><p>\u5BFC\u51FA\u5305\u542B\u5171\u4EAB\u672C\u4F53\u53CA\u4E24\u79CD\u6A21\u5F0F\u57FA\u7840\u8BBE\u7F6E\u3002\u89D2\u8272\u72EC\u7ACB\u8986\u76D6\u53EF\u901A\u8FC7\u79C1\u6709\u5E93\u5907\u4EFD\u5BFC\u51FA\u3002</p><button class="btn" data-preset-action="export">\u5BFC\u51FA JSON</button>`;
-      host.innerHTML = `<div class="native-presets"><nav class="preset-tabs" aria-label="\u9884\u8BBE\u5BFC\u822A">${["library", "edit", "import", "export"].map((id2, i) => `<button type="button" data-preset-tab="${id2}" class="${tab === id2 ? "active" : ""}" aria-current="${tab === id2 ? "page" : "false"}">${["\u6211\u7684\u9884\u8BBE", "\u7F16\u8F91\u9884\u8BBE", "\u5BFC\u5165\u9884\u8BBE", "\u5BFC\u51FA\u9884\u8BBE"][i]}</button>`).join("")}</nav><p role="status" aria-live="polite" data-preset-status></p><button class="btn small secondary" data-preset-action="reload" data-preset-conflict-reload hidden>\u91CD\u65B0\u8BFB\u53D6</button>${library.legacyNotice ? '<details class="preset-upgrade-notice"><summary>\u65E7\u9884\u8BBE\u5DF2\u5B89\u5168\u5F52\u6863</summary><p>\u65E7\u7B2C\u4E09\u65B9\u9884\u8BBE\u548C\u65E7\u9644\u52A0\u9884\u8BBE\u5DF2\u9000\u51FA\u751F\u6210\u3002\u53EF\u786E\u8BA4\u7684\u539F\u751F\u5B57\u6570\u4E0E\u6587\u98CE\u5DF2\u4FDD\u7559\uFF1B\u5176\u4ED6\u65E7\u6761\u76EE\u8986\u76D6\u548C\u539F\u4EF6\u53EF\u5728\u5907\u4EFD\u533A\u5BFC\u51FA\u3002</p></details>' : ""}${body}</div>`;
-      feedback();
-      restore(saved);
+      const p = edited();
+      const originals = legacyOriginals(archive);
+      host.innerHTML = `<div class="terminal-presets native-preset-panel"><section class="terminal-current">
+      <div class="terminal-select-line"><label class="grow">${escHtml(actor.name)}\u7684\u5C0F\u8BF4\u9884\u8BBE<select class="field" data-preset-select aria-label="\u89D2\u8272\u5C0F\u8BF4\u9884\u8BBE">${options(library.bindings[actor.id]?.presetId || "inherit", true)}</select></label></div>
+      <h3 class="native-preset-title">${escHtml(p.name)}</h3>
+      ${scope === "shared" ? `<p class="terminal-caption" data-preset-scope-notice>\u6B63\u5728\u4FEE\u6539\u5171\u4EAB\u672C\u4F53\u3002\u4F7F\u7528\u89D2\u8272\uFF1A${escHtml(references().join("\u3001") || "\u65E0")}\u3002</p>${toolbar("scope", "\u8FD4\u56DE\u89D2\u8272\u7F16\u8F91")}` : ""}
+      ${locked() ? `<p class="terminal-caption">\u5185\u7F6E\u9884\u8BBE\u53EF\u590D\u5236\u540E\u7F16\u8F91\u3002</p>` : ""}
+      <div class="terminal-list-toolbar">
+        <button type="button" class="fruit-button fruit-primary" data-preset-action="save" data-testid="preset-save" ${locked() ? "disabled" : ""}>\u4FDD\u5B58\u9884\u8BBE</button>
+        <button type="button" class="fruit-button" data-preset-action="add" ${locked() ? "disabled" : ""}>${uiIcon("plus")} \u6DFB\u52A0 Prompt</button>
+      </div>
+      <div class="terminal-profile-state"><span role="status" aria-live="polite" data-preset-status></span><button type="button" class="fruit-button" data-preset-action="reload" data-preset-conflict-reload hidden>\u91CD\u65B0\u8BFB\u53D6</button></div>
+      <div class="terminal-list-filter"><input class="field" type="search" data-terminal-search placeholder="\u641C\u7D22 Prompt \u540D\u79F0" aria-label="\u641C\u7D22 Prompt" value="${escHtml(search)}"><label><input type="checkbox" data-terminal-only ${onlyEnabled ? "checked" : ""}>\u53EA\u770B\u5DF2\u542F\u7528</label>${toolbar("fold", "\u6298\u53E0 / \u5C55\u5F00\u5168\u90E8")}</div>
+      <div class="terminal-prompt-list" data-terminal-list></div>
+      <details class="terminal-profile-settings" data-preset-tools ${toolsOpen ? "open" : ""}><summary>\u9884\u8BBE\u7BA1\u7406</summary>
+        <div class="terminal-preset-tools">
+          ${toolbar("new", "\u65B0\u5EFA\u7A7A\u767D\u9884\u8BBE")}${toolbar("copy", "\u590D\u5236\u9884\u8BBE")}${toolbar("scope", scope === "shared" ? "\u8FD4\u56DE\u89D2\u8272\u7F16\u8F91" : "\u7F16\u8F91\u5171\u4EAB\u672C\u4F53")}
+          ${scope === "shared" && !locked() ? toolbar("metadata", "\u540D\u79F0\u4E0E\u7B80\u4ECB") : ""}
+          ${scope === "role" ? toolbar("inherit", "\u6062\u590D\u89D2\u8272\u7EE7\u627F\u503C") : ""}
+          <label class="fruit-button terminal-import">\u5BFC\u5165\u9884\u8BBE<input type="file" data-native-import aria-label="\u5BFC\u5165\u539F\u751F\u9884\u8BBE" accept=".json,application/json"></label>
+          ${toolbar("export", "\u5BFC\u51FA JSON")}${p.id !== "native" ? toolbar("delete", "\u5220\u9664\u9884\u8BBE") : ""}
+        </div>
+        <label class="terminal-label">\u5168\u5C40\u9ED8\u8BA4\u9884\u8BBE<select class="field" data-preset-default>${options(library.defaultPresetId)}</select></label>
+      </details>
+      <details class="terminal-profile-settings" data-preset-backups ${backupOpen ? "open" : ""}><summary>\u5907\u4EFD\u3001\u6062\u590D\u4E0E\u65E7\u9884\u8BBE\u5F52\u6863</summary>
+        ${upgrade ? '<p class="terminal-caption">\u5DF2\u6CBF\u7528\u9009\u5B9A\u7684\u65E7\u914D\u7F6E\u3002\u5347\u7EA7\u524D\u7684\u9762\u5BF9\u9762\u548C\u620F\u4E2D\u620F\u8BBE\u7F6E\u5747\u53EF\u6062\u590D\u3002</p>' : ""}
+        ${library.legacyNotice ? '<p class="terminal-caption">\u65E7\u7B2C\u4E09\u65B9\u539F\u4EF6\u4E0E\u7ED1\u5B9A\u4FDD\u7559\u5728\u5F52\u6863\u4E2D\u3002\u5C0F\u8BF4\u751F\u6210\u4F7F\u7528\u539F\u751F\u9884\u8BBE\u3002</p>' : ""}
+        <div class="terminal-preset-tools">${toolbar("export-library", "\u5BFC\u51FA\u79C1\u6709\u5E93\u5907\u4EFD")}
+          <label class="fruit-button terminal-import">\u6062\u590D\u79C1\u6709\u5E93\u5907\u4EFD<input type="file" data-preset-restore aria-label="\u6062\u590D\u79C1\u6709\u5E93\u5907\u4EFD" accept=".json,application/json"></label>
+          ${toolbar("restore-previous", "\u6062\u590D\u4E0A\u6B21\u4FEE\u6539\u524D\u7248\u672C")}
+          ${upgrade ? toolbar("export-upgrade", "\u5BFC\u51FA\u5408\u5E76\u524D\u5907\u4EFD") + toolbar("restore-upgrade", "\u6062\u590D\u5408\u5E76\u524D\u914D\u7F6E") + (upgrade.previous ? toolbar("export-upgrade-previous", "\u5BFC\u51FA\u5347\u7EA7\u524D\u4E0A\u4E00\u7248\u672C") : "") : ""}
+          ${context.legacyExport ? toolbar("export-world-legacy", "\u5BFC\u51FA\u5B58\u6863\u65E7\u9644\u52A0\u9884\u8BBE") : ""}
+        </div>
+        ${originals.map((a) => `<p class="terminal-caption">${escHtml(a.name)} <button type="button" class="fruit-button" data-preset-action="legacy-raw" data-id="${escHtml(a.id)}">\u4E0B\u8F7D\u539F\u4EF6</button></p>`).join("")}
+      </details>
+    </section></div>`;
+      renderList();
+      if (vp) vp.scrollTop = scroll;
     }
-    async function commit(candidate, archiveOverride) {
+    function openDialog(title, content) {
+      status = "";
+      feedback();
+      dialog?.close();
+      const focus = document.activeElement;
+      const d = document.createElement("dialog");
+      d.className = "fruit-dialog native-preset-dialog";
+      d.setAttribute("aria-labelledby", "fruit-dialog-title");
+      d.innerHTML = `<div class="fruit-dialog-top"><span>ELSEWHERE \xB7 \u9884\u8BBE\u7BA1\u7406</span><button type="button" class="fruit-close" data-dialog-close aria-label="\u5173\u95ED\u5F39\u7A97">\xD7</button></div><div class="fruit-dialog-body"><h2 id="fruit-dialog-title">${escHtml(title)}</h2>${content}</div>`;
+      d.addEventListener("click", (e) => {
+        if (e.target instanceof Element && e.target.closest("[data-dialog-close]")) d.close("cancel");
+        else if (e.target === d) {
+          const bounds = d.getBoundingClientRect();
+          if (e.clientX < bounds.left || e.clientX > bounds.right || e.clientY < bounds.top || e.clientY > bounds.bottom) d.close("cancel");
+        }
+      });
+      d.addEventListener("close", () => {
+        if (dialog === d) dialog = null;
+        d.remove();
+        if (focus instanceof HTMLElement && focus.isConnected) focus.focus({ preventScroll: true });
+      }, { once: true });
+      dialog = d;
+      document.body.append(d);
+      d.showModal();
+      return d;
+    }
+    function choose(title, body, choices) {
+      const d = openDialog(title, `<p class="fruit-dialog-lead">${escHtml(body)}</p><form method="dialog" class="terminal-editor-actions">${choices.map(([value, label2]) => `<button class="fruit-button" value="${escHtml(value)}">${escHtml(label2)}</button>`).join("")}</form>`);
+      return new Promise((resolve) => d.addEventListener("close", () => resolve(d.returnValue || "cancel"), { once: true }));
+    }
+    function download2(bytes, name) {
+      const url = URL.createObjectURL(new Blob([Uint8Array.from(bytes)], { type: "application/json" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = presetFilename(name.replace(/\.json$/i, ""));
+      document.body.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2e3);
+    }
+    function updateDraft(next) {
+      const current = drafts.get(key2());
+      drafts.set(key2(), { original: current?.original || original(), edited: validateElsewherePreset(next) });
+      status = "";
+    }
+    function editEntry(id2) {
+      const preset = edited();
+      const entry2 = id2 ? preset.entries.find((e) => e.id === id2) : { id: crypto.randomUUID(), name: "", role: "system", enabled: true, content: "" };
+      if (!entry2 || !id2 && locked()) return;
+      const editKey = key2();
+      const d = openDialog(id2 ? "\u7F16\u8F91 Prompt" : "\u6DFB\u52A0 Prompt", renderNativePromptEditor(entry2, !id2, locked()));
+      const form = d.querySelector("[data-prompt-editor]");
+      form.querySelector("textarea").value = entry2.content;
+      function apply(action) {
+        try {
+          if (!library || !actor || editKey !== key2() || busy || locked()) throw Error("\u7F16\u8F91\u5BF9\u8C61\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u6253\u5F00\u6761\u76EE");
+          const next = structuredClone(edited());
+          if (action === "delete") {
+            if (!window.confirm(`\u5220\u9664\u300C${entry2.name}\u300D\uFF1F${scope === "role" ? "\u4EC5\u4FEE\u6539\u6B64\u89D2\u8272\u3002" : "\u4FDD\u5B58\u540E\u4F1A\u5F71\u54CD\u4F7F\u7528\u6B64\u5171\u4EAB\u9884\u8BBE\u7684\u89D2\u8272\u3002"}`)) return;
+            next.entries = next.entries.filter((e) => e.id !== id2);
+          } else {
+            if (!form.reportValidity()) return;
+            const fields2 = new FormData(form);
+            const name = String(fields2.get("prompt-name")).trim();
+            const saved = { ...entry2, id: action === "copy" ? crypto.randomUUID() : entry2.id, name: action === "copy" ? name.slice(0, 198) + "\u526F\u672C" : name, role: fields2.get("prompt-role"), content: String(fields2.get("prompt-content")), group: String(fields2.get("prompt-group")).trim() };
+            const index = next.entries.findIndex((e) => e.id === id2);
+            if (action === "copy") next.entries.splice(index + 1, 0, saved);
+            else if (index < 0) next.entries.push(saved);
+            else next.entries[index] = saved;
+          }
+          updateDraft(next);
+          d.close("saved");
+          renderList(action === "delete" ? void 0 : id2 || next.entries.at(-1)?.id);
+        } catch (e) {
+          const node = form.querySelector("[data-editor-status]");
+          node.hidden = false;
+          node.textContent = error(e);
+        }
+      }
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        apply("save");
+      });
+      form.addEventListener("click", (e) => {
+        const action = e.target.dataset.entryAction;
+        if (action === "copy" || action === "delete") apply(action);
+      });
+    }
+    async function load() {
+      if (busy) return;
+      busy = true;
+      status = "";
+      feedback();
+      try {
+        let next = await repository.load();
+        const migrated = repository.upgradePending;
+        if (migrated || !next.revision) next = await repository.save(next, next.revision);
+        archive = await repository.archive();
+        upgrade = await repository.upgradeBackup();
+        library = next;
+        if (migrated) status = "\u5DF2\u6CBF\u7528\u539F\u9762\u5BF9\u9762\u914D\u7F6E\u3002\u4E24\u5957\u65E7\u8BBE\u7F6E\u53EF\u5728\u5907\u4EFD\u533A\u6062\u590D\u3002";
+        reload = false;
+      } catch (e) {
+        status = error(e);
+      } finally {
+        busy = false;
+        render();
+      }
+    }
+    async function commit(candidate, incomingArchive, importedBackup) {
       if (!library || busy) return false;
       busy = true;
       feedback();
       try {
-        library = await repository.save(candidate, library.revision, archiveOverride);
-        if (archiveOverride) archive = archiveOverride;
+        library = await repository.save(candidate, library.revision, incomingArchive, importedBackup);
+        if (incomingArchive) archive = incomingArchive;
+        if (importedBackup && !upgrade) upgrade = importedBackup;
         status = "\u4FDD\u5B58\u6210\u529F";
         return true;
       } catch (e) {
@@ -15356,257 +15644,151 @@ channel.onmessage=async({data:job})=>{
         feedback();
       }
     }
-    function overrides(p, base2, mode) {
-      const initial = draftOriginals.get(key2()) || original();
-      const binding = library.bindings[actor.id]?.[mode];
-      const existing = binding && (binding.presetId === selected || binding.presetId === "inherit" && library.defaults[mode] === selected) ? binding.overrides : {};
-      const result = structuredClone(existing), entries = result.entries || {};
-      for (const e of p.entries) {
-        const source = base2.entries.find((item2) => item2.id === e.id), before = initial.entries.find((item2) => item2.id === e.id);
-        if (!source || !before) throw Error("\u5171\u4EAB\u6761\u76EE\u5DF2\u53D8\u5316\uFF0C\u8BF7\u6838\u5BF9\u8349\u7A3F\u540E\u6062\u590D\u7EE7\u627F\u503C\u3002");
-        const patch = entries[e.id] || {};
-        for (const field of ["name", "role", "enabled", "content"]) {
-          if (e[field] === before[field]) continue;
-          if (e[field] === source[field]) delete patch[field];
-          else Object.assign(patch, { [field]: e[field] });
-        }
-        if (Object.keys(patch).length) entries[e.id] = patch;
-        else delete entries[e.id];
+    async function save() {
+      const id2 = key2();
+      const draft = drafts.get(id2);
+      if (!draft) return true;
+      if (JSON.stringify(draft.original) !== JSON.stringify(original())) {
+        if (await choose("\u914D\u7F6E\u5DF2\u7ECF\u66F4\u65B0", "\u91CD\u65B0\u8BFB\u53D6\u540E\u53D1\u73B0\u5F53\u524D\u914D\u7F6E\u6709\u53D8\u5316\u3002\u786E\u8BA4\u540E\uFF0C\u5F53\u524D\u8349\u7A3F\u5C06\u66FF\u6362\u8FD9\u4EFD\u914D\u7F6E\u3002", [["save", "\u7528\u8349\u7A3F\u66FF\u6362"], ["cancel", "\u7EE7\u7EED\u6838\u5BF9"]]) !== "save") return false;
       }
-      result.entries = entries;
-      if (JSON.stringify(p.entries.map((e) => e.id)) !== JSON.stringify(initial.entries.map((e) => e.id))) result.order = p.entries.map((e) => e.id);
-      const settings2 = result.settings || {}, length = settings2.length || {};
-      if (p.settings[mode].style !== initial.settings[mode].style) {
-        if (p.settings[mode].style === base2.settings[mode].style) delete settings2.style;
-        else settings2.style = p.settings[mode].style;
+      let next;
+      if (scope === "shared") next = replaceSharedPreset(library, draft.edited);
+      else {
+        next = structuredClone(library);
+        const presetId2 = next.bindings[actor.id]?.presetId || "inherit";
+        next.bindings[actor.id] = { presetId: presetId2, overrides: presetOverride(base(), draft.edited) };
       }
-      for (const field of ["min", "max"]) if (p.settings[mode].length[field] !== initial.settings[mode].length[field]) {
-        if (p.settings[mode].length[field] === base2.settings[mode].length[field]) delete length[field];
-        else length[field] = p.settings[mode].length[field];
-      }
-      if (Object.keys(length).length) settings2.length = length;
-      else delete settings2.length;
-      if (Object.keys(settings2).length) result.settings = settings2;
-      else delete result.settings;
-      return result;
-    }
-    async function saveDraft() {
-      var _a, _b;
-      if (!library || !actor || !base()) return false;
-      const k = key2(), d = structuredClone(draft());
-      try {
-        validateElsewherePreset(d);
-        let candidate;
-        if (scope === "shared") {
-          const initial = draftOriginals.get(k);
-          if (initial && JSON.stringify(initial) !== JSON.stringify(base()) && await ask("\u5171\u4EAB\u9884\u8BBE\u5DF2\u7ECF\u66F4\u65B0", "\u5176\u4ED6\u9875\u9762\u6216\u89D2\u8272\u5DF2\u4FDD\u5B58\u65B0\u7248\u672C\u3002\u786E\u8BA4\u540E\uFF0C\u5F53\u524D\u8349\u7A3F\u4F1A\u66FF\u6362\u8FD9\u4EFD\u5171\u4EAB\u9884\u8BBE\uFF0C\u5F71\u54CD\u6240\u6709\u4F7F\u7528\u8005\u3002", [{ id: "replace", label: "\u786E\u8BA4\u7528\u8349\u7A3F\u66FF\u6362" }, { id: "cancel", label: "\u4FDD\u7559\u65B0\u7248\u672C" }]) !== "replace") return false;
-          candidate = replaceSharedPreset(library, d);
-        } else {
-          if (context.currentRole()?.id !== actor.id) throw Error("\u89D2\u8272\u5DF2\u53D8\u5316\uFF0C\u8BF7\u8FD4\u56DE\u539F\u89D2\u8272\u4FDD\u5B58\u3002");
-          candidate = structuredClone(library);
-          ((_a = candidate.bindings)[_b = actor.id] ?? (_a[_b] = {}))[scope] = { presetId: (!library.bindings[actor.id]?.[scope] || library.bindings[actor.id]?.[scope]?.presetId === "inherit") && library.defaults[scope] === selected ? "inherit" : selected, overrides: overrides(d, base(), scope) };
-        }
-        if (!await commit(candidate)) return false;
-        if (JSON.stringify(drafts.get(k)) === JSON.stringify(d)) {
-          drafts.delete(k);
-          draftOriginals.delete(k);
-        }
-        render();
-        return true;
-      } catch (e) {
-        status = error(e);
-        feedback();
-        return false;
-      }
-    }
-    async function load() {
-      const id2 = ++epoch;
-      status = "\u6B63\u5728\u8BFB\u53D6\u9884\u8BBE\u2026";
+      if (!await commit(next)) return false;
+      drafts.delete(id2);
       render();
-      try {
-        let value = await repository.load();
-        if (id2 !== epoch) return;
-        if (value.revision === 0) value = await repository.save(value, 0);
-        const old = await repository.archive();
-        if (id2 !== epoch) return;
-        library = value;
-        archive = old;
-        actor = context.currentRole();
-        selected = actor ? resolvePreset(value, actor.id, "meeting").id : "native";
-        status = "";
-        render();
-      } catch (e) {
-        if (id2 !== epoch) return;
-        status = error(e);
+      return true;
+    }
+    function move(id2, to) {
+      if (locked()) return;
+      const next = structuredClone(edited());
+      const from = next.entries.findIndex((e) => e.id === id2);
+      if (from < 0 || to < 0 || to >= next.entries.length || from === to) return;
+      next.entries.splice(to, 0, next.entries.splice(from, 1)[0]);
+      updateDraft(next);
+      renderList(id2);
+    }
+    async function addPreset(p) {
+      const next = importElsewherePreset(library, p);
+      next.bindings[actor.id] = { presetId: next.presets.at(-1).id, overrides: {} };
+      if (await commit(next)) {
+        scope = "role";
         render();
       }
     }
-    const input = (event) => {
-      event.stopPropagation();
-      const target = event.target;
-      if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) || !target.dataset.presetField || !library) return;
-      remember();
-      const d = structuredClone(draft()), field = target.dataset.presetField.split(".");
-      if (field[0] === "entry") {
-        const e = d.entries[Number(field[1])];
-        if (!e) return;
-        const name = field[2];
-        if (name === "enabled") e.enabled = target.checked;
-        else if (name === "role" && ["system", "user", "assistant"].includes(target.value)) e.role = target.value;
-        else if (name === "name" || name === "content") e[name] = target.value;
-      } else if (field[0] === "meeting" || field[0] === "theatre") {
-        const settings2 = d.settings[field[0]];
-        if (field[1] === "style") settings2.style = target.value;
-        else if (field[1] === "min" || field[1] === "max") settings2.length[field[1]] = Number(target.value);
-      } else if (field[0] === "name" || field[0] === "description") d[field[0]] = target.value;
-      drafts.set(key2(), d);
-      status = "\u4FEE\u6539\u5C1A\u672A\u4FDD\u5B58";
-      feedback();
-    };
-    const click = (event) => {
-      event.stopPropagation();
-      const b = event.target.closest("[data-preset-action],[data-preset-tab]");
-      if (!b || busy) return;
-      event.preventDefault();
-      void act(b).catch((e) => {
-        status = error(e);
-        feedback();
-      });
-    };
-    async function act(b) {
-      var _a, _b;
-      const action = b.dataset.presetAction;
-      if (b.dataset.presetTab) {
-        tab = b.dataset.presetTab;
-        render();
-        return;
-      }
+    async function act(action, id2) {
       if (action === "reload") {
-        if (drafts.size && await ask("\u91CD\u65B0\u8BFB\u53D6", "\u672A\u4FDD\u5B58\u7684\u4FEE\u6539\u4ECD\u4F1A\u4FDD\u7559\u5728\u5F53\u524D\u6807\u7B7E\u9875\u3002\u91CD\u65B0\u8BFB\u53D6\u9884\u8BBE\u5E93\uFF1F", [{ id: "reload", label: "\u91CD\u65B0\u8BFB\u53D6" }, { id: "cancel", label: "\u53D6\u6D88" }]) !== "reload") return;
         await load();
         return;
       }
-      if (action === "export-legacy-backup") {
+      if (action === "rescue") {
         download2(encodeNativeLibraryBackup(emptyPresetLibrary(), await repository.archive()), "Elsewhere-\u65E7\u9884\u8BBE\u62A2\u6551\u5907\u4EFD");
         return;
       }
-      if (!library) return;
-      const id2 = b.dataset.id || selected;
-      if (action === "new" || action === "copy" || action === "builtin-copy") {
-        const source = action === "new" ? { ...builtinPreset(), name: "\u672A\u547D\u540D\u9884\u8BBE", description: "" } : structuredClone(library.presets.find((p) => p.id === (action === "builtin-copy" ? "native" : id2)));
-        source.id = crypto.randomUUID();
-        if (action !== "new") source.name = source.name.slice(0, 198) + "\u526F\u672C";
-        const next = importElsewherePreset(library, source);
-        if (await commit(next)) {
-          selected = next.presets.at(-1).id;
-          scope = "shared";
-          tab = "edit";
-          render();
-        }
-        return;
-      }
-      if (action === "edit") {
-        selected = id2;
-        scope = "shared";
-        tab = "edit";
-        render();
+      if (!library || !actor) return;
+      if (action === "add") {
+        editEntry();
         return;
       }
       if (action === "save") {
-        await saveDraft();
+        await save();
         return;
       }
-      if (action === "delete") {
-        const p = library.presets.find((p2) => p2.id === id2);
-        if (await ask("\u5220\u9664\u9884\u8BBE", `\u5220\u9664\u300C${p.name}\u300D\uFF1F\u9ED8\u8BA4\u5F15\u7528\uFF1A${modes2.filter((mode) => library.defaults[mode] === id2).map(modeLabel).join("\u3001") || "\u65E0"}\u3002\u4EE5\u4E0B\u89D2\u8272\u5C06\u56DE\u9000\u81F3\u5185\u7F6E\u57FA\u7840\uFF1A${references(id2).join("\u3001") || "\u5F53\u524D\u4E16\u754C\u65E0\u89D2\u8272\u4F7F\u7528"}\u3002\u5176\u4ED6\u4E16\u754C\u4E2D\u7684\u7ED1\u5B9A\u4E5F\u4F1A\u5B89\u5168\u56DE\u9000\u3002`, [{ id: "delete", label: "\u786E\u8BA4\u5220\u9664\u9884\u8BBE" }, { id: "cancel", label: "\u53D6\u6D88" }]) !== "delete") return;
-        if (await commit(deletePreset(library, id2))) {
-          for (const [k, p2] of drafts) if (p2.id === id2) drafts.delete(k);
-          selected = "native";
-          render();
-        }
-        return;
-      }
-      if (action === "add-entry" || action === "duplicate-entry" || action === "delete-entry" || action === "up" || action === "down") {
-        if (selected === "native" && scope === "shared") return;
-        remember();
-        const d = structuredClone(draft()), i = Number(b.dataset.index);
-        if (action === "add-entry") d.entries.push({ id: crypto.randomUUID(), name: "\u65B0\u6761\u76EE", role: "system", enabled: true, content: "" });
-        else if (action === "duplicate-entry") d.entries.splice(i + 1, 0, { ...d.entries[i], id: crypto.randomUUID(), name: d.entries[i].name.slice(0, 198) + "\u526F\u672C" });
-        else if (action === "delete-entry") {
-          if (await ask("\u5220\u9664\u6761\u76EE", "\u5220\u9664\u6B64\u5171\u4EAB\u6761\u76EE\u540E\uFF0C\u5BF9\u5E94\u89D2\u8272\u8986\u76D6\u4E5F\u4F1A\u79FB\u9664\u3002\u6062\u590D\u524D\u7248\u672C\u4F1A\u4FDD\u7559\u3002", [{ id: "delete", label: "\u5220\u9664\u6761\u76EE" }, { id: "cancel", label: "\u53D6\u6D88" }]) !== "delete") return;
-          d.entries.splice(i, 1);
-        } else {
-          const j = i + (action === "up" ? -1 : 1);
-          if (j < 0 || j >= d.entries.length) return;
-          [d.entries[i], d.entries[j]] = [d.entries[j], d.entries[i]];
-        }
-        if (d.entries.length > 128) throw Error("\u6700\u591A 128 \u4E2A\u6761\u76EE");
-        drafts.set(key2(), d);
-        status = "\u4FEE\u6539\u5C1A\u672A\u4FDD\u5B58";
+      if (action === "scope") {
+        scope = scope === "role" ? "shared" : "role";
+        status = "";
         render();
         return;
       }
-      if (action === "inherit" && scope !== "shared") {
-        if (await ask("\u6062\u590D\u7EE7\u627F\u503C", "\u4EC5\u6E05\u9664\u6B64\u89D2\u8272\u5728\u5F53\u524D\u6A21\u5F0F\u7684\u72EC\u7ACB\u8986\u76D6\u3002", [{ id: "restore", label: "\u6062\u590D\u7EE7\u627F\u503C" }, { id: "cancel", label: "\u53D6\u6D88" }]) !== "restore") return;
-        const next = structuredClone(library);
-        ((_a = next.bindings)[_b = actor.id] ?? (_a[_b] = {}))[scope] = { presetId: selected, overrides: {} };
-        if (await commit(next)) {
-          drafts.delete(key2());
-          draftOriginals.delete(key2());
+      if (action === "fold") {
+        const groups = Array.from(host?.querySelectorAll("[data-prompt-group]") || []);
+        const fold = groups.some((g) => g.open && !g.hidden);
+        collapsed.clear();
+        if (fold) for (const group of groups) collapsed.add(group.dataset.promptGroup);
+        if (search) {
+          for (const group of groups) group.open = !fold;
+        } else filter();
+        return;
+      }
+      if (action === "new" || action === "copy") {
+        const preset = action === "new" ? { ...builtinPreset(), name: "\u672A\u547D\u540D\u9884\u8BBE", description: "" } : { ...edited(), name: edited().name.slice(0, 198) + "\u526F\u672C" };
+        await addPreset({ ...preset, id: crypto.randomUUID() });
+        return;
+      }
+      if (action === "metadata" && !locked()) {
+        const p = edited();
+        const d = openDialog("\u540D\u79F0\u4E0E\u7B80\u4ECB", `<form><label class="terminal-label">\u9884\u8BBE\u540D\u79F0<input class="field" name="name" required maxlength="200" value="${escHtml(p.name)}"></label><label class="terminal-label">\u7B80\u4ECB<textarea class="field" name="description" maxlength="2000">${escHtml(p.description)}</textarea></label><button class="fruit-button fruit-primary">\u4FDD\u5B58\u5230\u8349\u7A3F</button></form>`);
+        d.querySelector("form").addEventListener("submit", (e) => {
+          e.preventDefault();
+          const values = new FormData(e.currentTarget);
+          try {
+            updateDraft({ ...p, name: String(values.get("name")).trim(), description: String(values.get("description")) });
+            d.close();
+            render();
+          } catch (e2) {
+            status = error(e2);
+            feedback();
+          }
+        });
+        return;
+      }
+      if (action === "delete") {
+        const p = base();
+        if (await choose("\u5220\u9664\u9884\u8BBE", `\u5220\u9664\u300C${p.name}\u300D\uFF1F${library.defaultPresetId === p.id ? "\u5168\u5C40\u9ED8\u8BA4\u5C06\u6539\u4E3A\u5185\u7F6E\u57FA\u7840\u3002" : ""}\u4F7F\u7528\u89D2\u8272 ${references().join("\u3001") || "\u65E0"}\u3002\u53D7\u5F71\u54CD\u7684\u89D2\u8272\u5C06\u56DE\u9000\uFF0C\u6062\u590D\u524D\u7248\u672C\u4FDD\u7559\u3002`, [["delete", "\u786E\u8BA4\u5220\u9664\u9884\u8BBE"], ["cancel", "\u53D6\u6D88"]]) !== "delete") return;
+        if (await commit(deletePreset(library, p.id))) {
+          for (const [k, draft] of drafts) if (draft.edited.id === p.id) drafts.delete(k);
+          scope = "role";
           render();
         }
         return;
       }
-      if (action === "confirm-import" && importing) {
-        const next = importElsewherePreset(library, importing);
+      if (action === "inherit") {
+        if (await choose("\u6062\u590D\u89D2\u8272\u7EE7\u627F\u503C", "\u6E05\u9664\u6B64\u89D2\u8272\u5728\u5F53\u524D\u9884\u8BBE\u4E0A\u7684\u72EC\u7ACB\u8986\u76D6\u3002", [["restore", "\u6062\u590D\u7EE7\u627F\u503C"], ["cancel", "\u53D6\u6D88"]]) !== "restore") return;
+        const next = structuredClone(library);
+        if (next.bindings[actor.id]) next.bindings[actor.id].overrides = {};
         if (await commit(next)) {
-          selected = next.presets.at(-1).id;
-          scope = "shared";
-          tab = "edit";
-          importing = void 0;
+          drafts.delete(key2());
           render();
         }
         return;
       }
       if (action === "export") {
-        const changed = [...drafts.values()].some((p) => p.id === selected);
-        if (changed) {
-          const choice = await ask("\u8FD8\u6709\u672A\u4FDD\u5B58\u7684\u4FEE\u6539", "\u5BFC\u51FA\u7684\u662F\u5171\u4EAB\u9884\u8BBE\u672C\u4F53\uFF0C\u89D2\u8272\u8986\u76D6\u901A\u8FC7\u79C1\u6709\u5E93\u5907\u4EFD\u5BFC\u51FA\u3002", [{ id: "save", label: "\u4FDD\u5B58\u540E\u5BFC\u51FA" }, { id: "saved", label: "\u5BFC\u51FA\u5DF2\u4FDD\u5B58\u7248\u672C" }, { id: "cancel", label: "\u53D6\u6D88" }]);
-          if (choice === "cancel") return;
-          if (choice === "save") {
-            const sharedKey = JSON.stringify([actor?.id, selected, "shared"]);
-            if (drafts.has(sharedKey)) {
-              const previousScope = scope;
-              scope = "shared";
-              const saved = await saveDraft();
-              scope = previousScope;
-              render();
-              if (!saved) return;
-            } else if (!dirty()) {
-              tab = "edit";
-              render();
-              status = "\u8BF7\u6253\u5F00\u6709\u672A\u4FDD\u5B58\u4FEE\u6539\u7684\u7F16\u8F91\u8303\u56F4\uFF0C\u4FDD\u5B58\u540E\u518D\u5BFC\u51FA\u3002";
-              feedback();
-              return;
-            } else if (!await saveDraft()) return;
-          }
+        if (drafts.has(key2())) {
+          const option = await choose("\u8FD8\u6709\u672A\u4FDD\u5B58\u7684\u4FEE\u6539", "\u5BFC\u51FA\u5F53\u524D\u7F16\u8F91\u8303\u56F4\u7684 Prompt \u6761\u76EE\u3002", [["save", "\u4FDD\u5B58\u540E\u5BFC\u51FA"], ["saved", "\u5BFC\u51FA\u5DF2\u4FDD\u5B58\u7248\u672C"], ["cancel", "\u53D6\u6D88"]]);
+          if (option === "cancel" || option === "save" && !await save()) return;
         }
-        download2(exportElsewherePreset(base()), base().name);
-        status = "\u5DF2\u5BFC\u51FA\u4FDD\u5B58\u7684\u9884\u8BBE JSON";
-        feedback();
+        download2(exportElsewherePreset(original()), original().name);
         return;
       }
       if (action === "export-library") {
-        download2(encodeNativeLibraryBackup(library, archive), "Elsewhere-\u79C1\u6709\u9884\u8BBE\u5E93\u5907\u4EFD");
+        download2(encodeNativeLibraryBackup(library, archive, upgrade), "Elsewhere-\u79C1\u6709\u9884\u8BBE\u5E93\u5907\u4EFD");
+        return;
+      }
+      if (action === "export-upgrade" && upgrade) {
+        download2(encodeNativeLibraryBackup(upgrade.library, archive), "Elsewhere-\u5408\u5E76\u524D\u9884\u8BBE\u5907\u4EFD");
+        return;
+      }
+      if (action === "export-upgrade-previous" && presetObject(upgrade?.previous)) {
+        download2(encodeNativeLibraryBackup(upgrade.previous.library, presetObject(upgrade.previous.archive) ? upgrade.previous.archive : archive), "Elsewhere-\u5347\u7EA7\u524D\u4E0A\u4E00\u7248\u672C");
+        return;
+      }
+      if (action === "restore-upgrade" && upgrade) {
+        const source = await choose("\u6062\u590D\u5408\u5E76\u524D\u914D\u7F6E", "\u5C06\u6309\u9009\u5B9A\u7684\u65E7\u914D\u7F6E\u91CD\u5EFA\u6574\u4E2A\u5171\u7528\u9884\u8BBE\u5E93\u3002\u5F53\u524D\u5E93\u4F1A\u4FDD\u5B58\u4E3A\u6062\u590D\u70B9\u3002", [["meeting", "\u6CBF\u7528\u539F\u9762\u5BF9\u9762"], ["theatre", "\u6CBF\u7528\u539F\u620F\u4E2D\u620F"], ["cancel", "\u53D6\u6D88"]]);
+        if (source !== "cancel" && await commit(validatePresetLibrary(upgrade.library, source === "theatre" ? "theatre" : "meeting"))) {
+          scope = "role";
+          render();
+        }
         return;
       }
       if (action === "restore-previous") {
         const previous = await repository.previous();
         if (!previous) throw Error("\u8FD8\u6CA1\u6709\u4FEE\u6539\u524D\u7248\u672C\u3002");
-        if (await ask("\u6062\u590D\u4E0A\u6B21\u4FEE\u6539\u524D\u7248\u672C", "\u6062\u590D\u6574\u4E2A\u9884\u8BBE\u5E93\u4E0E\u89D2\u8272\u8986\u76D6\uFF0C\u5F53\u524D\u5E93\u4F1A\u4FDD\u7559\u4E3A\u4E0B\u4E00\u4EFD\u6062\u590D\u524D\u7248\u672C\u3002", [{ id: "restore", label: "\u786E\u8BA4\u6062\u590D" }, { id: "cancel", label: "\u53D6\u6D88" }]) === "restore" && await commit(previous.library, previous.archive)) {
-          drafts.clear();
-          draftOriginals.clear();
-          selected = "native";
+        if (await choose("\u6062\u590D\u4E0A\u6B21\u4FEE\u6539\u524D\u7248\u672C", "\u5C06\u6062\u590D\u6574\u4E2A\u9884\u8BBE\u5E93\u4E0E\u89D2\u8272\u8986\u76D6\uFF0C\u5F53\u524D\u5E93\u4F1A\u4FDD\u7559\u4E3A\u4E0B\u4E00\u4EFD\u6062\u590D\u524D\u7248\u672C\u3002", [["restore", "\u786E\u8BA4\u6062\u590D"], ["cancel", "\u53D6\u6D88"]]) === "restore" && await commit(previous.library, previous.archive)) {
+          scope = "role";
           render();
         }
         return;
@@ -15614,97 +15796,191 @@ channel.onmessage=async({data:job})=>{
       if (action === "legacy-raw") {
         const original2 = legacyOriginals(archive).find((a) => a.id === id2);
         if (original2) download2(original2.raw, original2.name);
+      }
+      if (action === "export-world-legacy") download2(new TextEncoder().encode(JSON.stringify(context.legacyExport?.(), null, 2)), "Elsewhere-\u5B58\u6863\u65E7\u9644\u52A0\u9884\u8BBE");
+    }
+    async function importFile(input2) {
+      const file = input2.files?.[0];
+      input2.value = "";
+      if (!file) return;
+      const backup = input2.hasAttribute("data-preset-restore");
+      const limit = backup ? 64 * 1024 * 1024 : PRESET_MAX_BYTES;
+      if (file.size > limit) throw Error("\u9884\u8BBE\u6587\u4EF6\u8D85\u8FC7\u5927\u5C0F\u9650\u5236");
+      const request = ++fileRead;
+      const revision = library.revision;
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (!host || request !== fileRead || library.revision !== revision) return;
+      if (backup) {
+        let incoming = await decodeNativeLibraryBackup(bytes);
+        if (!host || request !== fileRead || library.revision !== revision) return;
+        const choices2 = incoming.upgradeBackup ? [["meeting", "\u6CBF\u7528\u539F\u9762\u5BF9\u9762"], ["theatre", "\u6CBF\u7528\u539F\u620F\u4E2D\u620F"]] : [];
+        const option2 = await choose("\u6062\u590D\u79C1\u6709\u9884\u8BBE\u5E93", "\u5C06\u66FF\u6362\u6574\u4E2A\u9884\u8BBE\u5E93\u4E0E\u89D2\u8272\u8986\u76D6\uFF0C\u4FDD\u7559\u5F53\u524D\u5E93\u4F5C\u4E3A\u6062\u590D\u70B9\u3002\u65E7\u7B2C\u4E09\u65B9\u539F\u4EF6\u6062\u590D\u5230\u5F52\u6863\u3002", [["restore", "\u786E\u8BA4\u6062\u590D"], ...choices2, ["cancel", "\u53D6\u6D88"]]);
+        if (option2 === "cancel") return;
+        if (option2 === "theatre" || option2 === "meeting") incoming = { ...incoming, library: validatePresetLibrary(incoming.upgradeBackup.library, option2) };
+        if (await commit(incoming.library, incoming.archive, incoming.upgradeBackup)) {
+          scope = "role";
+          render();
+        }
         return;
       }
-      if (action === "export-world-legacy") {
-        download2(new TextEncoder().encode(JSON.stringify(context.legacyExport?.(), null, 2)), "Elsewhere-\u5B58\u6863\u65E7\u9644\u52A0\u9884\u8BBE");
+      const imported = readElsewherePresetFile(bytes);
+      const differs = "settings" in imported && JSON.stringify(imported.settings.meeting) !== JSON.stringify(imported.settings.theatre);
+      const description = `${imported.name} \xB7 ${imported.entries.length} \u6761 Prompt\u3002${differs ? "\u4E24\u79CD\u65E7\u8BBE\u7F6E\u4E0D\u540C\u3002\u9ED8\u8BA4\u5C06\u9762\u5BF9\u9762\u7BC7\u5E45\u4E0E\u6587\u98CE\u8F6C\u6362\u4E3A\u666E\u901A\u6761\u76EE\u3002" : ""}\u5BFC\u5165\u540E\u7528\u4E8E\u5F53\u524D\u89D2\u8272\u3002`;
+      const choices = [["meeting", "\u786E\u8BA4\u5BFC\u5165"]];
+      if (differs) choices.push(["theatre", "\u6CBF\u7528\u539F\u620F\u4E2D\u620F"]);
+      const option = await choose("\u5BFC\u5165\u539F\u751F\u9884\u8BBE", description, [...choices, ["cancel", "\u53D6\u6D88"]]);
+      if (option !== "cancel") await addPreset(unifyElsewherePreset(imported, option === "theatre" ? "theatre" : "meeting"));
+    }
+    async function changeSelection(select) {
+      if (!library || !actor) return;
+      const current = library.bindings[actor.id];
+      const next = structuredClone(library);
+      const value = select.value;
+      if (select.hasAttribute("data-preset-default")) {
+        for (const binding of Object.values(next.bindings)) {
+          if (binding.presetId === "inherit" && Object.keys(binding.overrides).length) binding.presetId = next.defaultPresetId;
+        }
+        next.defaultPresetId = value;
+      } else {
+        select.value = current?.presetId || "inherit";
+        if (current && Object.keys(current.overrides).length && await choose("\u5207\u6362\u5C0F\u8BF4\u9884\u8BBE", "\u5207\u6362\u540E\u4F7F\u7528\u65B0\u9884\u8BBE\u7684\u6761\u76EE\u3002\u5F53\u524D\u89D2\u8272\u8986\u76D6\u4FDD\u7559\u5728\u6062\u590D\u524D\u7248\u672C\u3002", [["switch", "\u786E\u8BA4\u5207\u6362"], ["cancel", "\u53D6\u6D88"]]) !== "switch") return;
+        next.bindings[actor.id] = { presetId: value, overrides: {} };
+      }
+      if (await commit(next)) scope = "role";
+      render();
+    }
+    const fail3 = (e) => {
+      status = error(e);
+      feedback();
+    };
+    function click(event) {
+      event.stopPropagation();
+      const target = event.target;
+      if (!(target instanceof Element) || busy) return;
+      const summary = target.closest("summary");
+      const group = summary?.parentElement;
+      if (group?.dataset.promptGroup && !search) {
+        if (group.open) collapsed.add(group.dataset.promptGroup);
+        else collapsed.delete(group.dataset.promptGroup);
+      }
+      const button = target.closest("button");
+      if (!button || button.disabled) return;
+      try {
+        if (button.dataset.promptEdit) editEntry(button.dataset.promptEdit);
+        else if (button.dataset.promptMove && button.dataset.id) move(button.dataset.id, edited().entries.findIndex((e) => e.id === button.dataset.id) + (button.dataset.promptMove === "up" ? -1 : 1));
+        else if (button.dataset.presetAction) void act(button.dataset.presetAction, button.dataset.id).catch(fail3);
+      } catch (e) {
+        fail3(e);
       }
     }
-    const change = (event) => {
+    function change(event) {
       event.stopPropagation();
-      const t = event.target;
-      if (!(t instanceof HTMLInputElement || t instanceof HTMLSelectElement) || busy) return;
-      void (async () => {
-        var _a, _b;
-        if (t instanceof HTMLInputElement && t.type === "file") {
-          const file = t.files?.[0];
-          t.value = "";
-          if (!file) return;
-          if (t.hasAttribute("data-preset-restore")) {
-            if (file.size > 64 * 1024 * 1024) throw Error("\u5E93\u5907\u4EFD\u8D85\u8FC7 64 MiB");
-            const backup = await decodeNativeLibraryBackup(new Uint8Array(await file.arrayBuffer()));
-            if (await ask("\u6062\u590D\u79C1\u6709\u9884\u8BBE\u5E93", "\u8FD9\u4F1A\u66FF\u6362\u5F53\u524D\u5E93\u548C\u89D2\u8272\u8986\u76D6\uFF0C\u4FDD\u7559\u6062\u590D\u524D\u7248\u672C\u3002\u65E7\u7B2C\u4E09\u65B9\u9884\u8BBE\u53EA\u6062\u590D\u5230\u53EF\u5BFC\u51FA\u7684\u5F52\u6863\uFF0C\u751F\u6210\u65F6\u4F7F\u7528\u539F\u751F\u57FA\u7840\u3002", [{ id: "restore", label: "\u786E\u8BA4\u6062\u590D" }, { id: "cancel", label: "\u53D6\u6D88" }]) === "restore" && await commit(backup.library, backup.archive)) {
-              drafts.clear();
-              draftOriginals.clear();
-              selected = "native";
-              render();
-            }
-          } else {
-            importing = void 0;
-            render();
-            if (file.size > PRESET_MAX_BYTES) throw Error("\u8BF7\u9009\u62E9\u4E0D\u8D85\u8FC7 8 MiB \u7684 JSON");
-            importing = parseElsewherePreset(new Uint8Array(await file.arrayBuffer()));
-            status = "\u9A8C\u8BC1\u901A\u8FC7\uFF0C\u8BF7\u786E\u8BA4\u5BFC\u5165";
-            render();
+      const target = event.target;
+      if (busy) return;
+      if (target instanceof HTMLInputElement) {
+        if (target.type === "file") {
+          void importFile(target).catch(fail3);
+          return;
+        }
+        if (target.hasAttribute("data-terminal-only")) {
+          onlyEnabled = target.checked;
+          filter();
+          return;
+        }
+        if (target.dataset.promptEnabled && !locked()) {
+          try {
+            const next = structuredClone(edited());
+            const item2 = next.entries.find((e) => e.id === target.dataset.promptEnabled);
+            if (item2) item2.enabled = target.checked;
+            updateDraft(next);
+            feedback();
+            filter();
+          } catch (e) {
+            fail3(e);
           }
-          return;
         }
-        if (t.hasAttribute("data-preset-scope")) {
-          scope = t.value;
-          status = "";
-          render();
-          return;
-        }
-        if (t.hasAttribute("data-preset-export-select")) {
-          selected = t.value;
-          render();
-          return;
-        }
-        if (!library || !actor) return;
-        const mode = t.dataset.presetDefault || t.dataset.presetBinding;
-        if (!modes2.includes(mode)) return;
-        const next = structuredClone(library);
-        if (t.hasAttribute("data-preset-default")) {
-          next.defaults[mode] = t.value;
-          for (const slots of Object.values(next.bindings)) {
-            const binding = slots[mode];
-            if (binding?.presetId === "inherit") binding.overrides = {};
-          }
-        } else ((_a = next.bindings)[_b = actor.id] ?? (_a[_b] = {}))[mode] = { presetId: t.value, overrides: {} };
-        if (await commit(next)) render();
-        else t.value = t.hasAttribute("data-preset-default") ? library.defaults[mode] : library.bindings[actor.id]?.[mode]?.presetId || "inherit";
-      })().catch((e) => {
-        status = error(e);
-        feedback();
-      });
+      } else if (target instanceof HTMLSelectElement) void changeSelection(target).catch(fail3);
+    }
+    function input(event) {
+      event.stopPropagation();
+      if (event.target instanceof HTMLInputElement && event.target.hasAttribute("data-terminal-search")) {
+        search = event.target.value;
+        filter();
+      }
+    }
+    function dragstart(event) {
+      const handle = event.target instanceof Element ? event.target.closest("[data-prompt-drag]") : null;
+      if (!handle?.draggable || busy) return;
+      dragId = handle.dataset.promptDrag || "";
+      event.dataTransfer?.setData("text/plain", dragId);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+    }
+    function dragover(event) {
+      if (dragId && event.target instanceof Element && event.target.closest("[data-prompt-row]")) event.preventDefault();
+    }
+    function drop(event) {
+      if (!dragId || busy || !(event.target instanceof Element)) return;
+      event.preventDefault();
+      const destination = event.target.closest("[data-prompt-row]")?.dataset.promptRow;
+      const id2 = dragId;
+      dragId = "";
+      if (destination) try {
+        move(id2, edited().entries.findIndex((e) => e.id === destination));
+      } catch (e) {
+        fail3(e);
+      }
+    }
+    const dragend = () => {
+      dragId = "";
     };
     function detach() {
-      ++epoch;
       if (!host) return;
       host.removeEventListener("click", click);
-      host.removeEventListener("input", input);
       host.removeEventListener("change", change);
+      host.removeEventListener("input", input);
+      host.removeEventListener("dragstart", dragstart);
+      host.removeEventListener("dragover", dragover);
+      host.removeEventListener("drop", drop);
+      host.removeEventListener("dragend", dragend);
       host = null;
     }
-    return { detach, hasUnsaved: () => drafts.size > 0, async beforeLeave() {
-      if (!drafts.size) return true;
-      const choice = await ask("\u6709\u672A\u4FDD\u5B58\u7684\u4FEE\u6539", "\u53EF\u4EE5\u7559\u5728\u7F16\u8F91\u5668\u4FDD\u5B58\uFF0C\u6216\u4FDD\u7559\u5F53\u524D\u6807\u7B7E\u9875\u8349\u7A3F\u540E\u79BB\u5F00\u3002", [{ id: "leave", label: "\u4FDD\u7559\u8349\u7A3F\u5E76\u79BB\u5F00" }, { id: "cancel", label: "\u7EE7\u7EED\u7F16\u8F91" }]);
-      return choice === "leave";
-    }, mount(element) {
-      detach();
-      host = element;
-      if (!host) return;
-      host.addEventListener("click", click);
-      host.addEventListener("input", input);
-      host.addEventListener("change", change);
-      const current = context.currentRole();
-      if (actor?.id !== current?.id) {
+    return {
+      detach,
+      hasUnsaved: () => drafts.size > 0 || !!dialog?.querySelector("[data-prompt-editor]"),
+      async beforeLeave() {
+        if (busy) return false;
+        if (drafts.size && await choose("\u6709\u672A\u4FDD\u5B58\u7684\u4FEE\u6539", "\u4FDD\u7559\u5F53\u524D\u6807\u7B7E\u9875\u8349\u7A3F\u5E76\u79BB\u5F00\uFF0C\u6216\u7EE7\u7EED\u7F16\u8F91\u3002", [["leave", "\u4FDD\u7559\u8349\u7A3F\u5E76\u79BB\u5F00"], ["cancel", "\u7EE7\u7EED\u7F16\u8F91"]]) !== "leave") return false;
+        ++fileRead;
+        dialog?.close();
+        scope = "role";
+        search = "";
+        onlyEnabled = false;
+        collapsed.clear();
+        reload = true;
+        return true;
+      },
+      mount(element) {
+        detach();
+        host = element;
+        if (!host) return;
+        const current = context.currentRole();
+        if (actor?.id !== current?.id) {
+          dialog?.close();
+          scope = "role";
+          reload = true;
+        }
         actor = current;
-        if (library && actor) selected = resolvePreset(library, actor.id, "meeting").id;
+        host.addEventListener("click", click);
+        host.addEventListener("change", change);
+        host.addEventListener("input", input);
+        host.addEventListener("dragstart", dragstart);
+        host.addEventListener("dragover", dragover);
+        host.addEventListener("drop", drop);
+        host.addEventListener("dragend", dragend);
+        render();
+        if (reload) void load();
       }
-      if (!library) void load();
-      else render();
-    } };
+    };
   }
 
   // src/core/domGuard.ts
@@ -15821,8 +16097,8 @@ channel.onmessage=async({data:job})=>{
       } catch {
       }
     }
-    const entries = Object.entries(state2.scrollPositions);
-    for (const [key2, top] of entries) {
+    const entries2 = Object.entries(state2.scrollPositions);
+    for (const [key2, top] of entries2) {
       if (key2 === "#scroll-area") {
         if (preserveScroll) {
           const el = root.querySelector("#scroll-area");
@@ -18668,7 +18944,7 @@ channel.onmessage=async({data:job})=>{
     function screenDiary() {
       const r = role();
       syncRoleDiaryTasks(r, data.settings, now(), { zone: activeWorldZone() });
-      const entries = [...r.diaries].filter((x) => x.speaker === diaryTab && !(x.speaker === "char" && x.source === "life")).sort((a, b) => {
+      const entries2 = [...r.diaries].filter((x) => x.speaker === diaryTab && !(x.speaker === "char" && x.source === "life")).sort((a, b) => {
         if (diaryTab === "char") {
           const ka = getCharacterDiaryDateKey(a);
           const kb = getCharacterDiaryDateKey(b);
@@ -18718,7 +18994,7 @@ channel.onmessage=async({data:job})=>{
                      </div>
                    </div>`;
         }).join("")}
-             </div>` : ""}<div class="section">\u65E5\u8BB0\u6863\u6848 \xB7 ${entries.length} \u7BC7</div>${entries.length ? entries.map((e) => {
+             </div>` : ""}<div class="section">\u65E5\u8BB0\u6863\u6848 \xB7 ${entries2.length} \u7BC7</div>${entries2.length ? entries2.map((e) => {
           if (e.speaker === "char") {
             const dKey = getCharacterDiaryDateKey(e);
             const bounds = getLocalDayBounds(dKey);
@@ -19655,7 +19931,7 @@ channel.onmessage=async({data:job})=>{
       return shell(`${header("\u7EC8\u7AEF", "home")}<div class="viewport terminal-page"><details class="card terminal-settings" open><summary><span>01\uFF5CAPI \u4E0E\u6A21\u578B</span>${uiIcon("down")}</summary><div id="terminal-api-root"></div></details><details class="card terminal-settings" data-style-panel><summary><span>02\uFF5C\u5916\u89C2\u4E0E\u4E3B\u9898</span>${uiIcon("down")}</summary><div data-style-body="appearance"></div></details><details class="card terminal-settings" data-style-panel><summary><span>03\uFF5C\u804A\u5929\u6C14\u6CE1\u81EA\u5B9A\u4E49</span>${uiIcon("down")}</summary><div data-style-body="bubbles"></div></details><details class="card terminal-other-settings terminal-settings"><summary><span>04\uFF5C\u5176\u4ED6\u624B\u673A\u8BBE\u7F6E</span>${uiIcon("down")}</summary>${cards.frames}${cards.logs}${cards.backup}</details></div>`);
     }
     function screenPresets() {
-      return shell(`${header("\u9884\u8BBE", "home")}<div class="viewport"><div class="h2">\u9884\u8BBE</div><p class="sub">\u521B\u5EFA\u3001\u7F16\u5199\u548C\u6574\u7406 Elsewhere \u539F\u751F\u9884\u8BBE\u3002\u5171\u4EAB\u672C\u4F53\u4E0E\u89D2\u8272\u72EC\u7ACB\u8986\u76D6\u5206\u522B\u4FDD\u5B58\u3002</p><div class="card" id="fruit-preset-root"></div></div>`);
+      return shell(`${header("\u9884\u8BBE", "home")}<div class="viewport"><div id="fruit-preset-root"></div></div>`);
     }
     function phoneSettingsCards() {
       const r = role();

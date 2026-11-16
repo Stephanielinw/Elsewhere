@@ -19,3 +19,25 @@ test('emoji-only preset names remain identifiable without modifying author data'
  assert.ok(renderPresetList(preset,createFruitState().profiles.meeting).includes('未命名条目'));
  const entry={id:'p',kind:'fruit' as const,preset:{...preset,name:'🍎'},enabled:false,profiles:createFruitState().profiles};assert.equal(presetLabel(entry),'MoM 果实预设');assert.equal(entry.preset.name,'🍎');
 });
+
+test('doodle themes keep original ink, control size and line fallbacks',async()=>{
+ const icons=await import('../uiIcons');
+ const chat='<svg viewBox="0 0 48 48"><path d="M 2 5 L 8 9"/></svg>';
+ icons.installDoodleIcons({chat,plus:'<svg viewBox="0 0 48 48"><script>alert(1)</script></svg>'});
+ try{
+  assert.equal(icons.normalizeIconTheme('nonsense'),'line');
+  const original=icons.uiIcon('chat','app-symbol',true);
+  assert.match(original,/viewBox="0 0 24 24"/);
+  icons.setUiIconTheme('doodle');
+  assert.match(icons.uiIcon('💬','app-symbol',true),/class="app-symbol"[^>]*viewBox="0 0 48 48"[^>]*stroke="currentColor"[^>]*aria-hidden="true"/);
+  assert.match(icons.uiIcon('chat'),/d="M 2 5 L 8 9"/);
+  for(const key of ['focus','plus'])assert.match(icons.uiIcon(key),/viewBox="0 0 24 24"/);
+  icons.setUiIconTheme('doodle-motion');
+  assert.match(icons.uiIcon('chat','app-symbol',true),/data-doodle-app/);
+  assert.doesNotMatch(icons.uiIcon('chat'),/data-doodle-app|filter=|pathLength=/);
+  assert.doesNotMatch(icons.uiIcon('__proto__'),/\[object Object\]/);
+ }finally{
+  icons.setUiIconTheme('line');
+  icons.installDoodleIcons({});
+ }
+});

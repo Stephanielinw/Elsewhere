@@ -54,9 +54,48 @@ const paths: Record<string, string> = {
 
 // Legacy stored icons remain unchanged; only the UI maps them to house vectors.
 const legacy:Record<string,string>={'💬':'chat','📍':'map','⏱️':'focus','⏳':'hourglass','🎭':'drama','📖':'book','🌿':'leaf','🍃':'leaf','📝':'edit','✒️':'edit','📐':'ruler','👀':'eye','💭':'chat','☕':'coffee','🔔':'bell','⏹️':'square','📅':'deadline','🐾':'paw','👁️':'eye','🌙':'moon','🏡':'home','📚':'book','🍜':'coffee','🌳':'leaf'};
-export function uiIcon(name:string,className='ui-icon'):string {
- const path=paths[legacy[name]||name]||paths.file;
- return `<svg class="${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${path}</svg>`;
+export type IconTheme = 'line' | 'doodle' | 'doodle-motion';
+export function normalizeIconTheme(value:unknown):IconTheme {
+ return value==='doodle'||value==='doodle-motion'?value:'line';
+}
+const doodles=new Map<string,string>();
+let iconTheme:IconTheme='line';
+
+export function installDoodleIcons(sources:Readonly<Record<string,string>>):void {
+ doodles.clear();
+ for(const [name,svg] of Object.entries(sources)){
+  const markup=/^<svg\b[^>]*viewBox="0 0 48 48"[^>]*>([\s\S]*)<\/svg>\s*$/.exec(svg)?.[1].trim();
+  if(Object.hasOwn(paths,name)&&markup&&/^(?:<path d="[a-zA-Z0-9,. +\-]+"\/>\s*)+$/.test(markup))doodles.set(name,markup);
+ }
+}
+
+function iconArt(key:string,app:boolean){
+ const doodle=iconTheme!=='line'&&doodles.get(key);
+ const motion=Boolean(doodle&&app&&iconTheme==='doodle-motion');
+ return {viewBox:doodle?'0 0 48 48':'0 0 24 24',width:doodle?'3.4':'1.85',motion,
+  art:motion?'<g>'+String(doodle).replaceAll('<path ','<path pathLength="1" ')+'</g>':doodle||paths[key]};
+}
+
+export function setUiIconTheme(value:unknown,root?:ParentNode):void {
+ const next=normalizeIconTheme(value);
+ if(next===iconTheme)return;
+ iconTheme=next;
+ root?.querySelectorAll<SVGSVGElement>('svg[data-ui-icon]').forEach(svg=>{
+  const key=svg.dataset.uiIcon;
+  if(!key||!Object.hasOwn(paths,key))return;
+  const icon=iconArt(key,svg.hasAttribute('data-icon-app'));
+  svg.setAttribute('viewBox',icon.viewBox);
+  svg.setAttribute('stroke-width',icon.width);
+  svg.toggleAttribute('data-doodle-app',icon.motion);
+  svg.innerHTML=icon.art;
+ });
+}
+
+export function uiIcon(name:string,className='ui-icon',app=false):string {
+ const candidate=Object.hasOwn(legacy,name)?legacy[name]:name;
+ const key=Object.hasOwn(paths,candidate)?candidate:'file';
+ const icon=iconArt(key,app);
+ return `<svg class="${className}" data-ui-icon="${key}"${app?' data-icon-app':''}${icon.motion?' data-doodle-app':''} viewBox="${icon.viewBox}" fill="none" stroke="currentColor" stroke-width="${icon.width}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${icon.art}</svg>`;
 }
 export function plainUiLabel(name:string):string {
  return String(name||'').replace(/(?:\p{Extended_Pictographic}|\p{Regional_Indicator}|\p{Emoji_Modifier}|[\uFE0E\uFE0F\u200D\u20E3])/gu,'').replace(/\s+/g,' ').trim();

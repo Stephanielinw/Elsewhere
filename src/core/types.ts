@@ -591,6 +591,7 @@ export interface AppData {
   worldTimeZone?:string;
   draftWorldId?: string;
   theme: ThemeName;
+  iconTheme?: import('../uiIcons').IconTheme;
   font: 'system' | 'serif';
   offset: number;
   roles: RoleData[];

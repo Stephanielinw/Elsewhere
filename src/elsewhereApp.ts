@@ -17,7 +17,9 @@ import {PresetPreparationError} from './core/fruit/presetIssue';
 import type {FruitPreset} from './core/fruit/types';
 import {createNovelTasks,commitNovelReply,prepareNovelRegeneration,parseNovelResponse,NovelOutputError,safeNovelText,novelRequestTimeout,novelSamplingParameters,novelSourceKey,type NovelKind} from './core/novelGeneration';
 import {monitorItemsForDisplay} from './core/monitorPresentation';
-import {uiIcon,plainUiLabel} from './uiIcons';
+import {uiIcon,plainUiLabel,normalizeIconTheme,setUiIconTheme,installDoodleIcons} from './uiIcons';
+import {doodleIcons,doodleAnimation,doodleNotice} from './doodleAssets';
+import {createDoodleMotion} from './doodleMotion';
 import {chatTiming,setChatFocused,enqueueChat,prepareChatDue,claimChatBatch,canChooseChatScene,chatSceneEntry,setChatScene,chatBatchValid,chatRevisionKey,completeChatBatch,failChatBatch,recoverChatTiming,retryChatTiming,reviseChatTiming,sourceStillValid,messageStillValid} from './core/chatScheduler';
 import {compileChatBatchPrompt,buildPhoneRegeneration,parseChatResponse,readChatResponse,readChatResponseBody} from './core/chatBatchPrompt';
 import {startRequestDeadline} from './core/requestDeadline';
@@ -45,6 +47,7 @@ import {createNovelDisplay} from './novelDisplay';
 import {safeBubbleCSS} from './core/bubbleCss';
 import {DEVICE_API_KEY,readDeviceApiKey,saveDeviceApiKey} from './core/deviceApiKey';
 import {normalizeApiBase} from './core/modelDiscovery';
+import {appearanceTheme} from './core/appearance';
 import {createTerminalAppearance,appearanceFontFamily,hydrateAppearanceFont} from './terminalAppearance';
 import {completionLimit} from './core/outputBudget';
 import {estimateTextTokens} from './core/contextBudget';
@@ -65,7 +68,6 @@ import type {
   PlayData,
   RevisionScope,
   RoleData,
-  ThemeName,
   UserProfileData,
 } from './core/types';
 import {
@@ -159,6 +161,9 @@ import {
 } from './core/focus';
 
 export function initElsewhereApp(saveSession:SaveSession): void {
+  installDoodleIcons(doodleIcons);
+  document.head.append(document.createComment(doodleNotice));
+  const doodleMotion=createDoodleMotion(doodleAnimation);
   const novelDisplay=createNovelDisplay((roleId,stageId,mode,messageId)=>{
     const r=data.roles.find(r=>r.id===roleId);if(!r||data.selected!==roleId)return null;
     const stages=mode==='meeting'?[r.scene,...(r.meetings||[])]:[r.play,...(r.plays||[])];
@@ -2502,7 +2507,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     )}</h1></div>${right}${back!=='home'?`<button type="button" class="icon-btn mobile-home" data-action="home" aria-label="返回手机桌面">${uiIcon('home')}</button>`:''}</div>`;
 
   const appTile = (id: string, name: string): string =>
-    `<button class="app-icon" data-action="view" data-view="${id}" aria-label="打开${name}"><span class="tile tile-${id}">${glyph(id==='location'?'map':id)}</span><span class="app-name">${name}</span></button>`;
+    `<button class="app-icon" data-action="view" data-view="${id}" aria-label="打开${name}"><span class="tile tile-${id}">${uiIcon(id==='location'?'map':id,'app-symbol',true)}</span><span class="app-name">${name}</span></button>`;
 
   const dock = (): string =>
     `<nav class="dock" aria-label="常用应用">${[
@@ -4623,16 +4628,9 @@ export function initElsewhereApp(saveSession:SaveSession): void {
 
   function applyTheme(): void {
     const root = document.documentElement;
-    const legacyMap: Record<string, ThemeName> = {
-      violet: 'pink',
-      sand: 'coffee',
-    };
-    const rawTheme =
-      role()?.theme || legacyMap[data.theme] || data.theme || 'blue';
-    const key: ThemeName = ['blue','green','pink','coffee','night'].includes(rawTheme)
-      ? (rawTheme as ThemeName)
-      : 'blue';
+    const key=appearanceTheme(role()?.theme,data.theme);
     if (root.dataset) root.dataset.theme = key;
+    setUiIconTheme(data.iconTheme,document);
     const scheme=key==='night'?'dark':'light';
     root.style.colorScheme=scheme;
     let schemeMeta=document.querySelector<HTMLMetaElement>('meta[name="color-scheme"]');
@@ -4992,8 +4990,10 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     novelDisplay.mount(app);
     if(view==='terminal'){terminalApi.mount(document.getElementById('terminal-api-root'));terminalAppearance.mount(document.querySelector('.terminal-page'));}
     if(view==='presets')fruitManager.mount(document.getElementById('fruit-preset-root'));
-    if(view==='home')homePager.mount(document.querySelector<HTMLElement>('.home-view')!);
+    const launcher=view==='home'?app.querySelector<HTMLElement>('.home-view'):null;
+    if(launcher)homePager.mount(launcher);
     restoreUIState(uiSnap, !scroll, document, sameView);
+    doodleMotion.mount(normalizeIconTheme(data.iconTheme)==='doodle-motion'?launcher:null,!sameView);
     refreshNovelControls();
     if(view==='chat')chatHistory.finish(chatAnchor);
     if(view==='intermission'){

@@ -3,8 +3,8 @@ import type {AppData,RoleData,ThemeName} from './core/types';
 import {mediaGet,mediaAddMany} from './core/media';
 import {makeUid} from './core/revisions';
 import {safeBubbleCSS,BUBBLE_CSS_LIMIT} from './core/bubbleCss';
-import {bubbleSideCSS,retargetBubbleCSS,customFontFamily,fontFileType,wallpaperFileType,safeFontUrl,FONT_MAX_BYTES,WALLPAPER_MAX_BYTES,type BubbleSide} from './core/appearance';
-import {uiIcon} from './uiIcons';
+import {appearanceTheme,bubbleSideCSS,retargetBubbleCSS,customFontFamily,fontFileType,wallpaperFileType,safeFontUrl,FONT_MAX_BYTES,WALLPAPER_MAX_BYTES,type BubbleSide} from './core/appearance';
+import {uiIcon,normalizeIconTheme,type IconTheme} from './uiIcons';
 
 type FontItem=NonNullable<AppData['customFonts']>[number];
 const systemFont='-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif';
@@ -23,12 +23,14 @@ export async function hydrateAppearanceFont(data:AppData,role?:RoleData):Promise
   const font=data.customFonts?.find(f=>f.id===role?.customFontId);if(font)await loadFont(font);
 }
 interface Draft {
-  theme:ThemeName;font:string;wallpaper:string;wallpaperBlob?:Blob;
+  theme:ThemeName;themeChanged?:boolean;font:string;wallpaper:string;wallpaperBlob?:Blob;
   fonts:(FontItem&{blob?:Blob})[];mine:string;theirs:string;
 }
+const iconThemes:[IconTheme,string][]=[['line','原版线条'],['doodle','手绘涂鸦'],['doodle-motion','动态涂鸦']];
 const themes:[ThemeName,string][]=[['blue','蓝色'],['green','绿色'],['pink','粉色'],['coffee','卡布奇诺'],['night','夜晚']];
 export function createTerminalAppearance(hooks:{data:()=>AppData;role:()=>RoleData|undefined;save:()=>boolean;saveError:()=>string;apply:()=>void;notify:(text:string)=>void}){
   let host:HTMLElement|null=null,owner:RoleData|undefined,world:AppData|undefined,draft:Draft|null=null,version=0,urls:string[]=[],fontRequest:AbortController|null=null;
+  let draftIconTheme:IconTheme|undefined;
   let drafts=new WeakMap<RoleData,Draft>(),appearanceSaving=false;
   const field=(name:string)=>host?.querySelector<HTMLInputElement|HTMLSelectElement|HTMLTextAreaElement>(`[name="${name}"]`);
   const objectUrl=(blob:Blob)=>{const url=URL.createObjectURL(blob);urls.push(url);return url};
@@ -48,7 +50,7 @@ export function createTerminalAppearance(hooks:{data:()=>AppData;role:()=>RoleDa
   function presetOptions(){if(!host)return;for(const side of ['mine','theirs']){const select=host.querySelector<HTMLSelectElement>(`[data-bubble-preset="${side}"]`);if(select){const previous=select.value;select.innerHTML='<option value="">当前自定义样式</option>'+ (hooks.data().bubblePresets||[]).map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');select.value=previous;}}}
   async function wallpaperPreview(){const d=draft,id=version,box=host?.querySelector<HTMLElement>('[data-wallpaper-preview]');if(!d||!box)return;for(const url of urls)URL.revokeObjectURL(url);urls=[];box.replaceChildren();if(!d.wallpaper)return;try{const blob=d.wallpaperBlob||await mediaGet(d.wallpaper);if(!alive(id)||draft!==d||!blob)return;const img=document.createElement('img');img.alt='壁纸预览';img.src=objectUrl(blob);box.replaceChildren(img);}catch{if(alive(id))feedback('壁纸预览读取失败，已保存的壁纸未改变。');}}
   function render(){if(!host||!draft)return;const appearance=host.querySelector('[data-style-body="appearance"]'),bubbles=host.querySelector('[data-style-body="bubbles"]');
-    if(appearance)appearance.innerHTML=`<form data-style-form="appearance"><p class="sub">当前角色的颜色、壁纸和字体，预览后一起保存。</p><label class="terminal-label">主题颜色</label><div class="theme-swatches">${themes.map(([id,name])=>`<button type="button" class="swatch swatch-${id}" data-style-theme="${id}"><i></i>${name}</button>`).join('')}</div><div class="terminal-wallpaper-line"><div class="terminal-wallpaper-preview" data-wallpaper-preview aria-label="壁纸预览"></div><div><label class="btn small ghost terminal-file-button">${uiIcon('upload')} 导入壁纸<input type="file" accept="image/png,image/jpeg,image/gif,image/webp" data-style-file="wallpaper" hidden></label><button class="btn small secondary" type="button" data-style-action="clear-wallpaper">恢复默认壁纸</button><p class="sub">PNG / JPG / GIF / WebP · 最多 10MB</p></div></div><div class="row between"><label for="appearance-font">字体</label><button class="btn small ghost" type="button" data-style-action="font-open" aria-label="添加字体">${uiIcon('plus')} 添加字体</button></div><select id="appearance-font" class="field" name="appearance-font"></select><div class="terminal-font-import" data-font-import hidden><label class="terminal-label">字体备注名<input name="font-name" class="field" maxlength="80" placeholder="例如：柔和手写"></label><label class="terminal-label">字体文件 URL<input name="font-url" type="url" class="field" placeholder="https://…/font.woff2"></label><label class="terminal-label">或选择字体文件<input name="font-file" type="file" class="field" accept=".woff2,.woff,.ttf,.otf"></label><div class="row"><button type="button" class="btn small" data-style-action="import-font">导入并预览</button><button type="button" class="btn small secondary" data-style-action="font-cancel">取消</button></div><p class="sub">直接导入字体文件，最多 20MB；URL 需允许跨域读取。</p></div><div class="terminal-font-preview" data-font-preview>在这里，故事慢慢发生。<br>Elsewhere · 0123456789</div><button class="btn small" type="submit">保存主题与外观</button><p class="sub" role="status" data-style-status></p></form>`;
+    if(appearance)appearance.innerHTML=`<form data-style-form="appearance"><p class="sub">当前角色的颜色、壁纸和字体，预览后一起保存。</p><label class="terminal-label">主题颜色</label><div class="theme-swatches">${themes.map(([id,name])=>`<button type="button" class="swatch swatch-${id}" data-style-theme="${id}"><i></i>${name}</button>`).join('')}</div><label class="terminal-label" for="appearance-icon-theme">图标主题</label><select id="appearance-icon-theme" class="field" name="appearance-icon-theme">${iconThemes.map(([id,label])=>`<option value="${id}"${id===(draftIconTheme??normalizeIconTheme(world?.iconTheme))?' selected':''}>${label}</option>`).join('')}</select><p class="sub">同一世界的角色共用图标主题。</p><div class="terminal-wallpaper-line"><div class="terminal-wallpaper-preview" data-wallpaper-preview aria-label="壁纸预览"></div><div><label class="btn small ghost terminal-file-button">${uiIcon('upload')} 导入壁纸<input type="file" accept="image/png,image/jpeg,image/gif,image/webp" data-style-file="wallpaper" hidden></label><button class="btn small secondary" type="button" data-style-action="clear-wallpaper">恢复默认壁纸</button><p class="sub">PNG / JPG / GIF / WebP · 最多 10MB</p></div></div><div class="row between"><label for="appearance-font">字体</label><button class="btn small ghost" type="button" data-style-action="font-open" aria-label="添加字体">${uiIcon('plus')} 添加字体</button></div><select id="appearance-font" class="field" name="appearance-font"></select><div class="terminal-font-import" data-font-import hidden><label class="terminal-label">字体备注名<input name="font-name" class="field" maxlength="80" placeholder="例如：柔和手写"></label><label class="terminal-label">字体文件 URL<input name="font-url" type="url" class="field" placeholder="https://…/font.woff2"></label><label class="terminal-label">或选择字体文件<input name="font-file" type="file" class="field" accept=".woff2,.woff,.ttf,.otf"></label><div class="row"><button type="button" class="btn small" data-style-action="import-font">导入并预览</button><button type="button" class="btn small secondary" data-style-action="font-cancel">取消</button></div><p class="sub">直接导入字体文件，最多 20MB；URL 需允许跨域读取。</p></div><div class="terminal-font-preview" data-font-preview>在这里，故事慢慢发生。<br>Elsewhere · 0123456789</div><button class="btn small" type="submit">保存主题与外观</button><p class="sub" role="status" data-style-status></p></form>`;
     if(bubbles)bubbles.innerHTML=`<form data-style-form="bubbles"><p class="sub">为当前角色的这部手机分别配置两侧气泡；保存的样式预设可供所有角色选用。</p><div class="bubble-preview" aria-label="用户与角色气泡预览"><style data-bubble-preview-css></style><div class="message theirs"><div class="bubble">今天怎么样？一起聊聊吧。</div></div><div class="message mine"><div class="bubble">好呀，我有件事想告诉你。</div></div></div><div class="terminal-bubble-columns">${(['mine','theirs'] as const).map(side=>`<section class="terminal-bubble-side"><h3>${side==='mine'?'我的气泡':'角色气泡'}</h3><label class="terminal-label">选择已保存的样式<select class="field" data-bubble-preset="${side}" aria-label="${side==='mine'?'我的':'角色'}气泡预设"></select></label><label class="btn small ghost terminal-file-button">${uiIcon('upload')} 导入 CSS<input type="file" accept=".css,text/css" data-style-file="${side}" hidden></label><textarea class="field bubble-editor" name="bubble-${side}" spellcheck="false" aria-label="${side==='mine'?'我的':'角色'}气泡 CSS" placeholder=".message.${side} .bubble { background: #f2e4fa; }">${esc(draft![side])}</textarea><label class="terminal-label">预设备注<input class="field" name="preset-name-${side}" maxlength="80" placeholder="给这个样式起个名字"></label><div class="row terminal-wrap"><button class="btn small secondary" type="button" data-style-action="save-preset" data-side="${side}">保存样式预设</button><button class="btn small ghost" type="button" data-style-action="clear-bubble" data-side="${side}">恢复默认</button></div></section>`).join('')}</div><p class="sub">仅支持气泡 CSS（两侧合计最多 12KB），不加载外部资源，不修改页面其他区域。</p><button class="btn small" type="submit">保存两侧气泡</button><p class="sub" role="status" data-bubble-status></p></form>`;
     fontOptions();presetOptions();preview();void wallpaperPreview();
   }
@@ -88,17 +90,25 @@ export function createTerminalAppearance(hooks:{data:()=>AppData;role:()=>RoleDa
       }
       const previous={theme:r.theme,font:r.font,customFontId:r.customFontId,wallpaperMediaId:r.wallpaperMediaId};
       const previousFonts=data.customFonts;
-      r.theme=d.theme;
-      r.font=d.font==='serif'?'serif':'system';
-      r.customFontId=fonts.some(font=>font.id===d.font)?d.font:'';
-      r.wallpaperMediaId=wallpaper;
+      const previousIconTheme=data.iconTheme;
+      if(draftIconTheme!==undefined)data.iconTheme=draftIconTheme;
+      if(d.themeChanged)r.theme=d.theme;
+      if(d.font!==(r.customFontId||r.font||data.font)){
+        r.font=d.font==='serif'?'serif':'system';
+        r.customFontId=fonts.some(font=>font.id===d.font)?d.font:'';
+      }
+      if(wallpaper!==(r.wallpaperMediaId||''))r.wallpaperMediaId=wallpaper;
       data.customFonts=[...(previousFonts||[]),...fonts.filter(font=>!previousFonts?.some(item=>item.id===font.id))];
       if(!hooks.save()){
         Object.assign(r,previous);
         data.customFonts=previousFonts;
+        if(previousIconTheme===undefined)delete data.iconTheme;
+        else data.iconTheme=previousIconTheme;
         styleStatus(hooks.saveError());
         return;
       }
+      draftIconTheme=undefined;
+      d.themeChanged=false;
       d.wallpaper=wallpaper;
       d.wallpaperBlob=undefined;
       d.fonts=fonts;
@@ -112,9 +122,10 @@ export function createTerminalAppearance(hooks:{data:()=>AppData;role:()=>RoleDa
   }
   function saveBubbles(){if(!draft||!owner||!current())return;read();const r=owner;try{if(draft.mine.length>BUBBLE_CSS_LIMIT||draft.theirs.length>BUBBLE_CSS_LIMIT)throw new Error('每侧 CSS 最多 12KB。');const css=retargetBubbleCSS(draft.mine,'mine')+'\n'+retargetBubbleCSS(draft.theirs,'theirs');if(css.length>BUBBLE_CSS_LIMIT)throw new Error('两侧 CSS 合计最多 12KB。');const previous=r.bubbleCSS;r.bubbleCSS=css.trim();if(!hooks.save()){r.bubbleCSS=previous;styleStatus(hooks.saveError(),true);return;}hooks.apply();feedback('两侧气泡已保存。',true);}catch(error){feedback(error instanceof Error?error.message:'气泡保存失败。',true);}}
   function savePreset(side:BubbleSide){if(!draft||!current())return;read();const name=field('preset-name-'+side)?.value.trim();if(!name){feedback('请填写预设备注名。',true);return;}try{if(draft[side].length>BUBBLE_CSS_LIMIT)throw new Error('CSS 最多 12KB。');const css=retargetBubbleCSS(draft[side],side);if(!css.trim())throw new Error('请先导入或填写 CSS。');const data=hooks.data(),previous=data.bubblePresets,selected=host?.querySelector<HTMLSelectElement>(`[data-bubble-preset="${side}"]`)?.value,existing=previous?.find(p=>p.id===selected);data.bubblePresets=existing?previous!.map(p=>p.id===existing.id?{...p,name,css}:p):[...(previous||[]),{id:makeUid('bubble'),name,css}];if(!hooks.save()){data.bubblePresets=previous;styleStatus(hooks.saveError(),true);return;}presetOptions();const choice=host?.querySelector<HTMLSelectElement>(`[data-bubble-preset="${side}"]`);if(choice)choice.value=(existing||data.bubblePresets.at(-1)!).id;feedback('已存为通用预设，可在两侧和其他角色中选择。',true);}catch(error){feedback(error instanceof Error?error.message:'预设保存失败。',true);}}
-  const click=(event:Event)=>{const target=event.target instanceof Element?event.target.closest<HTMLElement>('[data-style-action],[data-style-theme]'):null;if(!target||!draft)return;event.preventDefault();event.stopPropagation();read();const action=target.dataset.styleAction,side=target.dataset.side==='mine'?'mine':'theirs';if(target.dataset.styleTheme){version++;draft.theme=target.dataset.styleTheme as ThemeName;preview();return;}if(action==='font-open'||action==='font-cancel'){const panel=host?.querySelector<HTMLElement>('[data-font-import]');if(panel)panel.hidden=action==='font-cancel';if(action==='font-cancel'){version++;fontRequest?.abort();fontRequest=null;}}if(action==='import-font')void importFont();if(action==='clear-wallpaper'){version++;draft.wallpaper='';draft.wallpaperBlob=undefined;void wallpaperPreview()}if(action==='clear-bubble'){draft[side]='';const editor=field('bubble-'+side);if(editor)editor.value='';preview()}if(action==='save-preset')savePreset(side);};
+  const click=(event:Event)=>{const target=event.target instanceof Element?event.target.closest<HTMLElement>('[data-style-action],[data-style-theme]'):null;if(!target||!draft)return;event.preventDefault();event.stopPropagation();read();const action=target.dataset.styleAction,side=target.dataset.side==='mine'?'mine':'theirs';if(target.dataset.styleTheme){version++;draft.theme=target.dataset.styleTheme as ThemeName;draft.themeChanged=true;preview();return;}if(action==='font-open'||action==='font-cancel'){const panel=host?.querySelector<HTMLElement>('[data-font-import]');if(panel)panel.hidden=action==='font-cancel';if(action==='font-cancel'){version++;fontRequest?.abort();fontRequest=null;}}if(action==='import-font')void importFont();if(action==='clear-wallpaper'){version++;draft.wallpaper='';draft.wallpaperBlob=undefined;void wallpaperPreview()}if(action==='clear-bubble'){draft[side]='';const editor=field('bubble-'+side);if(editor)editor.value='';preview()}if(action==='save-preset')savePreset(side);};
   const input=(event:Event)=>{const target=event.target;if(!(target instanceof HTMLInputElement||target instanceof HTMLTextAreaElement||target instanceof HTMLSelectElement)||!target.closest('[data-style-panel]')||!draft)return;event.stopPropagation();read();if(target.matches('[data-bubble-preset]')&&event.type==='change'){const side=target.dataset.bubblePreset==='mine'?'mine':'theirs',preset=hooks.data().bubblePresets?.find(p=>p.id===target.value);if(preset){draft[side]=retargetBubbleCSS(preset.css,side);const editor=field('bubble-'+side);if(editor)editor.value=draft[side];const name=field('preset-name-'+side);if(name)name.value=preset.name;}}
     if(event.type==='input'&&target.matches('[name^="bubble-"],[name="font-name"],[name="font-url"]'))version++;
+    if(event.type==='change'&&target.name==='appearance-icon-theme'){if(appearanceSaving)version++;draftIconTheme=normalizeIconTheme(target.value);}
     if(event.type==='change'&&target.name==='appearance-font'){version++;const font=draft.fonts.find(f=>f.id===draft?.font),id=version;if(font)void loadFont(font,font.blob).catch(()=>{if(alive(id))feedback('字体读取失败，请重新导入。')});}
     if(event.type==='change'&&target instanceof HTMLInputElement&&target.dataset.styleFile)void importFile(target);preview();};
   const submit=(event:Event)=>{const form=event.target;if(!(form instanceof HTMLFormElement)||!form.dataset.styleForm)return;event.preventDefault();event.stopPropagation();if(form.dataset.styleForm==='appearance')void saveAppearance();else saveBubbles();};
@@ -122,9 +133,9 @@ export function createTerminalAppearance(hooks:{data:()=>AppData;role:()=>RoleDa
   return {detach,mount(element:HTMLElement|null){
     detach();host=element;
     const r=hooks.role(),data=hooks.data();if(!host||!r)return;
-    if(world!==data)drafts=new WeakMap();
+    if(world!==data){drafts=new WeakMap();draftIconTheme=undefined;}
     world=data;owner=r;
-    draft=drafts.get(r)||{theme:r.theme||'blue',font:r.customFontId||r.font||data.font,wallpaper:r.wallpaperMediaId||'',fonts:[...(data.customFonts||[])],mine:bubbleSideCSS(r.bubbleCSS||'','mine'),theirs:bubbleSideCSS(r.bubbleCSS||'','theirs')};
+    draft=drafts.get(r)||{theme:appearanceTheme(r.theme,data.theme),font:r.customFontId||r.font||data.font,wallpaper:r.wallpaperMediaId||'',fonts:[...(data.customFonts||[])],mine:bubbleSideCSS(r.bubbleCSS||'','mine'),theirs:bubbleSideCSS(r.bubbleCSS||'','theirs')};
     drafts.set(r,draft);for(const font of data.customFonts||[])if(!draft.fonts.some(f=>f.id===font.id))draft.fonts.push(font);
     host.addEventListener('click',click);host.addEventListener('input',input);host.addEventListener('change',input);host.addEventListener('submit',submit);
     render();const id=version;const selectedFont=draft.fonts.find(f=>f.id===draft?.font);if(selectedFont)void loadFont(selectedFont,selectedFont.blob).catch(()=>{if(alive(id)&&draft?.font===selectedFont.id)feedback('字体读取失败，请重新导入。')});

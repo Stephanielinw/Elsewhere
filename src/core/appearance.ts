@@ -1,4 +1,11 @@
 import {safeBubbleCSS} from './bubbleCss';
+import type {ThemeName} from './types';
+
+export function appearanceTheme(roleTheme:unknown,worldTheme:unknown):ThemeName {
+  const raw=roleTheme||(worldTheme==='violet'?'pink':worldTheme==='sand'?'coffee':worldTheme);
+  return raw==='blue'||raw==='green'||raw==='pink'||raw==='coffee'||raw==='night'?raw:'blue';
+}
+
 export type BubbleSide='mine'|'theirs';
 export const FONT_MAX_BYTES=20*1024*1024;
 export const WALLPAPER_MAX_BYTES=10*1024*1024;

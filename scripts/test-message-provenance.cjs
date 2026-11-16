@@ -217,7 +217,7 @@ async function main(){
     release();
     const copy=p.locator('dialog[open] textarea[aria-label="可复制的未确认回复"]');
     await copy.waitFor();assert.equal(await copy.inputValue(),diary);
-    await p.locator('dialog[open] button').click();
+    await p.getByRole('dialog',{name:'日记正文已生成，尚未归档'}).getByRole('button',{name:'关闭',exact:true}).click();
     assert.equal(await archived(p),undefined);
     const stored=await recoveryRecord(p,day);
     assert.equal(stored.receipt.state,'ready');
@@ -230,7 +230,7 @@ async function main(){
     await p.locator('[data-home-page="1"]').click();
     await p.getByRole('button',{name:'打开日记'}).click();
     const card=p.locator('[data-diary-task-date="'+day+'"]');
-    await card.getByText('正文待复制 · 来源已变化',{exact:true}).waitFor();
+    await card.getByText('正文已生成 · 待复核',{exact:true}).waitFor();
     const restored=await recoveryRecord(p,day);
     assert.equal(restored.id,stored.id);
     assert.equal(restored.task.id,stored.task.id);
@@ -239,8 +239,8 @@ async function main(){
     assert.ok(!restored.task.sourceMessageIds.includes(original));
     await card.getByRole('button',{name:'查看并复制正文'}).click();
     await copy.waitFor();assert.equal(await copy.inputValue(),diary);
-    assert.match(await p.locator('dialog[open] h2').textContent(),/来源已变化/);
-    await p.locator('dialog[open] button').click();
+    assert.match(await p.locator('dialog[open] p').textContent(),/来源已失效/);
+    await p.getByRole('dialog',{name:'日记正文已生成，尚未归档'}).getByRole('button',{name:'关闭',exact:true}).click();
     assert.equal(await archived(p),undefined);
     assert.equal(posts.length,1,'editing, reopening and inspecting the stale result must not resend');
     await p.locator('[data-action=view][data-view=home]').filter({visible:true}).first().click();

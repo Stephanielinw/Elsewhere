@@ -186,7 +186,8 @@ test('a diary excerpt cannot restore an orphaned life event through its source-e
   assert.doesNotMatch(personalContext(r,at+2),/UNVERIFIED_DIARY/);
   assert.equal(JSON.stringify(r),before);
 });
-test('preserved history cannot make an outreach prepared under obsolete current-profile context valid',()=>{
+test('preserved history cannot make an outreach prepared under obsolete current-profile context valid',t=>{
+  t.mock.timers.enable({apis:['Date'],now:at});
   for(const alreadyHistorical of [false,true]){
     const {r}=completed();
     r.chats=[{id:'prior-contact',speaker:'char',text:'合成的旧联系',at:at-8*hour}];

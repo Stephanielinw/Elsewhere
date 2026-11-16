@@ -2295,3 +2295,7 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
 .native-preset-title { margin: 10px 0 0; font-size: 15px; overflow-wrap: anywhere; }
 .native-prompt-name { border: 0; padding: 0; background: transparent; color: var(--ink); text-align: left; cursor: pointer; }
 .native-preset-dialog .terminal-prompt-editor { font-size: 16px; resize: vertical; }
+
+.diary-result-dialog textarea{display:block;width:100%;height:min(50dvh,440px);margin:12px 0;overflow:auto;resize:none;font-size:16px;line-height:1.65;white-space:pre-wrap}
+.diary-result-dialog .diary-task-actions{display:flex;flex-wrap:wrap;gap:8px}
+.diary-result-dialog [hidden]{display:none}

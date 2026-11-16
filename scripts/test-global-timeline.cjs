@@ -71,7 +71,7 @@ async function cases(run){
  });
  await run('a late-day diary covers 15 complete hours and binds only validated candidates',{
   phoneFirst:true,at:midnight+21*60*minute,zone:'Asia/Tokyo',alter:seed,
-  response:p=>side(p,'[[life:sleep]]\n\n[[life:work]]\n\n[[life:rejected]]\n\n[[life:tomorrow]]',{
+  response:p=>side(p,'[[life:sleep]]\n\n[[life:work]]',{
    life:[...past(900),{id:'rejected',from:950,to:980,action:'pledge'},
     {id:'tomorrow',from:1320,to:1340,action:'read',where:place}],
   }),
@@ -86,12 +86,65 @@ async function cases(run){
   assert.equal(records(role).length,3);assert.equal(t.posts.length,1);
   console.log('MEASURE '+JSON.stringify({diaryInputExtraEstimate:estimateTextTokens(wire(t.posts[0]).match(/\[Elsewhere Timeline\][\s\S]*?\[\/Elsewhere Timeline\]/)[0]),diaryOutputLimitExtra:t.posts[0].max_tokens-4096,closedMinutes:900,rejected:1}));
  });
- await run('an unresolved same-call diary claim is kept as an unarchived draft without retry',{
-  phoneFirst:true,at:midnight+21*60*minute,alter:seed,response:p=>side(p,'我答应了大额交易：[[life:bad]]',{life:[{id:'bad',from:0,to:900,action:'pledge'}]}),
+ for(const [kind,text] of [['inline','我答应了大额交易：[[life:bad]]'],['standalone','[[reflection]] 我仍在想。\n\n[[life:bad]]']])await run('an unresolved '+kind+' same-call diary claim is kept as an unarchived draft without retry',{
+  phoneFirst:true,at:midnight+21*60*minute,alter:seed,response:p=>side(p,text,{life:[{id:'bad',from:0,to:900,action:'pledge'}]}),
  },async t=>{
   await app(t,'日记');await t.p.getByRole('button',{name:'生成今日日记 · 截至此刻'}).click();await t.waitPost();
   await t.p.getByRole('textbox',{name:'可复制的未确认回复'}).waitFor();
   const r=(await saved(t)).roles[0];assert.equal(r.diaries.filter(d=>d.source==='ai').length,0);assert.equal(records(r).length,0);assert.equal(t.posts.length,1);
+  const dialog=t.p.getByRole('dialog',{name:'日记正文已生成，尚未归档'});
+  await dialog.getByRole('button',{name:'关闭',exact:true}).click();
+  await t.p.getByRole('button',{name:'查看并复制正文'}).click();
+  assert.match(await dialog.locator('p').textContent(),/依赖未能确认的生活记录/);
+  assert.equal(await dialog.getByRole('button',{name:'保存已有结果'}).count(),0);
+  assert.equal(t.posts.length,1);
+ });
+ for(const [label,fields] of [
+  ['malformed life list',{life:'bad'}],
+  ['malformed private kind',{updates:[{kind:{toString:null},text:'无效关注',sources:['profile:novel-role'],shareable:false}]}],
+  ['malformed life value',{life:[{id:'x',from:{toString:null}},{id:'y',from:1,to:10,action:'work'}]}],
+ ])await run(label+' cannot block an independent diary body',{
+  phoneFirst:true,at:midnight+21*60*minute,alter:seed,response:p=>side(p,'我仍在想那份工作。',fields),
+ },async t=>{
+  await app(t,'日记');await t.p.getByRole('button',{name:'生成今日日记 · 截至此刻'}).click();await t.waitPost();
+  await t.p.getByText('我仍在想那份工作。',{exact:true}).waitFor();
+  const role=(await saved(t)).roles[0];
+  assert.equal(role.diaries.find(d=>d.source==='ai').text,'我仍在想那份工作。');
+  assert.equal(records(role).length,0);assert.equal((role.personalThreads||[]).length,0);
+  assert.equal(t.posts.length,1);
+ });
+ await run('phone timeline and private updates during an in-flight diary do not replace its original sources',{
+  phoneFirst:true,at:midnight+21*60*minute,alter:seed,hold:p=>wire(p).includes('【私人日记】'),
+  response:(p,n)=>n===1?side(p,'[[life:diary-only]]\n\n[[reflection]] 我仍在想这份工作。',{
+   life:[{id:'overlap',from:0,to:480,action:'sleep',where:place},{id:'diary-only',from:480,to:900,action:'work',where:place}],
+   updates:[{kind:'concern',text:'这条附加关注已过期。',sources:['profile:novel-role'],shareable:false}],
+  }):side(p,'合成手机新回复。',{
+   life:[{id:'sleep',from:0,to:480,action:'sleep',where:place}],
+   updates:[{kind:'concern',text:'新手机私人关注。',sources:['profile:novel-role'],shareable:false}],
+  }),
+ },async t=>{
+  await app(t,'日记');await t.p.getByRole('button',{name:'生成今日日记 · 截至此刻'}).click();
+  await t.waitPost(1);
+  await t.p.locator('[data-action=view][data-view=home]').first().click();
+  await t.p.locator('.dock [data-view=chat]').click();
+  await t.p.locator('[data-action=focuschat]').click();
+  await send(t,'合成新手机消息不属于日记输入。');await t.waitPost(2);
+  await t.p.getByText('合成手机新回复。',{exact:true}).waitFor();
+  const afterChat=await saved(t),r=afterChat.roles[0];
+  assert.equal(records(r).length,1);assert.equal(r.personalThreads.length,1);
+  assert.ok(!wire(t.posts[0]).includes('合成新手机消息'));
+  await app(t,'日记');t.release();
+  await t.p.getByText('我做自己的日常工作。',{exact:false}).last().waitFor();
+  const world=await saved(t),final=world.roles[0],entries=final.diaries.filter(d=>d.source==='ai');
+  assert.equal(entries.length,1);assert.equal(entries[0].text,'我做自己的日常工作。\n\n我仍在想这份工作。');
+  assert.deepEqual(entries[0].sourceMessageIds,[]);
+  assert.equal(entries[0].sourceEventIds.length,1);
+  assert.deepEqual(records(final).map(e=>e.lifeRecord.timeline.key),['sleep','diary-only']);
+  assert.equal(entries[0].sourceEventIds[0],records(final)[1].id);
+  assert.deepEqual(final.personalThreads,r.personalThreads);
+  assert.ok(world.logs.some(log=>log.type==='diary'&&log.detail==='optional-private-discarded'));
+  assert.ok(world.logs.some(log=>log.type==='diary'&&log.detail==='unrelated-context-changed'));
+  assert.equal(t.posts.length,2);
  });
  await run('a live cafe state reaches phone and the actual meeting from the same source',{
   phoneFirst:true,at:midnight+939*minute,alter:seed,response:(p,n)=>n===1?side(p,'先等我一会。',{life:[

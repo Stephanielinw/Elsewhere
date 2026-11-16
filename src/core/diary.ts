@@ -1,5 +1,6 @@
 import {worldDate,worldDay} from './worldClock';
-import {roleMemoryText} from './roleMemoryView';
+import {readRoleMemory,roleMemoryText} from './roleMemoryView';
+import {diarySourceReader,type DiaryEvidence,type DiarySource,type DiarySourceKind} from './diaryEvidence';
 import {publicUserText} from './roleExperience';
 import type {
   ApiSettings,
@@ -383,14 +384,16 @@ export function buildCharacterDiaryPrompt(
   user: UserProfileData,
   dateKey: string,
   sharedTasksText = '',
-  through=Infinity,zone?:string
+  through=Infinity,zone?:string,legacy=false,now=Date.now()
 ): {
   messages: { role: string; content: string }[];
   facts: DailyDiaryFacts;
   personal: ReturnType<typeof preparePersonalReply>['ticket'];
+  evidence: DiaryEvidence;
 } {
   const facts = collectDailyDiaryFacts(role, dateKey, true, through, zone);
-  const memory=compactRoleMemory(role,facts.endMs);
+  const reader=diarySourceReader(role,facts.endMs,legacy?facts.endMs:Math.max(facts.endMs,now),user);
+  const memory=legacy?compactRoleMemory(role,facts.endMs):reader.memory;
   const projected=Object.fromEntries(projectedUserFields(user,role,facts.endMs,memory).map(f=>[f.key,f.conflicts.length?'':f.text]));
   const userName = String(role.userAlias || projected.name || '你').trim() || '你';
 
@@ -401,7 +404,7 @@ export function buildCharacterDiaryPrompt(
     projected.identity ? `身份与性格：${projected.identity}` : '',
     projected.background ? `背景：${projected.background}` : '',
     projected.notes ? `补充说明：${projected.notes}` : '',
-    role.notes&&!memoryRuleConflicts('用户补充：'+role.notes,projectRoleMemory(role,facts.endMs).denied).length ? `仅对你（${role.name}）生效的身份补充：${role.notes}` : '',
+    role.notes&&!memoryRuleConflicts('用户补充：'+role.notes,legacy?projectRoleMemory(role,facts.endMs).denied:memory.denied).length ? `仅对你（${role.name}）生效的身份补充：${role.notes}` : '',
   ]
     .filter(Boolean)
     .join('；');
@@ -417,72 +420,65 @@ export function buildCharacterDiaryPrompt(
       }”，你和创作者是“被创造者与作者”的奇妙张力关系，而非恋人关系。`
     : '';
 
-  // Assemble concrete factual blocks
-  const safeLine=(m:ChatMessage)=>formatMessageContentForModel(m,role.name,userName);
-  const chatTranscript = facts.chatMessages.filter(m=>m.speaker!=='note').slice(-12)
-    .map(
-      (m) =>
-        `[${formatHm(m.at)}] ${
-          m.speaker === 'me' ? userName : role.name
-        }：${safeLine(m).slice(0,300)}`
-    )
-    .join('\n');
-
-  const sceneTranscript = facts.sceneBlocks.slice(-2)
-    .map(
-      (b) =>
-        `地点：${b.where}\n` +
-        b.messages.filter(m=>m.speaker==='char'||m.speaker==='me'&&publicUserText(m)).slice(-8)
-          .map(
-            (m) =>
-              `[${formatHm(m.at)}] ${
-                m.speaker === 'me'
-                  ? userName
-                  : m.speaker === 'char'
-                  ? role.name
-                  : '场景旁白'
-              }：${safeLine(m).slice(0,300)}`
-          )
-          .join('\n')
-    )
-    .join('\n---\n');
-
-  const playTranscript = facts.playBlocks.slice(-2)
-    .map((p) => {
-      const playLines = p.messages
-        .slice(-8)
-        .map((m) => `${m.speaker === 'me' ? userName : role.name}：${m.text.slice(0,300)}`)
-        .join(' / ');
-      const interLines = p.intermissionMessages
-        .slice(-6)
-        .map((m) => `${m.speaker === 'me' ? userName : role.name}：${m.text.slice(0,300)}`)
-        .join(' / ');
-      return `剧目《${p.title}》（戏内设定：${p.world}；${role.name}饰「${p.charRole}」，${userName}饰「${p.userRole}」）\n戏内片段：${playLines || '无'}\n幕间讨论（戏外真实身份交流）：${interLines || '无'}\n（注：戏剧是你们一起排演的虚构故事，日记中若提及，应以“今天和TA排演了这出戏”的戏外真实视角回顾，切勿把戏内虚构情节当成现实发生的事）`;
-    })
-    .join('\n---\n');
-
-  const focusTranscript = facts.focusEvents.slice(-6)
-    .map((e) => `[${formatHm(e.at)}] ${e.title}：${e.detail.slice(0,400)}`)
-    .join('\n');
-
-  const sharedDiaryTranscript = facts.sharedUserDiaries.slice(-2)
-    .map(
-      (d) =>
-        `[${formatHm(d.sharedAt?.[role.id] ?? d.at)} ${userName}主动分享给你的日记] ${d.text.slice(0,400)}`
-    )
-    .join('\n');
-
+  const sources=new Map<string,DiarySource>();
+  const record=(ref:DiarySource|undefined)=>{if(ref)sources.set(ref.kind+':'+ref.id,ref);};
+  const add=(kind:DiarySourceKind,id:string)=>{const ref=reader.read(kind,id);record(ref);return Boolean(ref)||legacy;};
+  add('role',role.id);add('user',role.id);
+  type Fragment={text:string;refs:DiarySource[]};
+  const fragment=(text:string,kind?:DiarySourceKind,id?:string):Fragment=>{
+    const ref=kind&&id?reader.read(kind,id):undefined;
+    return {text:!kind||ref||legacy?text:'',refs:ref?[ref]:[]};
+  };
+  const join=(parts:Fragment[],separator:string):Fragment=>({text:parts.map(p=>p.text).join(separator),refs:parts.flatMap(p=>p.refs)});
+  const messageFragment=(m:ChatMessage,text:string,quote=false):Fragment=>{
+    const part=fragment(text,'message',m.id);
+    if(quote&&part.text&&m.quote){
+      const annotation=reader.read('quote',m.id),quoted=reader.read('message',m.quote.id);
+      if(annotation&&quoted)part.refs.push(annotation,quoted);
+    }
+    return part;
+  };
+  const safeLine=(m:ChatMessage)=>legacy||!m.quote||reader.read('quote',m.id)?formatMessageContentForModel(m,role.name,userName):m.text;
+  const datedLine=(m:ChatMessage)=>`[${formatHm(m.at)}] ${m.speaker==='me'?userName:m.speaker==='char'?role.name:'场景旁白'}：${safeLine(m).slice(0,300)}`;
+  const renderedChat=facts.chatMessages.filter(m=>m.speaker!=='note'&&(legacy||reader.read('message',m.id))).slice(-12);
+  const chatTranscript=renderedChat.map(m=>messageFragment(m,datedLine(m),true));
+  const sceneTranscript = facts.sceneBlocks.slice(-2).flatMap(b=>{
+    const heading=fragment(`地点：${b.where}\n`,'scene',b.id);
+    const lines=b.messages.filter(m=>m.speaker==='char'||m.speaker==='me'&&publicUserText(m)).slice(-8).map(m=>messageFragment(m,datedLine(m),true)).filter(p=>p.text);
+    return heading.text&&(legacy||lines.length)?[[heading,...lines.flatMap((line,i)=>i?[fragment('\n'),line]:[line])]]:[];
+  });
+  const playTranscript=facts.playBlocks.slice(-2).flatMap(p=>{
+    const heading=fragment(`剧目《${p.title}》（戏内设定：${p.world}；${role.name}饰「${p.charRole}」，${userName}饰「${p.userRole}」）\n戏内片段：`,'play',p.id);
+    if(!heading.text)return [];
+    const lines=(messages:ChatMessage[],n:number)=>messages.slice(-n).map(m=>messageFragment(m,`${m.speaker==='me'?userName:role.name}：${m.text.slice(0,300)}`)).filter(line=>line.text);
+    const performance=lines(p.messages,8),backstage=lines(p.intermissionMessages,6);
+    if(!legacy&&!performance.length&&!backstage.length)return [];
+    const separate=(parts:Fragment[])=>parts.length?parts.flatMap((part,i)=>i?[fragment(' / '),part]:[part]):[fragment('无')];
+    return [[heading,...separate(performance),fragment('\n幕间讨论（戏外真实身份交流）：'),...separate(backstage),fragment('\n（注：戏剧是你们一起排演的虚构故事，日记中若提及，应以“今天和TA排演了这出戏”的戏外真实视角回顾，切勿把戏内虚构情节当成现实发生的事）')]];
+  });
+  const focusTranscript=facts.focusEvents.slice(-6).map(e=>fragment(`[${formatHm(e.at)}] ${e.title}：${e.detail.slice(0,400)}`,'event',e.id)).filter(p=>p.text);
+  const sharedDiaryTranscript=facts.sharedUserDiaries.slice(-2).map(d=>fragment(`[${formatHm(d.sharedAt?.[role.id]??d.at)} ${userName}主动分享给你的日记] ${d.text.slice(0,400)}`,'shared-diary',d.id)).filter(p=>p.text);
   const historicalLife=collectRoleLife(role,facts.endMs).historicalProfileEventIds;
-  const routineSummary = facts.lifeRoutines
-    .slice(-4)
-    .map((e) => `[生活记录 ${e.id} · ${formatHm(e.at)}] ${historicalLife.has(e.id)?'（旧档案历史）':''}${e.title}（${memoryExcerpt(e.detail,'',80)}）`)
-    .join('；');
-
-  const otherKnownEvents = facts.knownEvents
-    .filter((e) => !['focus','chat','scene','drama','diary_share'].includes(e.kind))
-    .slice(-4)
-    .map((e) => `[${formatHm(e.at)} | ${e.kind}] ${e.title}：${memoryExcerpt(e.detail,'',80)}`)
-    .join('\n');
+  const routines=facts.lifeRoutines.slice(-4);
+  const routineSummary=join(routines.map(e=>fragment(`[生活记录 ${e.id} · ${formatHm(e.at)}] ${historicalLife.has(e.id)?'（旧档案历史）':''}${e.title}（${memoryExcerpt(e.detail,'',80)}）`,'event',e.id)).filter(p=>p.text),'；');
+  const otherKnownEvents=join(facts.knownEvents.filter(e=>!['focus','chat','scene','drama','diary_share'].includes(e.kind)).slice(-4)
+    .map(e=>fragment(`[${formatHm(e.at)} | ${e.kind}] ${e.title}：${memoryExcerpt(e.detail,'',80)}`,'event',e.id)).filter(p=>p.text),'\n');
+  for(const ref of [...routineSummary.refs,...otherKnownEvents.refs])record(ref);
+  const separated=(parts:Fragment[],separator:string,fallback:string)=>parts.length?parts.flatMap((part,i)=>i?[fragment(separator),part]:[part]):[fragment(fallback)];
+  const blocks=(items:Fragment[][],fallback:string)=>items.length?items.flatMap((parts,i)=>i?[fragment('\n---\n'),...parts]:parts):[fragment(fallback)];
+  const contact=[fragment(`=== 与他人的当日联系（有选择地参考，不逐条总结） ===\n手机聊天 ${legacy?facts.chatMessages.length:renderedChat.length} 条，下列为最近最多12条短摘录（说话者的主张不自动成为事实）：\n`),
+    ...separated(chatTranscript,'\n','（当日无手机聊天记录）'),fragment('\n面对面相处（保留现实来源，与小说推测区分）：\n'),
+    ...blocks(sceneTranscript,'（当日无面对面见面记录）'),fragment('\n共同专注：'),...separated(focusTranscript,'\n','无'),
+    fragment('\n虚构戏剧与戏外交流（不能作为现实人生）：\n'),...blocks(playTranscript,'无'),fragment('\n对方明确分享的日记：'),...separated(sharedDiaryTranscript,'\n','无；未分享的私人日记不知情'),fragment('\n')];
+  let contactText='';
+  for(const part of contact){
+    const remaining=8000-contactText.length;
+    if(!legacy&&part.text.length>remaining)break;
+    const text=part.text.slice(0,remaining);
+    if(!text)continue;
+    contactText+=text;
+    for(const ref of part.refs)record(ref);
+  }
 
   const systemPrompt = `你正在扮演 ${role.name}，现在是当地时间深夜，你正在写一篇属于你自己的【私人日记】，归档日期为 ${facts.dateLabel}（${facts.dateKey}）。
 
@@ -509,33 +505,40 @@ export function buildCharacterDiaryPrompt(
 5. 长度与笔触：由今天的内容和你的私人书写习惯决定。可以只记几句，也可以长写、分析或断续记事；不凑字数、不要求精致散文，也不用固定抒情结尾。
 6. 输出格式：直接输出日记正文（可在首行自然写上日期、时间或地点简记，如“${facts.shortLabel}，夜”），不要输出任何 Markdown 代码块标记、不要写“好的，这是日记”等前缀说明。`;
 
-  const providedEvents=new Set(facts.lifeRoutines.slice(-4).map(e=>e.id));
-  const stable=memory.facts.filter(f=>!(f.polarity==='affirm'&&(f.mutual&&relationshipContext(role,facts.endMs,memory)===f.value||f.attribute==='name'&&projected.name===f.value||(f.attribute==='self'||/^attribute:(?:身份|职业|工作)$/.test(f.attribute))&&projected.identity===f.value))).map(f=>memoryFactText(f,true)).join('\n');
-  const continuity=personalContext(role,facts.endMs,{excludeEvents:providedEvents})+'\n当前有效自述和关系记录：\n'+stable;
+  const providedEvents=new Set(routines.map(e=>e.id));
+  // The profile header also renders matching identity/relationship assertions that are deduplicated below.
+  const stable=memory.facts.filter(f=>add('fact',f.id)).filter(f=>!(f.polarity==='affirm'&&(f.mutual&&relationshipContext(role,facts.endMs,memory)===f.value||f.attribute==='name'&&projected.name===f.value||(f.attribute==='self'||/^attribute:(?:身份|职业|工作)$/.test(f.attribute))&&projected.identity===f.value))).map(f=>memoryFactText(f,true)).join('\n');
+  const continuity=personalContext(role,facts.endMs,{excludeEvents:providedEvents,onSource:add})+'\n当前有效自述和关系记录：\n'+stable;
   const userPrompt = `归档日：${facts.dateLabel}（${facts.dateKey}）。从自己的角度选择值得记录的事。
 
 === 角色自身的生活与未解决关注 ===
 ${continuity}
 已确认的当日其他事件：
-${otherKnownEvents||'无额外已确认事件'}
-已确认的当日生活记录：${routineSummary||'暂无可确认的活动记录'}
+${otherKnownEvents.text||'无额外已确认事件'}
+已确认的当日生活记录：${routineSummary.text||'暂无可确认的活动记录'}
 
-${(`=== 与他人的当日联系（有选择地参考，不逐条总结） ===
-手机聊天 ${facts.chatMessages.length} 条，下列为最近最多12条短摘录（说话者的主张不自动成为事实）：
-${chatTranscript||'（当日无手机聊天记录）'}
-面对面相处（保留现实来源，与小说推测区分）：
-${sceneTranscript||'（当日无面对面见面记录）'}
-共同专注：${focusTranscript||'无'}
-虚构戏剧与戏外交流（不能作为现实人生）：
-${playTranscript||'无'}
-对方明确分享的日记：${sharedDiaryTranscript||'无；未分享的私人日记不知情'}
-`).slice(0,8000)}
+${contactText}
 （联系材料仅为节选，未列出不代表发生过其他事情。）
 ${sharedTasksText?`公开待办背景：${sharedTasksText.slice(0,500)}`:''}
 
 直接写下 ${facts.dateKey} 的私人日记。`;
-  const prepared=preparePersonalReply(role,[{role:'system',content:systemPrompt+'\n\n'+roleMemoryText(role,Math.min(Date.now(),facts.endMs),'',{since:facts.startMs,includePrivate:false})},{role:'user',content:userPrompt}],facts.endMs,makeUid('private-diary'),'本次只输出私人日记正文；可选元数据同次提供，不生成公开手机消息。',facts.chatMessages.slice(-12),'diary',true);
-  return {messages:prepared.messages,facts,personal:prepared.ticket};
+  const memoryAt=Math.min(Date.now(),facts.endMs),memoryOptions={since:facts.startMs,includePrivate:false};
+  const view=readRoleMemory(role,memoryAt,'',memoryOptions);
+  if(!legacy){
+    view.relationship=relationshipContext(role,facts.endMs,memory);
+    view.episodes.facts=view.episodes.facts.filter(f=>{
+      const refs=f.sourceIds.map(id=>reader.read('message',id));
+      const stage=f.id.startsWith('meeting:')?reader.read('scene',f.id.slice('meeting:'.length)):undefined;
+      const play=/^(?:episode:play:|episode:backstage:)(.+)$/.exec(f.id);
+      const performance=play?reader.read('play',decodeURIComponent(play[1])):undefined;
+      if(refs.some(ref=>!ref)||f.id.startsWith('meeting:')&&!stage||play&&!performance)return false;
+      for(const ref of [...refs,stage,performance])record(ref);
+      return true;
+    });
+  }
+  const roleText=roleMemoryText(role,memoryAt,'',{...memoryOptions,includeCurrent:legacy},view);
+  const prepared=preparePersonalReply(role,[{role:'system',content:systemPrompt+'\n\n'+roleText},{role:'user',content:userPrompt}],facts.endMs,makeUid('private-diary'),'本次只输出私人日记正文；可选元数据同次提供，不生成公开手机消息。',legacy?facts.chatMessages.slice(-12):renderedChat,'diary',true);
+  return {messages:prepared.messages,facts,personal:prepared.ticket,evidence:{version:1,cutoff:facts.endMs,sources:[...sources.values()]}};
 }
 
 /**
@@ -727,7 +730,7 @@ export function applyGeneratedCharacterDiary(
   role: RoleData,
   dateKey: string,
   rawText: string,
-  nowTs = Date.now(),through=Infinity,zone?:string
+  nowTs = Date.now(),through=Infinity,zone?:string,evidence?:DiaryEvidence
 ): {
   ok: boolean;
   reason?: string;
@@ -756,11 +759,22 @@ export function applyGeneratedCharacterDiary(
 
   if(diary)return {ok:false,reason:'这一天已有归档日记，原文已保留'};
   const messageIndex=messageSourceIndex(role,facts.endMs,true);
+  const sourceMessageIds=evidence?evidence.sources.filter(s=>s.kind==='message').map(s=>s.id):facts.sourceMessageIds;
+  const sourceEventIds=evidence?evidence.sources.filter(s=>s.kind==='event').map(s=>s.id):facts.sourceEventIds;
+  const factSummary=evidence?{
+    chatCount:facts.chatMessages.filter(m=>sourceMessageIds.includes(m.id)).length,
+    sceneCount:facts.sceneBlocks.flatMap(b=>b.messages).filter(m=>sourceMessageIds.includes(m.id)).length,
+    dramaCount:facts.playBlocks.flatMap(b=>[...b.messages,...b.intermissionMessages]).filter(m=>sourceMessageIds.includes(m.id)).length,
+    focusCount:facts.focusEvents.filter(e=>sourceEventIds.includes(e.id)).length,
+    sharedDiaryCount:evidence.sources.filter(s=>s.kind==='shared-diary').length,
+    lifeRoutineCount:role.events.filter(e=>e.kind==='life'&&sourceEventIds.includes(e.id)).length,
+    hasUserInteraction:sourceMessageIds.length>0||evidence.sources.some(s=>s.kind==='shared-diary')||facts.focusEvents.some(e=>sourceEventIds.includes(e.id)),
+  }:facts.summary;
   diary = {
     id: makeUid('diary'),speaker:'char',dateKey,at:facts.endMs,generatedAt:nowTs,text,wordCount,source:'ai',
-    sourceIds:[...facts.sourceEventIds,...facts.sourceMessageIds],sourceMessageIds:facts.sourceMessageIds,sourceEventIds:facts.sourceEventIds,factSummary:facts.summary,
-    sourceMessageRevisions:Object.fromEntries(facts.sourceMessageIds.map(id=>[id,messageIndex.get(id)?.revisionCount||0])),
-    memoryState:memorySnapshot(role,facts.endMs),
+    sourceIds:[...sourceEventIds,...sourceMessageIds],sourceMessageIds,sourceEventIds,factSummary,
+    sourceMessageRevisions:Object.fromEntries(evidence?evidence.sources.filter(s=>s.kind==='message').map(s=>[s.id,s.revision||0]):sourceMessageIds.map(id=>[id,messageIndex.get(id)?.revisionCount||0])),
+    ...(evidence?{archiveEvidence:evidence}:{memoryState:memorySnapshot(role,facts.endMs)}),
   };
   role.diaries.push(diary);
 
@@ -781,9 +795,9 @@ export function applyGeneratedCharacterDiary(
   task.diaryId = diary.id;
   task.lastError = undefined;
   task.updatedAt = nowTs;
-  task.sourceMessageIds = facts.sourceMessageIds;
-  task.sourceEventIds = facts.sourceEventIds;
-  task.factSummary = facts.summary;
+  task.sourceMessageIds = sourceMessageIds;
+  task.sourceEventIds = sourceEventIds;
+  task.factSummary = factSummary;
 
   role.diaryDay = dateKey;
   return { ok: true, diary, task };

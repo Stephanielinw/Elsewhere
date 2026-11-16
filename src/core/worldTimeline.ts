@@ -86,7 +86,7 @@ export function prepareTimeline(data:AppData,r:RoleData,at:number,id:string,mode
  const profile:PersonalSource={kind:'profile',id:r.id,at,version:profileValue(r)};
  const ticket:TimelineTicket={id,roleId:r.id,zone,at,start,end,cutoff,gaps,profile,life,mode,...(historyStart<start?{historyStart}:{})};
  const extra=Math.min(1536,128+32*Math.ceil(gaps.reduce((n,[a,b])=>n+b-a,0)/60)+48*gaps.length+(mode==='diary'?0:192));
- const present=timelineState(r,at);
+ const present=mode==='diary'?undefined:timelineState(r,at);
  const rules=mode==='diary'?
   '可用独立一行 [[life:候选id]] 引用本次已结束活动。若同时附上 life 字段，其余段落只能写 [[reflection]] 我觉得/我希望… 的主观感受。禁止在自由正文复述候选，禁止引用未来或进行中活动。':
   '正文仍使用原有气泡分隔。thought 是整轮第一人称虚构内心独白。thoughts 可给气泡提供独立独白，每项用零基 index、原正文内唯一 anchor 和 text。玩家读心不改变角色或玩家角色的知情范围。不要输出分析或隐藏推理。';
@@ -235,13 +235,15 @@ export function advanceTimeline(r:RoleData,at:number,allowed:boolean,blocked:Spa
  return changed;
 }
 
-export function resolveDiaryLife(text:string,result:ReturnType<typeof applyTimeline>,at:number,structured=false):string|null {
+export function resolveDiaryLife(text:string,result:ReturnType<typeof applyTimeline>,at:number,structured=false,used?:EventRecord[]):string|null {
  const sections:string[]=[];
  for(const section of text.trim().split(/\n\s*\n/)){
   const match=/^\[\[life:([\w-]+)\]\]$/.exec(section.trim());
   if(match){
    const event=result.accepted.get(match[1]);
-   if(event?.lifeRecord?.timeline?.state==='ended'&&event.lifeRecord.until<=at)sections.push(event.detail);
+   if(event?.lifeRecord?.timeline?.state!=='ended'||event.lifeRecord.until>at)return null;
+   if(!used?.includes(event))used?.push(event);
+   sections.push(event.detail);
   }else{
    if(/\[\[life\s*:/.test(section))return null;
    if(structured){
@@ -277,12 +279,14 @@ export function replyThought(r:RoleData,m:ChatMessage):{text:string;scope:Though
  return {text:record.text,scope:record.scope};
 }
 
-export function latestReplyThought(r:RoleData,at:number) {
+export function latestReplyThoughtSource(r:RoleData,at:number) {
  for(const m of phoneMessagesAt(r,at).slice(-16).reverse()){
   const thought=replyThought(r,m);
-  if(thought&&m.privateThought!.group.every(ref=>r.chats.some(item=>item.id===ref.id&&item.at<=at)))return thought.text;
+  if(thought&&m.privateThought!.group.every(ref=>r.chats.some(item=>item.id===ref.id&&item.at<=at)))return {id:m.id,text:thought.text};
  }
 }
+
+export function latestReplyThought(r:RoleData,at:number) {return latestReplyThoughtSource(r,at)?.text;}
 
 export function splitTimelineReply(text:string) {
  const reply=splitPersonalReply(text);

@@ -1,3 +1,4 @@
+import type {DiaryEvidence} from './diaryEvidence';
 import type {ThoughtRecord,TimelineTicket} from './worldTimeline';
 import type {NovelDocument} from './novelDocument';
 import type {PersonalThread,PersonalTicket,PersonalSource} from './roleLife';
@@ -122,6 +123,7 @@ export interface DiaryGenerationTask {
 }
 
 export interface DiaryEntry {
+  archiveEvidence?: DiaryEvidence;
   memoryState?: {version:1;factIds:string[];ignoredMessageIds:string[]};
   sourceMessageRevisions?: Record<string,number>;
   continuitySources?: PersonalSource[];

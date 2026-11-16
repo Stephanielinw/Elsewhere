@@ -1,5 +1,6 @@
+import type {DiaryReceiptEvidence} from './diaryEvidence';
 import type {TimelineTicket} from './worldTimeline';
-export type DiaryResult = {text:string;sourceHash:string;requestId:string;payload?:string;timeline?:TimelineTicket};
+export type DiaryResult = {text:string;sourceHash:string;requestId:string;payload?:string;timeline?:TimelineTicket;evidence?:DiaryReceiptEvidence;personalHash?:string;contextStamp?:string};
 export type DiaryReceipt = {
  attempt:string;
  state:'claimed'|'sent'|'ready'|'archived'|'failed';

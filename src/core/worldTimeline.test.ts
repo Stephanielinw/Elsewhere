@@ -57,7 +57,9 @@ test('diary rejects unaccepted or future references without exposing them as fac
   {id:'future',from:1290,to:1320,action:'read'},
  ]},at);
  assert.equal(result.rejected,1);
- assert.equal(resolveDiaryLife('[[life:sleep]]\n\n[[life:unknown]]\n\n[[life:future]]',result,at),'我睡觉休息。');
+ assert.equal(resolveDiaryLife('[[life:sleep]]',result,at),'我睡觉休息。');
+ assert.equal(resolveDiaryLife('[[life:sleep]]\n\n[[life:unknown]]',result,at),null);
+ assert.equal(resolveDiaryLife('[[life:sleep]]\n\n[[life:future]]',result,at),null);
  assert.equal(resolveDiaryLife('我答应了一个重大承诺：[[life:unknown]]',result,at),null);
 });
 

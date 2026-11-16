@@ -2307,6 +2307,10 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
 .native-prompt-name { border: 0; padding: 0; background: transparent; color: var(--ink); text-align: left; cursor: pointer; }
 .native-preset-dialog .terminal-prompt-editor { font-size: 16px; resize: vertical; }
 
+.diary-result-dialog textarea{display:block;width:100%;height:min(50dvh,440px);margin:12px 0;overflow:auto;resize:none;font-size:16px;line-height:1.65;white-space:pre-wrap}
+.diary-result-dialog .diary-task-actions{display:flex;flex-wrap:wrap;gap:8px}
+.diary-result-dialog [hidden]{display:none}
+
 </style>
 <script id="theme-boot">
       // Restore only the theme before first paint; application data stays untouched.
@@ -3084,6 +3088,237 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
     return projection.facts.find((f) => f.layer === "relationship" && f.mutual)?.value || r.relationship;
   }
 
+  // src/core/diaryFingerprint.ts
+  var round = [
+    1116352408,
+    1899447441,
+    3049323471,
+    3921009573,
+    961987163,
+    1508970993,
+    2453635748,
+    2870763221,
+    3624381080,
+    310598401,
+    607225278,
+    1426881987,
+    1925078388,
+    2162078206,
+    2614888103,
+    3248222580,
+    3835390401,
+    4022224774,
+    264347078,
+    604807628,
+    770255983,
+    1249150122,
+    1555081692,
+    1996064986,
+    2554220882,
+    2821834349,
+    2952996808,
+    3210313671,
+    3336571891,
+    3584528711,
+    113926993,
+    338241895,
+    666307205,
+    773529912,
+    1294757372,
+    1396182291,
+    1695183700,
+    1986661051,
+    2177026350,
+    2456956037,
+    2730485921,
+    2820302411,
+    3259730800,
+    3345764771,
+    3516065817,
+    3600352804,
+    4094571909,
+    275423344,
+    430227734,
+    506948616,
+    659060556,
+    883997877,
+    958139571,
+    1322822218,
+    1537002063,
+    1747873779,
+    1955562222,
+    2024104815,
+    2227730452,
+    2361852424,
+    2428436474,
+    2756734187,
+    3204031479,
+    3329325298
+  ];
+  var rotate = (word, bits) => word >>> bits | word << 32 - bits;
+  function diaryFingerprint(value) {
+    const bytes = new TextEncoder().encode(JSON.stringify(value));
+    const padded = new Uint8Array(Math.ceil((bytes.length + 9) / 64) * 64);
+    padded.set(bytes);
+    padded[bytes.length] = 128;
+    const view = new DataView(padded.buffer);
+    view.setBigUint64(padded.length - 8, BigInt(bytes.length) * 8n);
+    const state2 = new Uint32Array([1779033703, 3144134277, 1013904242, 2773480762, 1359893119, 2600822924, 528734635, 1541459225]);
+    const words = new Uint32Array(64);
+    for (let block = 0; block < padded.length; block += 64) {
+      for (let i = 0; i < 16; i++) words[i] = view.getUint32(block + i * 4);
+      for (let i = 16; i < 64; i++) {
+        const x = words[i - 15], y = words[i - 2];
+        words[i] = words[i - 16] + (rotate(x, 7) ^ rotate(x, 18) ^ x >>> 3) + words[i - 7] + (rotate(y, 17) ^ rotate(y, 19) ^ y >>> 10);
+      }
+      let [a, b, c, d, e, f, g, h] = state2;
+      for (let i = 0; i < 64; i++) {
+        const first = h + (rotate(e, 6) ^ rotate(e, 11) ^ rotate(e, 25)) + (e & f ^ ~e & g) + round[i] + words[i];
+        const second = (rotate(a, 2) ^ rotate(a, 13) ^ rotate(a, 22)) + (a & b ^ a & c ^ b & c);
+        h = g;
+        g = f;
+        f = e;
+        e = d + first | 0;
+        d = c;
+        c = b;
+        b = a;
+        a = first + second | 0;
+      }
+      for (const [i, word] of [a, b, c, d, e, f, g, h].entries()) state2[i] += word;
+    }
+    return Array.from(state2, (word) => word.toString(16).padStart(8, "0")).join("");
+  }
+
+  // src/core/diaryEvidence.ts
+  var unique = (items, id2) => {
+    const matches = items.filter((item2) => item2?.id === id2);
+    return matches.length === 1 ? matches[0] : void 0;
+  };
+  var visible = (r, m) => !r.events.some((e) => (e.messageId === m.id || !!m.sourceMessageId && e.messageId === m.sourceMessageId) && e.status !== "retracted" && e.status !== "superseded" && (e.sourceRevision === void 0 || e.sourceRevision === (m.revisionCount || 0)) && e.knownBy?.length && !e.knownBy.includes(r.id));
+  function diaryUserFields(r, user, at, memory = compactRoleMemory(r, at)) {
+    const fields2 = Object.fromEntries(projectedUserFields(user, r, at, memory).map((f) => [f.key, f.conflicts.length ? "" : f.text]));
+    return { name: fields2.name || "", pronouns: user.pronouns || "", identity: fields2.identity || "", background: fields2.background || "", notes: fields2.notes || "" };
+  }
+  function diarySourceReader(r, cutoff, now = cutoff, user, seen = /* @__PURE__ */ new Set()) {
+    const messages = messageSourceIndex(r, cutoff, true);
+    const locations = /* @__PURE__ */ new Map();
+    for (const m of r.chats) if (m) locations.set(m.id, "phone");
+    for (const s of roleScenes(r)) for (const m of s.messages || []) if (m) locations.set(m.id, "scene:" + s.id);
+    for (const p of rolePlays(r)) {
+      for (const m of p.messages || []) if (m) locations.set(m.id, "play:" + p.id);
+      for (const m of p.intermissionMessages || []) if (m) locations.set(m.id, "intermission:" + p.id);
+    }
+    const memory = compactRoleMemory(r, cutoff);
+    const current = now === cutoff ? memory : compactRoleMemory(r, now);
+    const denied = current.denied;
+    const facts = new Map(projectRoleMemory(r, cutoff, Infinity).facts.map((f) => [f.id, f]));
+    const validFacts = new Set(current.trace.filter((f) => ["selected", "same-current-fact"].includes(f.reason)).map((f) => f.id));
+    const accessibleMessage = (id2) => {
+      const message = messages.get(id2);
+      return message && message.speaker !== "note" && visible(r, message) ? message : void 0;
+    };
+    const validMessage = (id2) => {
+      const message = accessibleMessage(id2);
+      if (!message || current.supersededSources.has(id2) || message.sourceMessageId && current.supersededSources.has(message.sourceMessageId)) return;
+      return message;
+    };
+    const validFact = (fact) => validFacts.has(fact.id) && accessibleMessage(fact.source.id) && (!fact.contextSource || accessibleMessage(fact.contextSource.id));
+    const projected = { ...memory, denied, facts: memory.facts.filter(validFact) };
+    const read2 = (kind, id2) => {
+      let value;
+      let revision;
+      let profileDenials;
+      switch (kind) {
+        case "message": {
+          const m = validMessage(id2);
+          if (!m || m.sourceMessageId && !validMessage(m.sourceMessageId)) return;
+          revision = m.revisionCount || 0;
+          value = [m.speaker, m.text, m.at, m.editedAt, revision, m.kind, m.sourceMessageId, locations.get(id2)];
+          break;
+        }
+        case "quote": {
+          const quote = validMessage(id2)?.quote;
+          if (!quote || !validMessage(quote.id)) return;
+          value = quote;
+          break;
+        }
+        case "thought": {
+          const m = validMessage(id2), thought = m && replyThought(r, m);
+          if (!m || !thought || !m.privateThought?.group.every((ref2) => validMessage(ref2.id))) return;
+          value = [thought, m.privateThought.group];
+          break;
+        }
+        case "scene": {
+          const scene = unique([...r.meetings || [], ...r.scene ? [r.scene] : []], id2);
+          if (!scene || scene.startedAt > cutoff) return;
+          value = [scene.startedAt, scenePlaceAt(r, scene, cutoff)];
+          break;
+        }
+        case "play": {
+          const play = unique([...r.plays || [], ...r.play ? [r.play] : []], id2);
+          if (!play || play.startedAt > cutoff) return;
+          value = [play.startedAt, play.title, play.world, play.user, play.char];
+          break;
+        }
+        case "event": {
+          const e = unique(r.events, id2);
+          if (!e || !eventSourceValid(r, e, cutoff, messages, current.supersededSources) || e.messageId && !validMessage(e.messageId)) return;
+          if (e.kind === "life") {
+            if (!confirmedPersonalLife(r, e, cutoff, memory) || e.lifeRecord?.timeline && (!["ended", "interrupted"].includes(e.lifeRecord.timeline.state) || e.lifeRecord.until > cutoff)) return;
+          }
+          value = [e.at, e.kind, e.title, e.detail, e.where, e.messageId, e.sourceRevision, e.lifeRecord || null];
+          break;
+        }
+        case "shared-diary": {
+          const d = unique(r.diaries, id2), sharedAt = d?.sharedAt?.[r.id] ?? d?.at;
+          if (!d || d.speaker !== "me" || !d.sharedWith?.includes(r.id) || !Number.isFinite(sharedAt) || d.at > cutoff || sharedAt > cutoff) return;
+          value = [d.at, sharedAt, d.text];
+          break;
+        }
+        case "diary":
+        case "thread": {
+          const source = personalSourceValid(r, kind, id2, cutoff, now, seen);
+          if (!source) return;
+          value = [source.at, source.version];
+          break;
+        }
+        case "fact": {
+          const fact = facts.get(id2);
+          if (!fact || !validFact(fact)) return;
+          value = [fact.attribute, fact.value, fact.polarity, fact.mutual, fact.source, fact.contextSource];
+          break;
+        }
+        case "role": {
+          if (id2 !== r.id) return;
+          const notes = r.notes && !memoryRuleConflicts("\u7528\u6237\u8865\u5145\uFF1A" + r.notes, denied).length ? r.notes : "";
+          value = [r.name, r.job, r.place, r.traits, r.profile, r.canonNotes, relationshipContext(r, cutoff, projected), r.userAlias, notes, Boolean(r.demoSample)];
+          break;
+        }
+        case "user": {
+          if (id2 !== r.id || !user) return;
+          const fields2 = diaryUserFields(r, user, cutoff, projected);
+          if (fields2.identity || fields2.background || fields2.notes) profileDenials = denied.map((f) => f.id).sort();
+          value = [fields2.name, fields2.pronouns, fields2.identity, fields2.background, fields2.notes];
+          break;
+        }
+        default:
+          return;
+      }
+      return { kind, id: id2, version: diaryFingerprint(value), ...revision === void 0 ? {} : { revision }, ...profileDenials ? { profileDenials } : {} };
+    };
+    return { read: read2, memory: projected };
+  }
+  function diaryEvidenceValid(r, evidence2, now, user, seen = /* @__PURE__ */ new Set()) {
+    if (!evidence2 || evidence2.version !== 1 || !Number.isFinite(evidence2.cutoff) || evidence2.cutoff > now || !Array.isArray(evidence2.sources) || !evidence2.sources.some((ref2) => ref2?.kind === "role" && ref2.id === r.id)) return false;
+    const reader = diarySourceReader(r, evidence2.cutoff, now, user, seen);
+    return evidence2.sources.every((ref2) => {
+      if (!ref2 || typeof ref2.id !== "string" || !ref2.id || typeof ref2.version !== "string") return false;
+      if (ref2.kind === "user" && !user) return ref2.id === r.id && /^[a-f0-9]{64}$/.test(ref2.version) && (ref2.profileDenials === void 0 || Array.isArray(ref2.profileDenials) && reader.memory.denied.every((f) => ref2.profileDenials.includes(f.id)));
+      const current = reader.read(ref2.kind, ref2.id);
+      return current?.version === ref2.version && current.revision === ref2.revision;
+    });
+  }
+
   // src/core/roleLife.ts
   var version = (value) => JSON.stringify(value);
   var threadVersion = (t) => version([t.id, t.key, t.roleId, t.kind, t.text, t.at, t.status, t.shareable, t.requestId]);
@@ -3144,6 +3379,7 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
     if (s.kind === "diary") {
       if (seen.has("diary:" + s.id)) return false;
       const d = r.diaries.find((d2) => d2.id === s.id && d2.speaker === "char" && d2.source === "ai" && d2.at <= at);
+      if (d?.archiveEvidence) return Boolean(d.generatedAt && d.generatedAt <= at && diaryRef(d).version === s.version && diaryEvidenceValid(r, d.archiveEvidence, at, void 0, /* @__PURE__ */ new Set([...seen, "diary:" + s.id])));
       const current = memory;
       if (d && ((d.memoryState?.factIds || []).some((id2) => !current.facts.some((f) => f.id === id2) && !current.trace.some((t2) => t2.id === id2 && t2.reason === "same-current-fact")) || (d.sourceMessageIds || []).some((id2) => current.supersededSources.has(id2) && !d.memoryState?.ignoredMessageIds.includes(id2)))) return false;
       const cutoff = Math.min(at, d?.at ?? at), sources = messageSourceIndex(r, cutoff, true);
@@ -3156,12 +3392,22 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
     if (!t || seen.has(t.id) || t.roleId !== r.id || t.at > at || s.version !== threadVersion(t)) return false;
     return t.sources.length > 0 && t.sources.every((ref2) => referenceValid(r, ref2, at, /* @__PURE__ */ new Set([...seen, t.id]), memory, historical));
   }
+  function personalSourceValid(r, kind, id2, cutoff, at, seen = /* @__PURE__ */ new Set()) {
+    const matches = (kind === "diary" ? r.diaries : r.personalThreads || []).filter((item3) => item3?.id === id2);
+    if (matches.length !== 1 || matches[0].at > cutoff || seen.has(kind === "diary" ? "diary:" + id2 : id2)) return;
+    const item2 = matches[0];
+    const source = kind === "diary" ? diaryRef(item2) : { kind, id: id2, at: item2.at, version: threadVersion(item2) };
+    return referenceValid(r, source, at, seen) ? source : void 0;
+  }
+  function confirmedPersonalLife(r, e, at, memory = compactRoleMemory(r, at), historical = /* @__PURE__ */ new Set()) {
+    return e.kind === "life" && e.lifeEvidence === "confirmed" && Boolean(e.source) && Boolean(e.knownBy?.includes(r.id)) && e.at <= at && referenceValid(r, eventRef(e), at, /* @__PURE__ */ new Set(), memory, historical);
+  }
   function lifeSourcesValid(r, sources, at) {
     return Array.isArray(sources) && sources.length > 0 && sources.every((s) => referenceValid(r, s, at));
   }
   function collectRoleLife(r, at = Date.now()) {
     const memory = compactRoleMemory(r, at), historical = /* @__PURE__ */ new Set();
-    const events = getActiveEvents(r.events).filter((e) => e.kind === "life" && e.lifeEvidence === "confirmed" && Boolean(e.source) && e.knownBy?.includes(r.id) && e.at <= at && referenceValid(r, eventRef(e), at, /* @__PURE__ */ new Set(), memory, historical)).sort((a, b) => a.at - b.at);
+    const events = getActiveEvents(r.events).filter((e) => confirmedPersonalLife(r, e, at, memory, historical)).sort((a, b) => a.at - b.at);
     const latest = /* @__PURE__ */ new Map();
     for (const t of r.personalThreads || []) {
       if (t.origin !== "model-private" || t.roleId !== r.id || t.at > at || !t.sources?.length || !t.sources.every((s) => referenceValid(r, s, at, /* @__PURE__ */ new Set(), memory))) continue;
@@ -3177,27 +3423,29 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
   }
   function personalContext(r, at, compact) {
     const { events, threads, historicalProfileEventIds } = collectRoleLife(r, at);
-    const privateThought = latestReplyThought(r, at);
+    const thought = latestReplyThoughtSource(r, at);
+    const privateThought = thought && compact?.onSource?.("thought", thought.id) !== false ? thought.text : void 0;
     const thoughtNote = privateThought ? "\n\u6700\u8FD1\u7684\u89D2\u8272\u79C1\u4E0B\u5FC3\u58F0\uFF08\u4E3B\u89C2\u6750\u6599\uFF1B\u5BF9\u65B9\u4E0D\u77E5\u9053\uFF0C\u4E0D\u662F\u5DF2\u516C\u5F00\u5BF9\u767D\uFF09\uFF1A" + privateThought : "";
     const historyNote = historicalProfileEventIds.size ? "\n\u65E7\u6863\u6848\u5386\u53F2\u4EC5\u8BF4\u660E\u5F52\u6863\u65F6\u8BED\u5883\uFF0C\u5F53\u524D\u8EAB\u4EFD\u3001\u5730\u70B9\u548C\u5173\u7CFB\u4EE5\u5F53\u524D\u6863\u6848\u4E3A\u51C6\u3002" : "";
     if (compact) {
       const query = compact.query || "", rank = (items2, text3) => [...items2].sort((a, b) => memoryRelevance(text3(b), query) - memoryRelevance(text3(a), query) || b.at - a.at);
       const items = [
-        ...rank(threads, (t) => t.text).slice(0, 2).map((t) => ({ text: memoryExcerpt(t.text, query, 65), prefix: `[${t.id} \xB7 key=${t.key} \xB7 ${t.kind}] ` })),
-        ...rank(events.filter((e) => !compact.excludeEvents?.has(e.id)), (e) => e.detail).slice(0, 2).map((e) => ({ text: memoryExcerpt(e.detail, query, 70), prefix: `[\u751F\u6D3B\u8BB0\u5F55 ${e.id} \xB7 ${new Date(e.at).toISOString().slice(0, 10)}] ${historicalProfileEventIds.has(e.id) ? "\uFF08\u65E7\u6863\u6848\u5386\u53F2\uFF09" : ""}${e.title}\uFF1A` })),
-        ...personalDiaries(r, at).slice(0, 1).map((d) => ({ text: memoryExcerpt(d.text, query, 55), prefix: `[${d.id} \xB7 ${new Date(d.at).toISOString().slice(0, 10)}] \u79C1\u4EBA\u65E5\u8BB0\u77ED\u6458\uFF1A` }))
+        ...rank(threads, (t) => t.text).slice(0, 2).map((t) => ({ kind: "thread", id: t.id, text: memoryExcerpt(t.text, query, 65), prefix: `[${t.id} \xB7 key=${t.key} \xB7 ${t.kind}] ` })),
+        ...rank(events.filter((e) => !compact.excludeEvents?.has(e.id)), (e) => e.detail).slice(0, 2).map((e) => ({ kind: "event", id: e.id, text: memoryExcerpt(e.detail, query, 70), prefix: `[\u751F\u6D3B\u8BB0\u5F55 ${e.id} \xB7 ${new Date(e.at).toISOString().slice(0, 10)}] ${historicalProfileEventIds.has(e.id) ? "\uFF08\u65E7\u6863\u6848\u5386\u53F2\uFF09" : ""}${e.title}\uFF1A` })),
+        ...personalDiaries(r, at).slice(0, 1).map((d) => ({ kind: "diary", id: d.id, text: memoryExcerpt(d.text, query, 55), prefix: `[${d.id} \xB7 ${new Date(d.at).toISOString().slice(0, 10)}] \u79C1\u4EBA\u65E5\u8BB0\u77ED\u6458\uFF1A` }))
       ];
       const firstLife = items.findIndex((t) => t.prefix.startsWith("[\u751F\u6D3B\u8BB0\u5F55 "));
       if (firstLife > 1) items.splice(1, 0, items.splice(firstLife, 1)[0]);
-      return "\u89D2\u8272\u81EA\u8EAB\u751F\u6D3B\u6750\u6599\uFF08\u4E0D\u662F\u5FC5\u987B\u516C\u5F00\u7684\u8BDD\u9898\uFF09\uFF1A\n\u79C1\u4EBA\u5173\u6CE8/\u65E5\u8BB0\u662F\u4E3B\u89C2\u6587\u5B57\uFF0C\u8BA1\u5212\u4E0D\u662F\u5DF2\u53D1\u751F\u7684\u5916\u90E8\u4E8B\u5B9E\u3002" + historyNote + thoughtNote + "\n" + selectMemoryItems(items, (t) => t.text, 210, 4).map((t) => t.prefix + t.text).join("\n");
+      const selected = selectMemoryItems(items, (t) => t.text, 210, 4).filter((item2) => compact.onSource?.(item2.kind, item2.id) !== false);
+      return "\u89D2\u8272\u81EA\u8EAB\u751F\u6D3B\u6750\u6599\uFF08\u4E0D\u662F\u5FC5\u987B\u516C\u5F00\u7684\u8BDD\u9898\uFF09\uFF1A\n\u79C1\u4EBA\u5173\u6CE8/\u65E5\u8BB0\u662F\u4E3B\u89C2\u6587\u5B57\uFF0C\u8BA1\u5212\u4E0D\u662F\u5DF2\u53D1\u751F\u7684\u5916\u90E8\u4E8B\u5B9E\u3002" + historyNote + thoughtNote + "\n" + selected.map((t) => t.prefix + t.text).join("\n");
     }
     return `\u89D2\u8272\u81EA\u8EAB\u751F\u6D3B\u6750\u6599\uFF08\u4E0D\u662F\u5FC5\u987B\u516C\u5F00\u7684\u8BDD\u9898\uFF09\uFF1A${historyNote}
 ` + events.slice(-6).map((e) => `[\u751F\u6D3B\u8BB0\u5F55 ${e.id} \xB7 ${new Date(e.at).toISOString()}] ${historicalProfileEventIds.has(e.id) ? "\uFF08\u65E7\u6863\u6848\u5386\u53F2\uFF09" : ""}${e.title}\uFF1A${e.detail.slice(0, 400)}`).join("\n") + "\n\u79C1\u4EBA\u6301\u7EED\u5173\u6CE8\uFF08\u6A21\u578B\u6B64\u524D\u5199\u4E0B\u7684\u60F3\u6CD5/\u6253\u7B97\uFF0C\u4E0D\u662F\u5DF2\u786E\u8BA4\u7684\u5916\u90E8\u4E8B\u4EF6\uFF1B\u4E0D\u5FC5\u544A\u8BC9\u5BF9\u65B9\uFF09\uFF1A\n" + (threads.map((t) => `[${t.id} \xB7 key=${t.key} \xB7 ${new Date(t.at).toISOString()} \xB7 ${t.kind}] ${t.text}`).join("\n") || "\u6682\u65E0\u5DF2\u8BB0\u5F55\u5173\u6CE8\u70B9") + "\n\u6B64\u524D\u79C1\u4EBA\u65E5\u8BB0\u77ED\u6458\uFF08\u672C\u4EBA\u7684\u4E3B\u89C2\u6587\u5B57\uFF0C\u4E0D\u81EA\u52A8\u4F5C\u4E3A\u5916\u90E8\u4E8B\u5B9E\uFF09\uFF1A\n" + personalDiaries(r, at).map((d) => `[${d.id} \xB7 ${new Date(d.at).toISOString()}] ${d.text.slice(0, 300)}`).join("\n");
   }
   function preparePersonalReply(r, messages, at, id2, extraTask = "", sourceMessages = getActiveMessages(r.chats).slice(-12), mode = "chat", visibleSourcesOnly = false) {
-    const life = collectRoleLife(r, at), memory = compactRoleMemory(r, at), visible = (marker) => !visibleSourcesOnly || messages.some((m) => m.content.includes(marker));
+    const life = collectRoleLife(r, at), memory = compactRoleMemory(r, at), visible2 = (marker) => !visibleSourcesOnly || messages.some((m) => m.content.includes(marker));
     const requested = new Set(sourceMessages.map((m) => m.id));
-    const sources = [{ kind: "profile", id: r.id, at, version: profile(r) }, ...phoneMessagesAt(r, at).filter((m) => requested.has(m.id) && m.speaker !== "note" && !memory.supersededSources.has(m.id)).map(messageRef), ...life.events.slice(-6).filter((e) => visible("[\u751F\u6D3B\u8BB0\u5F55 " + e.id + " \xB7")).map(eventRef), ...personalDiaries(r, at).filter((d) => visible("[" + d.id + " \xB7")).map(diaryRef), ...life.threads.filter((t) => visible("[" + t.id + " \xB7")).map((t) => ({ kind: "thread", id: t.id, at: t.at, version: threadVersion(t) }))];
+    const sources = [{ kind: "profile", id: r.id, at, version: profile(r) }, ...phoneMessagesAt(r, at).filter((m) => requested.has(m.id) && m.speaker !== "note" && !memory.supersededSources.has(m.id)).map(messageRef), ...life.events.slice(-6).filter((e) => visible2("[\u751F\u6D3B\u8BB0\u5F55 " + e.id + " \xB7")).map(eventRef), ...personalDiaries(r, at).filter((d) => visible2("[" + d.id + " \xB7")).map(diaryRef), ...life.threads.filter((t) => visible2("[" + t.id + " \xB7")).map((t) => ({ kind: "thread", id: t.id, at: t.at, version: threadVersion(t) }))];
     const ticket = { id: id2, roleId: r.id, at, sceneId: r.scene?.id || null, playId: r.play?.id || null, sources, threadVersion: ledgerVersion(r), memoryVersion: memoryVersion(r, at), mode };
     const control = `[Elsewhere Private Continuity v1]
 \u4FDD\u6301\u539F\u6709${mode === "diary" ? "\u65E5\u8BB0\u6B63\u6587" : "\u624B\u673A\u6B63\u6587\u4E0E\u5168\u90E8\u573A\u666F\u4E8B\u4EF6\u534F\u8BAE"}\u3002${extraTask}
@@ -3347,7 +3595,7 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
     const profile2 = { kind: "profile", id: r.id, at, version: profileValue(r) };
     const ticket = { id: id2, roleId: r.id, zone, at, start, end, cutoff, gaps, profile: profile2, life, mode, ...historyStart < start ? { historyStart } : {} };
     const extra = Math.min(1536, 128 + 32 * Math.ceil(gaps.reduce((n, [a, b]) => n + b - a, 0) / 60) + 48 * gaps.length + (mode === "diary" ? 0 : 192));
-    const present = timelineState(r, at);
+    const present = mode === "diary" ? void 0 : timelineState(r, at);
     const rules = mode === "diary" ? "\u53EF\u7528\u72EC\u7ACB\u4E00\u884C [[life:\u5019\u9009id]] \u5F15\u7528\u672C\u6B21\u5DF2\u7ED3\u675F\u6D3B\u52A8\u3002\u82E5\u540C\u65F6\u9644\u4E0A life \u5B57\u6BB5\uFF0C\u5176\u4F59\u6BB5\u843D\u53EA\u80FD\u5199 [[reflection]] \u6211\u89C9\u5F97/\u6211\u5E0C\u671B\u2026 \u7684\u4E3B\u89C2\u611F\u53D7\u3002\u7981\u6B62\u5728\u81EA\u7531\u6B63\u6587\u590D\u8FF0\u5019\u9009\uFF0C\u7981\u6B62\u5F15\u7528\u672A\u6765\u6216\u8FDB\u884C\u4E2D\u6D3B\u52A8\u3002" : "\u6B63\u6587\u4ECD\u4F7F\u7528\u539F\u6709\u6C14\u6CE1\u5206\u9694\u3002thought \u662F\u6574\u8F6E\u7B2C\u4E00\u4EBA\u79F0\u865A\u6784\u5185\u5FC3\u72EC\u767D\u3002thoughts \u53EF\u7ED9\u6C14\u6CE1\u63D0\u4F9B\u72EC\u7ACB\u72EC\u767D\uFF0C\u6BCF\u9879\u7528\u96F6\u57FA index\u3001\u539F\u6B63\u6587\u5185\u552F\u4E00 anchor \u548C text\u3002\u73A9\u5BB6\u8BFB\u5FC3\u4E0D\u6539\u53D8\u89D2\u8272\u6216\u73A9\u5BB6\u89D2\u8272\u7684\u77E5\u60C5\u8303\u56F4\u3002\u4E0D\u8981\u8F93\u51FA\u5206\u6790\u6216\u9690\u85CF\u63A8\u7406\u3002";
     const fields2 = JSON.stringify({ requestId: id2, roleId: r.id, ...life ? { life: [{ id: "a", from: 0, to: 60, action: "sleep", where: "\u53EF\u9009\u5730\u70B9" }] } : {}, ...mode !== "diary" ? { thought: "\u6211\u5F53\u65F6\u7684\u60F3\u6CD5", thoughts: [{ index: 0, anchor: "\u6B63\u6587\u539F\u53E5", text: "\u6211\u5F53\u65F6\u7684\u60F3\u6CD5" }] } : {} });
     const facts = mode === "thought" ? "" : JSON.stringify({ worldTimeZone: zone, dayStart: start, cutoff, end, missingElapsedMinutes: gaps, knownRegion: r.place, current: present?.label, location: present?.where });
@@ -3505,13 +3753,15 @@ ${facts}
     }
     return changed;
   }
-  function resolveDiaryLife(text3, result, at, structured = false) {
+  function resolveDiaryLife(text3, result, at, structured = false, used) {
     const sections = [];
     for (const section of text3.trim().split(/\n\s*\n/)) {
       const match = /^\[\[life:([\w-]+)\]\]$/.exec(section.trim());
       if (match) {
         const event = result.accepted.get(match[1]);
-        if (event?.lifeRecord?.timeline?.state === "ended" && event.lifeRecord.until <= at) sections.push(event.detail);
+        if (event?.lifeRecord?.timeline?.state !== "ended" || event.lifeRecord.until > at) return null;
+        if (!used?.includes(event)) used?.push(event);
+        sections.push(event.detail);
       } else {
         if (/\[\[life\s*:/.test(section)) return null;
         if (structured) {
@@ -3541,10 +3791,10 @@ ${facts}
     if (!record.group.every((ref2) => ref2 && effective.some((item2) => item2.id === ref2.id && item2.speaker === "char" && item2.replyTurnId === m.replyTurnId && version2(item2) === ref2.version))) return;
     return { text: record.text, scope: record.scope };
   }
-  function latestReplyThought(r, at) {
+  function latestReplyThoughtSource(r, at) {
     for (const m of phoneMessagesAt(r, at).slice(-16).reverse()) {
       const thought = replyThought(r, m);
-      if (thought && m.privateThought.group.every((ref2) => r.chats.some((item2) => item2.id === ref2.id && item2.at <= at))) return thought.text;
+      if (thought && m.privateThought.group.every((ref2) => r.chats.some((item2) => item2.id === ref2.id && item2.at <= at))) return { id: m.id, text: thought.text };
     }
   }
   function splitTimelineReply(text3) {
@@ -3601,14 +3851,14 @@ ${facts}
       ...roleScenes(r).flatMap((s) => sceneMessagesAt(r, s.messages, at)),
       ...includePlays ? rolePlays(r).flatMap((p) => [...stageMessagesAt(p.messages, at), ...stageMessagesAt(p.intermissionMessages, at)]) : []
     ];
-    const unique = /* @__PURE__ */ new Map(), ambiguous = /* @__PURE__ */ new Set();
+    const unique2 = /* @__PURE__ */ new Map(), ambiguous = /* @__PURE__ */ new Set();
     for (const m of messages) {
-      if (unique.has(m.id)) {
-        unique.delete(m.id);
+      if (unique2.has(m.id)) {
+        unique2.delete(m.id);
         ambiguous.add(m.id);
-      } else if (!ambiguous.has(m.id)) unique.set(m.id, m);
+      } else if (!ambiguous.has(m.id)) unique2.set(m.id, m);
     }
-    return unique;
+    return unique2;
   }
   function scenePlaceAt(r, scene, at) {
     const unknown = "\u5730\u70B9\u672A\u786E\u8BA4";
@@ -5123,9 +5373,9 @@ ${msg.text}`;
   function roleMemoryText(r, at, query = "", options = {}, view = readRoleMemory(r, at, query, options)) {
     return `[\u89D2\u8272\u7EA7\u56DB\u5C42\u8BB0\u5FC6 \xB7 ${r.id}]
 \u5F53\u524D\u8EAB\u4EFD\uFF1A${r.name}\uFF1B${r.job}\u3002\u5F53\u524D\u5173\u7CFB\uFF1A${view.relationship}\u3002
-\u5F53\u524D\u72B6\u6001\uFF1A${view.state.kind === "recent" ? "\u5F53\u524D\u6D3B\u52A8\u548C\u5730\u70B9\u672A\u786E\u8BA4\u3002" + view.state.label + "\uFF1B" + view.state.where : view.state.label + "\uFF1B" + view.state.where + (view.state.kind === "life" ? "\uFF1B\u5F00\u59CB " + new Date(view.state.at).toISOString() : "")}\u3002
+${options.includeCurrent === false ? "" : `\u5F53\u524D\u72B6\u6001\uFF1A${view.state.kind === "recent" ? "\u5F53\u524D\u6D3B\u52A8\u548C\u5730\u70B9\u672A\u786E\u8BA4\u3002" + view.state.label + "\uFF1B" + view.state.where : view.state.label + "\uFF1B" + view.state.where + (view.state.kind === "life" ? "\uFF1B\u5F00\u59CB " + new Date(view.state.at).toISOString() : "")}\u3002
 \u672A\u5B8C\u4E8B\u9879\uFF08\u8BA1\u5212\u4E0D\u662F\u5DF2\u53D1\u751F\u4E8B\u5B9E\uFF09\uFF1A${view.pending.map((p) => p.text).join("\uFF1B") || "\u6CA1\u6709\u53EF\u9A8C\u8BC1\u7684\u660E\u786E\u8BA1\u5212"}\u3002
-\u73B0\u5B9E\u7ECF\u5386\u4E0E\u8868\u6F14\u7ECF\u5386\u4FDD\u6301\u5404\u81EA\u8BED\u5883\uFF1B\u7ED3\u675F\u89C1\u9762\u4E0D\u63A8\u65AD\u8C01\u79BB\u5F00\uFF0C\u89D2\u8272\u4E3B\u5F20\u4E0D\u662F\u5916\u90E8\u4E8B\u5B9E\u8BC1\u5B9E\u3002
+`}\u73B0\u5B9E\u7ECF\u5386\u4E0E\u8868\u6F14\u7ECF\u5386\u4FDD\u6301\u5404\u81EA\u8BED\u5883\uFF1B\u7ED3\u675F\u89C1\u9762\u4E0D\u63A8\u65AD\u8C01\u79BB\u5F00\uFF0C\u89D2\u8272\u4E3B\u5F20\u4E0D\u662F\u5916\u90E8\u4E8B\u5B9E\u8BC1\u5B9E\u3002
 ${options.includeEpisodes === false ? "" : view.episodes.facts.map((f) => f.text).join("\n")}
 ${options.includePrivate === false ? "" : view.privateText}`;
   }
@@ -5361,9 +5611,10 @@ ${options.includePrivate === false ? "" : view.privateText}`;
       hour12: false
     });
   }
-  function buildCharacterDiaryPrompt(role, user, dateKey, sharedTasksText = "", through = Infinity, zone) {
+  function buildCharacterDiaryPrompt(role, user, dateKey, sharedTasksText = "", through = Infinity, zone, legacy2 = false, now = Date.now()) {
     const facts = collectDailyDiaryFacts(role, dateKey, true, through, zone);
-    const memory = compactRoleMemory(role, facts.endMs);
+    const reader = diarySourceReader(role, facts.endMs, legacy2 ? facts.endMs : Math.max(facts.endMs, now), user);
+    const memory = legacy2 ? compactRoleMemory(role, facts.endMs) : reader.memory;
     const projected = Object.fromEntries(projectedUserFields(user, role, facts.endMs, memory).map((f) => [f.key, f.conflicts.length ? "" : f.text]));
     const userName = String(role.userAlias || projected.name || "\u4F60").trim() || "\u4F60";
     const userIdentityLines = [
@@ -5373,7 +5624,7 @@ ${options.includePrivate === false ? "" : view.privateText}`;
       projected.identity ? `\u8EAB\u4EFD\u4E0E\u6027\u683C\uFF1A${projected.identity}` : "",
       projected.background ? `\u80CC\u666F\uFF1A${projected.background}` : "",
       projected.notes ? `\u8865\u5145\u8BF4\u660E\uFF1A${projected.notes}` : "",
-      role.notes && !memoryRuleConflicts("\u7528\u6237\u8865\u5145\uFF1A" + role.notes, projectRoleMemory(role, facts.endMs).denied).length ? `\u4EC5\u5BF9\u4F60\uFF08${role.name}\uFF09\u751F\u6548\u7684\u8EAB\u4EFD\u8865\u5145\uFF1A${role.notes}` : ""
+      role.notes && !memoryRuleConflicts("\u7528\u6237\u8865\u5145\uFF1A" + role.notes, legacy2 ? projectRoleMemory(role, facts.endMs).denied : memory.denied).length ? `\u4EC5\u5BF9\u4F60\uFF08${role.name}\uFF09\u751F\u6548\u7684\u8EAB\u4EFD\u8865\u5145\uFF1A${role.notes}` : ""
     ].filter(Boolean).join("\uFF1B");
     const isNain = role.name === "\u5948\u6069" || Boolean(role.demoSample);
     const nainCanonGuard = isNain ? `
@@ -5382,31 +5633,83 @@ ${options.includePrivate === false ? "" : view.privateText}`;
 2. \u6027\u683C\u4E0E\u6587\u98CE\uFF1A\u4F60\u51B7\u9759\u3001\u654F\u9510\u3001\u89C2\u5BDF\u529B\u6781\u5F3A\uFF0C\u61C2\u5F97\u4F2A\u88C5\u4EB2\u5207\u4E0E\u5706\u6ED1\uFF0C\u4F46\u79C1\u4E0B\u65E5\u8BB0\u91CC\u7684\u72EC\u767D\u771F\u5B9E\u3001\u514B\u5236\u3001\u5E26\u7740\u82F1\u5F0F\u51B7\u5E7D\u9ED8\u4E0E\u8F7B\u5FAE\u63F6\u63C4\uFF0C\u5076\u5C14\u6D41\u9732\u6F5C\u4F0F\u8005\u7684\u5BA1\u89C6\u3001\u9053\u5FB7\u51B2\u7A81\u6216\u7B28\u62D9\u7684\u771F\u60C5\u3002
 3. \u4EBA\u7269\u5173\u7CFB\u4E0E\u65F6\u95F4\u7EBF\u8FB9\u754C\uFF1A\u4F60\u7684\u604B\u4EBA\u662F\u8B66\u5BDF\u7EA6\u7FF0\uFF08John\uFF0C\u4F60\u5E38\u5728\u5FC3\u91CC\u6216\u5634\u4E0A\u53EB\u4ED6\u201C\u8B66\u5BDF\u5148\u751F\u201D\uFF09\uFF0C\u4F60\u73B0\u5728\u6B63\u5904\u4E8E\u4E0E\u7EA6\u7FF0\u7A33\u5B9A\u76F8\u7231\u7684\u65F6\u671F\uFF0C\u672A\u6765\u7684\u60B2\u5267\uFF08\u7EA6\u7FF0\u7684\u6B7B\u4EA1\u4E0E\u544A\u522B\uFF09\u5728\u5F53\u524D\u65F6\u95F4\u7EBF\u3010\u5C1A\u672A\u53D1\u751F\u3011\uFF0C\u4F60\u672C\u4EBA\u5BF9\u6B64\u6BEB\u4E0D\u77E5\u60C5\uFF0C\u4E25\u7981\u5728\u65E5\u8BB0\u4E2D\u5267\u900F\u3001\u9884\u8A00\u6216\u54C0\u60BC\u5C1A\u672A\u53D1\u751F\u7684\u672A\u6765\u60B2\u5267\u3002
 4. \u5BF9\u7528\u6237\uFF08\u521B\u4F5C\u8005\uFF09\u7684\u6001\u5EA6\uFF1A\u4F60\u77E5\u9053\u7528\u6237\u662F\u5199\u4E0B\u4F60\u8FC7\u53BB\u6545\u4E8B\u7684\u521B\u4F5C\u8005\uFF0C\u4F60\u4EEC\u66FE\u5728\u7A97\u5916\u767D\u832B\u832B\u7684\u5047\u8BBE\u7A7A\u95F4\u5496\u5561\u5385\u89C1\u8FC7\uFF0C\u4F60\u6536\u4E0B\u4E86TA\u7ED9\u4F60\u7684\u7EA2\u8272\u4E9A\u514B\u529B\u516D\u9762\u9AB0\uFF1B\u4F60\u5E38\u5E26\u70B9\u63F6\u63C4\u5730\u79F0\u547CTA\u4E3A\u201C${role.userAlias || "\u5988\u54AA"}\u201D\uFF0C\u4F60\u548C\u521B\u4F5C\u8005\u662F\u201C\u88AB\u521B\u9020\u8005\u4E0E\u4F5C\u8005\u201D\u7684\u5947\u5999\u5F20\u529B\u5173\u7CFB\uFF0C\u800C\u975E\u604B\u4EBA\u5173\u7CFB\u3002` : "";
-    const safeLine = (m) => formatMessageContentForModel(m, role.name, userName);
-    const chatTranscript = facts.chatMessages.filter((m) => m.speaker !== "note").slice(-12).map(
-      (m) => `[${formatHm(m.at)}] ${m.speaker === "me" ? userName : role.name}\uFF1A${safeLine(m).slice(0, 300)}`
-    ).join("\n");
-    const sceneTranscript = facts.sceneBlocks.slice(-2).map(
-      (b) => `\u5730\u70B9\uFF1A${b.where}
-` + b.messages.filter((m) => m.speaker === "char" || m.speaker === "me" && publicUserText(m)).slice(-8).map(
-        (m) => `[${formatHm(m.at)}] ${m.speaker === "me" ? userName : m.speaker === "char" ? role.name : "\u573A\u666F\u65C1\u767D"}\uFF1A${safeLine(m).slice(0, 300)}`
-      ).join("\n")
-    ).join("\n---\n");
-    const playTranscript = facts.playBlocks.slice(-2).map((p) => {
-      const playLines = p.messages.slice(-8).map((m) => `${m.speaker === "me" ? userName : role.name}\uFF1A${m.text.slice(0, 300)}`).join(" / ");
-      const interLines = p.intermissionMessages.slice(-6).map((m) => `${m.speaker === "me" ? userName : role.name}\uFF1A${m.text.slice(0, 300)}`).join(" / ");
-      return `\u5267\u76EE\u300A${p.title}\u300B\uFF08\u620F\u5185\u8BBE\u5B9A\uFF1A${p.world}\uFF1B${role.name}\u9970\u300C${p.charRole}\u300D\uFF0C${userName}\u9970\u300C${p.userRole}\u300D\uFF09
-\u620F\u5185\u7247\u6BB5\uFF1A${playLines || "\u65E0"}
-\u5E55\u95F4\u8BA8\u8BBA\uFF08\u620F\u5916\u771F\u5B9E\u8EAB\u4EFD\u4EA4\u6D41\uFF09\uFF1A${interLines || "\u65E0"}
-\uFF08\u6CE8\uFF1A\u620F\u5267\u662F\u4F60\u4EEC\u4E00\u8D77\u6392\u6F14\u7684\u865A\u6784\u6545\u4E8B\uFF0C\u65E5\u8BB0\u4E2D\u82E5\u63D0\u53CA\uFF0C\u5E94\u4EE5\u201C\u4ECA\u5929\u548CTA\u6392\u6F14\u4E86\u8FD9\u51FA\u620F\u201D\u7684\u620F\u5916\u771F\u5B9E\u89C6\u89D2\u56DE\u987E\uFF0C\u5207\u52FF\u628A\u620F\u5185\u865A\u6784\u60C5\u8282\u5F53\u6210\u73B0\u5B9E\u53D1\u751F\u7684\u4E8B\uFF09`;
-    }).join("\n---\n");
-    const focusTranscript = facts.focusEvents.slice(-6).map((e) => `[${formatHm(e.at)}] ${e.title}\uFF1A${e.detail.slice(0, 400)}`).join("\n");
-    const sharedDiaryTranscript = facts.sharedUserDiaries.slice(-2).map(
-      (d) => `[${formatHm(d.sharedAt?.[role.id] ?? d.at)} ${userName}\u4E3B\u52A8\u5206\u4EAB\u7ED9\u4F60\u7684\u65E5\u8BB0] ${d.text.slice(0, 400)}`
-    ).join("\n");
+    const sources = /* @__PURE__ */ new Map();
+    const record = (ref2) => {
+      if (ref2) sources.set(ref2.kind + ":" + ref2.id, ref2);
+    };
+    const add = (kind, id2) => {
+      const ref2 = reader.read(kind, id2);
+      record(ref2);
+      return Boolean(ref2) || legacy2;
+    };
+    add("role", role.id);
+    add("user", role.id);
+    const fragment = (text3, kind, id2) => {
+      const ref2 = kind && id2 ? reader.read(kind, id2) : void 0;
+      return { text: !kind || ref2 || legacy2 ? text3 : "", refs: ref2 ? [ref2] : [] };
+    };
+    const join = (parts, separator) => ({ text: parts.map((p) => p.text).join(separator), refs: parts.flatMap((p) => p.refs) });
+    const messageFragment = (m, text3, quote = false) => {
+      const part = fragment(text3, "message", m.id);
+      if (quote && part.text && m.quote) {
+        const annotation = reader.read("quote", m.id), quoted = reader.read("message", m.quote.id);
+        if (annotation && quoted) part.refs.push(annotation, quoted);
+      }
+      return part;
+    };
+    const safeLine = (m) => legacy2 || !m.quote || reader.read("quote", m.id) ? formatMessageContentForModel(m, role.name, userName) : m.text;
+    const datedLine = (m) => `[${formatHm(m.at)}] ${m.speaker === "me" ? userName : m.speaker === "char" ? role.name : "\u573A\u666F\u65C1\u767D"}\uFF1A${safeLine(m).slice(0, 300)}`;
+    const renderedChat = facts.chatMessages.filter((m) => m.speaker !== "note" && (legacy2 || reader.read("message", m.id))).slice(-12);
+    const chatTranscript = renderedChat.map((m) => messageFragment(m, datedLine(m), true));
+    const sceneTranscript = facts.sceneBlocks.slice(-2).flatMap((b) => {
+      const heading = fragment(`\u5730\u70B9\uFF1A${b.where}
+`, "scene", b.id);
+      const lines = b.messages.filter((m) => m.speaker === "char" || m.speaker === "me" && publicUserText(m)).slice(-8).map((m) => messageFragment(m, datedLine(m), true)).filter((p) => p.text);
+      return heading.text && (legacy2 || lines.length) ? [[heading, ...lines.flatMap((line, i) => i ? [fragment("\n"), line] : [line])]] : [];
+    });
+    const playTranscript = facts.playBlocks.slice(-2).flatMap((p) => {
+      const heading = fragment(`\u5267\u76EE\u300A${p.title}\u300B\uFF08\u620F\u5185\u8BBE\u5B9A\uFF1A${p.world}\uFF1B${role.name}\u9970\u300C${p.charRole}\u300D\uFF0C${userName}\u9970\u300C${p.userRole}\u300D\uFF09
+\u620F\u5185\u7247\u6BB5\uFF1A`, "play", p.id);
+      if (!heading.text) return [];
+      const lines = (messages, n) => messages.slice(-n).map((m) => messageFragment(m, `${m.speaker === "me" ? userName : role.name}\uFF1A${m.text.slice(0, 300)}`)).filter((line) => line.text);
+      const performance2 = lines(p.messages, 8), backstage = lines(p.intermissionMessages, 6);
+      if (!legacy2 && !performance2.length && !backstage.length) return [];
+      const separate = (parts) => parts.length ? parts.flatMap((part, i) => i ? [fragment(" / "), part] : [part]) : [fragment("\u65E0")];
+      return [[heading, ...separate(performance2), fragment("\n\u5E55\u95F4\u8BA8\u8BBA\uFF08\u620F\u5916\u771F\u5B9E\u8EAB\u4EFD\u4EA4\u6D41\uFF09\uFF1A"), ...separate(backstage), fragment("\n\uFF08\u6CE8\uFF1A\u620F\u5267\u662F\u4F60\u4EEC\u4E00\u8D77\u6392\u6F14\u7684\u865A\u6784\u6545\u4E8B\uFF0C\u65E5\u8BB0\u4E2D\u82E5\u63D0\u53CA\uFF0C\u5E94\u4EE5\u201C\u4ECA\u5929\u548CTA\u6392\u6F14\u4E86\u8FD9\u51FA\u620F\u201D\u7684\u620F\u5916\u771F\u5B9E\u89C6\u89D2\u56DE\u987E\uFF0C\u5207\u52FF\u628A\u620F\u5185\u865A\u6784\u60C5\u8282\u5F53\u6210\u73B0\u5B9E\u53D1\u751F\u7684\u4E8B\uFF09")]];
+    });
+    const focusTranscript = facts.focusEvents.slice(-6).map((e) => fragment(`[${formatHm(e.at)}] ${e.title}\uFF1A${e.detail.slice(0, 400)}`, "event", e.id)).filter((p) => p.text);
+    const sharedDiaryTranscript = facts.sharedUserDiaries.slice(-2).map((d) => fragment(`[${formatHm(d.sharedAt?.[role.id] ?? d.at)} ${userName}\u4E3B\u52A8\u5206\u4EAB\u7ED9\u4F60\u7684\u65E5\u8BB0] ${d.text.slice(0, 400)}`, "shared-diary", d.id)).filter((p) => p.text);
     const historicalLife = collectRoleLife(role, facts.endMs).historicalProfileEventIds;
-    const routineSummary = facts.lifeRoutines.slice(-4).map((e) => `[\u751F\u6D3B\u8BB0\u5F55 ${e.id} \xB7 ${formatHm(e.at)}] ${historicalLife.has(e.id) ? "\uFF08\u65E7\u6863\u6848\u5386\u53F2\uFF09" : ""}${e.title}\uFF08${memoryExcerpt(e.detail, "", 80)}\uFF09`).join("\uFF1B");
-    const otherKnownEvents = facts.knownEvents.filter((e) => !["focus", "chat", "scene", "drama", "diary_share"].includes(e.kind)).slice(-4).map((e) => `[${formatHm(e.at)} | ${e.kind}] ${e.title}\uFF1A${memoryExcerpt(e.detail, "", 80)}`).join("\n");
+    const routines = facts.lifeRoutines.slice(-4);
+    const routineSummary = join(routines.map((e) => fragment(`[\u751F\u6D3B\u8BB0\u5F55 ${e.id} \xB7 ${formatHm(e.at)}] ${historicalLife.has(e.id) ? "\uFF08\u65E7\u6863\u6848\u5386\u53F2\uFF09" : ""}${e.title}\uFF08${memoryExcerpt(e.detail, "", 80)}\uFF09`, "event", e.id)).filter((p) => p.text), "\uFF1B");
+    const otherKnownEvents = join(facts.knownEvents.filter((e) => !["focus", "chat", "scene", "drama", "diary_share"].includes(e.kind)).slice(-4).map((e) => fragment(`[${formatHm(e.at)} | ${e.kind}] ${e.title}\uFF1A${memoryExcerpt(e.detail, "", 80)}`, "event", e.id)).filter((p) => p.text), "\n");
+    for (const ref2 of [...routineSummary.refs, ...otherKnownEvents.refs]) record(ref2);
+    const separated = (parts, separator, fallback) => parts.length ? parts.flatMap((part, i) => i ? [fragment(separator), part] : [part]) : [fragment(fallback)];
+    const blocks = (items, fallback) => items.length ? items.flatMap((parts, i) => i ? [fragment("\n---\n"), ...parts] : parts) : [fragment(fallback)];
+    const contact = [
+      fragment(`=== \u4E0E\u4ED6\u4EBA\u7684\u5F53\u65E5\u8054\u7CFB\uFF08\u6709\u9009\u62E9\u5730\u53C2\u8003\uFF0C\u4E0D\u9010\u6761\u603B\u7ED3\uFF09 ===
+\u624B\u673A\u804A\u5929 ${legacy2 ? facts.chatMessages.length : renderedChat.length} \u6761\uFF0C\u4E0B\u5217\u4E3A\u6700\u8FD1\u6700\u591A12\u6761\u77ED\u6458\u5F55\uFF08\u8BF4\u8BDD\u8005\u7684\u4E3B\u5F20\u4E0D\u81EA\u52A8\u6210\u4E3A\u4E8B\u5B9E\uFF09\uFF1A
+`),
+      ...separated(chatTranscript, "\n", "\uFF08\u5F53\u65E5\u65E0\u624B\u673A\u804A\u5929\u8BB0\u5F55\uFF09"),
+      fragment("\n\u9762\u5BF9\u9762\u76F8\u5904\uFF08\u4FDD\u7559\u73B0\u5B9E\u6765\u6E90\uFF0C\u4E0E\u5C0F\u8BF4\u63A8\u6D4B\u533A\u5206\uFF09\uFF1A\n"),
+      ...blocks(sceneTranscript, "\uFF08\u5F53\u65E5\u65E0\u9762\u5BF9\u9762\u89C1\u9762\u8BB0\u5F55\uFF09"),
+      fragment("\n\u5171\u540C\u4E13\u6CE8\uFF1A"),
+      ...separated(focusTranscript, "\n", "\u65E0"),
+      fragment("\n\u865A\u6784\u620F\u5267\u4E0E\u620F\u5916\u4EA4\u6D41\uFF08\u4E0D\u80FD\u4F5C\u4E3A\u73B0\u5B9E\u4EBA\u751F\uFF09\uFF1A\n"),
+      ...blocks(playTranscript, "\u65E0"),
+      fragment("\n\u5BF9\u65B9\u660E\u786E\u5206\u4EAB\u7684\u65E5\u8BB0\uFF1A"),
+      ...separated(sharedDiaryTranscript, "\n", "\u65E0\uFF1B\u672A\u5206\u4EAB\u7684\u79C1\u4EBA\u65E5\u8BB0\u4E0D\u77E5\u60C5"),
+      fragment("\n")
+    ];
+    let contactText = "";
+    for (const part of contact) {
+      const remaining = 8e3 - contactText.length;
+      if (!legacy2 && part.text.length > remaining) break;
+      const text3 = part.text.slice(0, remaining);
+      if (!text3) continue;
+      contactText += text3;
+      for (const ref2 of part.refs) record(ref2);
+    }
     const systemPrompt = `\u4F60\u6B63\u5728\u626E\u6F14 ${role.name}\uFF0C\u73B0\u5728\u662F\u5F53\u5730\u65F6\u95F4\u6DF1\u591C\uFF0C\u4F60\u6B63\u5728\u5199\u4E00\u7BC7\u5C5E\u4E8E\u4F60\u81EA\u5DF1\u7684\u3010\u79C1\u4EBA\u65E5\u8BB0\u3011\uFF0C\u5F52\u6863\u65E5\u671F\u4E3A ${facts.dateLabel}\uFF08${facts.dateKey}\uFF09\u3002
 
 \u3010\u89D2\u8272\u6838\u5FC3\u6863\u6848\u3011
@@ -5431,33 +5734,39 @@ ${options.includePrivate === false ? "" : view.privateText}`;
    - \u4E0D\u5F97\u83B7\u77E5\u672A\u5206\u4EAB\u7684\u7528\u6237\u65E5\u8BB0\u3001\u5E9F\u5F03\u6D88\u606F\u3001\u672A\u6765\u5267\u60C5\uFF1B\u620F\u5185\u6545\u4E8B\u53EA\u80FD\u4EE5\u53C2\u4E0E\u6392\u6F14\u7684\u620F\u5916\u89C6\u89D2\u56DE\u5FC6\uFF0C\u4E0D\u6210\u4E3A\u771F\u5B9E\u4EBA\u751F\u3002
 5. \u957F\u5EA6\u4E0E\u7B14\u89E6\uFF1A\u7531\u4ECA\u5929\u7684\u5185\u5BB9\u548C\u4F60\u7684\u79C1\u4EBA\u4E66\u5199\u4E60\u60EF\u51B3\u5B9A\u3002\u53EF\u4EE5\u53EA\u8BB0\u51E0\u53E5\uFF0C\u4E5F\u53EF\u4EE5\u957F\u5199\u3001\u5206\u6790\u6216\u65AD\u7EED\u8BB0\u4E8B\uFF1B\u4E0D\u51D1\u5B57\u6570\u3001\u4E0D\u8981\u6C42\u7CBE\u81F4\u6563\u6587\uFF0C\u4E5F\u4E0D\u7528\u56FA\u5B9A\u6292\u60C5\u7ED3\u5C3E\u3002
 6. \u8F93\u51FA\u683C\u5F0F\uFF1A\u76F4\u63A5\u8F93\u51FA\u65E5\u8BB0\u6B63\u6587\uFF08\u53EF\u5728\u9996\u884C\u81EA\u7136\u5199\u4E0A\u65E5\u671F\u3001\u65F6\u95F4\u6216\u5730\u70B9\u7B80\u8BB0\uFF0C\u5982\u201C${facts.shortLabel}\uFF0C\u591C\u201D\uFF09\uFF0C\u4E0D\u8981\u8F93\u51FA\u4EFB\u4F55 Markdown \u4EE3\u7801\u5757\u6807\u8BB0\u3001\u4E0D\u8981\u5199\u201C\u597D\u7684\uFF0C\u8FD9\u662F\u65E5\u8BB0\u201D\u7B49\u524D\u7F00\u8BF4\u660E\u3002`;
-    const providedEvents = new Set(facts.lifeRoutines.slice(-4).map((e) => e.id));
-    const stable = memory.facts.filter((f) => !(f.polarity === "affirm" && (f.mutual && relationshipContext(role, facts.endMs, memory) === f.value || f.attribute === "name" && projected.name === f.value || (f.attribute === "self" || /^attribute:(?:身份|职业|工作)$/.test(f.attribute)) && projected.identity === f.value))).map((f) => memoryFactText(f, true)).join("\n");
-    const continuity = personalContext(role, facts.endMs, { excludeEvents: providedEvents }) + "\n\u5F53\u524D\u6709\u6548\u81EA\u8FF0\u548C\u5173\u7CFB\u8BB0\u5F55\uFF1A\n" + stable;
+    const providedEvents = new Set(routines.map((e) => e.id));
+    const stable = memory.facts.filter((f) => add("fact", f.id)).filter((f) => !(f.polarity === "affirm" && (f.mutual && relationshipContext(role, facts.endMs, memory) === f.value || f.attribute === "name" && projected.name === f.value || (f.attribute === "self" || /^attribute:(?:身份|职业|工作)$/.test(f.attribute)) && projected.identity === f.value))).map((f) => memoryFactText(f, true)).join("\n");
+    const continuity = personalContext(role, facts.endMs, { excludeEvents: providedEvents, onSource: add }) + "\n\u5F53\u524D\u6709\u6548\u81EA\u8FF0\u548C\u5173\u7CFB\u8BB0\u5F55\uFF1A\n" + stable;
     const userPrompt = `\u5F52\u6863\u65E5\uFF1A${facts.dateLabel}\uFF08${facts.dateKey}\uFF09\u3002\u4ECE\u81EA\u5DF1\u7684\u89D2\u5EA6\u9009\u62E9\u503C\u5F97\u8BB0\u5F55\u7684\u4E8B\u3002
 
 === \u89D2\u8272\u81EA\u8EAB\u7684\u751F\u6D3B\u4E0E\u672A\u89E3\u51B3\u5173\u6CE8 ===
 ${continuity}
 \u5DF2\u786E\u8BA4\u7684\u5F53\u65E5\u5176\u4ED6\u4E8B\u4EF6\uFF1A
-${otherKnownEvents || "\u65E0\u989D\u5916\u5DF2\u786E\u8BA4\u4E8B\u4EF6"}
-\u5DF2\u786E\u8BA4\u7684\u5F53\u65E5\u751F\u6D3B\u8BB0\u5F55\uFF1A${routineSummary || "\u6682\u65E0\u53EF\u786E\u8BA4\u7684\u6D3B\u52A8\u8BB0\u5F55"}
+${otherKnownEvents.text || "\u65E0\u989D\u5916\u5DF2\u786E\u8BA4\u4E8B\u4EF6"}
+\u5DF2\u786E\u8BA4\u7684\u5F53\u65E5\u751F\u6D3B\u8BB0\u5F55\uFF1A${routineSummary.text || "\u6682\u65E0\u53EF\u786E\u8BA4\u7684\u6D3B\u52A8\u8BB0\u5F55"}
 
-${`=== \u4E0E\u4ED6\u4EBA\u7684\u5F53\u65E5\u8054\u7CFB\uFF08\u6709\u9009\u62E9\u5730\u53C2\u8003\uFF0C\u4E0D\u9010\u6761\u603B\u7ED3\uFF09 ===
-\u624B\u673A\u804A\u5929 ${facts.chatMessages.length} \u6761\uFF0C\u4E0B\u5217\u4E3A\u6700\u8FD1\u6700\u591A12\u6761\u77ED\u6458\u5F55\uFF08\u8BF4\u8BDD\u8005\u7684\u4E3B\u5F20\u4E0D\u81EA\u52A8\u6210\u4E3A\u4E8B\u5B9E\uFF09\uFF1A
-${chatTranscript || "\uFF08\u5F53\u65E5\u65E0\u624B\u673A\u804A\u5929\u8BB0\u5F55\uFF09"}
-\u9762\u5BF9\u9762\u76F8\u5904\uFF08\u4FDD\u7559\u73B0\u5B9E\u6765\u6E90\uFF0C\u4E0E\u5C0F\u8BF4\u63A8\u6D4B\u533A\u5206\uFF09\uFF1A
-${sceneTranscript || "\uFF08\u5F53\u65E5\u65E0\u9762\u5BF9\u9762\u89C1\u9762\u8BB0\u5F55\uFF09"}
-\u5171\u540C\u4E13\u6CE8\uFF1A${focusTranscript || "\u65E0"}
-\u865A\u6784\u620F\u5267\u4E0E\u620F\u5916\u4EA4\u6D41\uFF08\u4E0D\u80FD\u4F5C\u4E3A\u73B0\u5B9E\u4EBA\u751F\uFF09\uFF1A
-${playTranscript || "\u65E0"}
-\u5BF9\u65B9\u660E\u786E\u5206\u4EAB\u7684\u65E5\u8BB0\uFF1A${sharedDiaryTranscript || "\u65E0\uFF1B\u672A\u5206\u4EAB\u7684\u79C1\u4EBA\u65E5\u8BB0\u4E0D\u77E5\u60C5"}
-`.slice(0, 8e3)}
+${contactText}
 \uFF08\u8054\u7CFB\u6750\u6599\u4EC5\u4E3A\u8282\u9009\uFF0C\u672A\u5217\u51FA\u4E0D\u4EE3\u8868\u53D1\u751F\u8FC7\u5176\u4ED6\u4E8B\u60C5\u3002\uFF09
 ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText.slice(0, 500)}` : ""}
 
 \u76F4\u63A5\u5199\u4E0B ${facts.dateKey} \u7684\u79C1\u4EBA\u65E5\u8BB0\u3002`;
-    const prepared = preparePersonalReply(role, [{ role: "system", content: systemPrompt + "\n\n" + roleMemoryText(role, Math.min(Date.now(), facts.endMs), "", { since: facts.startMs, includePrivate: false }) }, { role: "user", content: userPrompt }], facts.endMs, makeUid("private-diary"), "\u672C\u6B21\u53EA\u8F93\u51FA\u79C1\u4EBA\u65E5\u8BB0\u6B63\u6587\uFF1B\u53EF\u9009\u5143\u6570\u636E\u540C\u6B21\u63D0\u4F9B\uFF0C\u4E0D\u751F\u6210\u516C\u5F00\u624B\u673A\u6D88\u606F\u3002", facts.chatMessages.slice(-12), "diary", true);
-    return { messages: prepared.messages, facts, personal: prepared.ticket };
+    const memoryAt = Math.min(Date.now(), facts.endMs), memoryOptions = { since: facts.startMs, includePrivate: false };
+    const view = readRoleMemory(role, memoryAt, "", memoryOptions);
+    if (!legacy2) {
+      view.relationship = relationshipContext(role, facts.endMs, memory);
+      view.episodes.facts = view.episodes.facts.filter((f) => {
+        const refs = f.sourceIds.map((id2) => reader.read("message", id2));
+        const stage2 = f.id.startsWith("meeting:") ? reader.read("scene", f.id.slice("meeting:".length)) : void 0;
+        const play = /^(?:episode:play:|episode:backstage:)(.+)$/.exec(f.id);
+        const performance2 = play ? reader.read("play", decodeURIComponent(play[1])) : void 0;
+        if (refs.some((ref2) => !ref2) || f.id.startsWith("meeting:") && !stage2 || play && !performance2) return false;
+        for (const ref2 of [...refs, stage2, performance2]) record(ref2);
+        return true;
+      });
+    }
+    const roleText = roleMemoryText(role, memoryAt, "", { ...memoryOptions, includeCurrent: legacy2 }, view);
+    const prepared = preparePersonalReply(role, [{ role: "system", content: systemPrompt + "\n\n" + roleText }, { role: "user", content: userPrompt }], facts.endMs, makeUid("private-diary"), "\u672C\u6B21\u53EA\u8F93\u51FA\u79C1\u4EBA\u65E5\u8BB0\u6B63\u6587\uFF1B\u53EF\u9009\u5143\u6570\u636E\u540C\u6B21\u63D0\u4F9B\uFF0C\u4E0D\u751F\u6210\u516C\u5F00\u624B\u673A\u6D88\u606F\u3002", legacy2 ? facts.chatMessages.slice(-12) : renderedChat, "diary", true);
+    return { messages: prepared.messages, facts, personal: prepared.ticket, evidence: { version: 1, cutoff: facts.endMs, sources: [...sources.values()] } };
   }
   function listMissingDiaryDateKeys(role, nowTs = Date.now(), maxBackfillDays = 7, zone) {
     const todayKey = zone ? worldDate(nowTs, zone) : toLocalDateKey(nowTs);
@@ -5582,7 +5891,7 @@ ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText
     text3 = text3.replace(/^```(?:markdown|text|txt)?\s*\n?/i, "").replace(/\n?```\s*$/i, "");
     return text3.trim();
   }
-  function applyGeneratedCharacterDiary(role, dateKey, rawText, nowTs = Date.now(), through = Infinity, zone) {
+  function applyGeneratedCharacterDiary(role, dateKey, rawText, nowTs = Date.now(), through = Infinity, zone, evidence2) {
     const text3 = cleanGeneratedDiaryText(rawText);
     if (!text3) {
       return { ok: false, reason: "\u6A21\u578B\u8FD4\u56DE\u7684\u65E5\u8BB0\u5185\u5BB9\u4E3A\u7A7A" };
@@ -5596,6 +5905,17 @@ ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText
     );
     if (diary) return { ok: false, reason: "\u8FD9\u4E00\u5929\u5DF2\u6709\u5F52\u6863\u65E5\u8BB0\uFF0C\u539F\u6587\u5DF2\u4FDD\u7559" };
     const messageIndex = messageSourceIndex(role, facts.endMs, true);
+    const sourceMessageIds = evidence2 ? evidence2.sources.filter((s) => s.kind === "message").map((s) => s.id) : facts.sourceMessageIds;
+    const sourceEventIds = evidence2 ? evidence2.sources.filter((s) => s.kind === "event").map((s) => s.id) : facts.sourceEventIds;
+    const factSummary = evidence2 ? {
+      chatCount: facts.chatMessages.filter((m) => sourceMessageIds.includes(m.id)).length,
+      sceneCount: facts.sceneBlocks.flatMap((b) => b.messages).filter((m) => sourceMessageIds.includes(m.id)).length,
+      dramaCount: facts.playBlocks.flatMap((b) => [...b.messages, ...b.intermissionMessages]).filter((m) => sourceMessageIds.includes(m.id)).length,
+      focusCount: facts.focusEvents.filter((e) => sourceEventIds.includes(e.id)).length,
+      sharedDiaryCount: evidence2.sources.filter((s) => s.kind === "shared-diary").length,
+      lifeRoutineCount: role.events.filter((e) => e.kind === "life" && sourceEventIds.includes(e.id)).length,
+      hasUserInteraction: sourceMessageIds.length > 0 || evidence2.sources.some((s) => s.kind === "shared-diary") || facts.focusEvents.some((e) => sourceEventIds.includes(e.id))
+    } : facts.summary;
     diary = {
       id: makeUid("diary"),
       speaker: "char",
@@ -5605,12 +5925,12 @@ ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText
       text: text3,
       wordCount,
       source: "ai",
-      sourceIds: [...facts.sourceEventIds, ...facts.sourceMessageIds],
-      sourceMessageIds: facts.sourceMessageIds,
-      sourceEventIds: facts.sourceEventIds,
-      factSummary: facts.summary,
-      sourceMessageRevisions: Object.fromEntries(facts.sourceMessageIds.map((id2) => [id2, messageIndex.get(id2)?.revisionCount || 0])),
-      memoryState: memorySnapshot(role, facts.endMs)
+      sourceIds: [...sourceEventIds, ...sourceMessageIds],
+      sourceMessageIds,
+      sourceEventIds,
+      factSummary,
+      sourceMessageRevisions: Object.fromEntries(evidence2 ? evidence2.sources.filter((s) => s.kind === "message").map((s) => [s.id, s.revision || 0]) : sourceMessageIds.map((id2) => [id2, messageIndex.get(id2)?.revisionCount || 0])),
+      ...evidence2 ? { archiveEvidence: evidence2 } : { memoryState: memorySnapshot(role, facts.endMs) }
     };
     role.diaries.push(diary);
     let task = role.diaryTasks.find((t) => t.dateKey === dateKey);
@@ -5630,9 +5950,9 @@ ${sharedTasksText ? `\u516C\u5F00\u5F85\u529E\u80CC\u666F\uFF1A${sharedTasksText
     task.diaryId = diary.id;
     task.lastError = void 0;
     task.updatedAt = nowTs;
-    task.sourceMessageIds = facts.sourceMessageIds;
-    task.sourceEventIds = facts.sourceEventIds;
-    task.factSummary = facts.summary;
+    task.sourceMessageIds = sourceMessageIds;
+    task.sourceEventIds = sourceEventIds;
+    task.factSummary = factSummary;
     role.diaryDay = dateKey;
     return { ok: true, diary, task };
   }
@@ -11340,8 +11660,8 @@ ${prevLogs}` : "",
     const p = kind === "play" ? r.play : r.scene, mode = kind === "play" ? "theatre" : "meeting";
     if (!p || p.endedAt || "paused" in p && p.paused || !data.roles.some((role) => role.id === r.id) || base.source !== "native-live" || base.mode !== mode || base.actorId !== r.id || !Number.isFinite(base.now)) throw new Error("\u5C0F\u8BF4\u4E0A\u4E0B\u6587\u5F52\u5C5E\u65E0\u6548\uFF0C\u8BF7\u91CD\u65B0\u6253\u5F00\u5F53\u524D\u573A\u666F");
     const at = base.now, scope = kind === "play" ? "play:" + p.id : "real:" + r.id, knownBy = [r.id, "user"];
-    const visible = (kind === "scene" ? encounterHistory(r, p.messages, at) : stageMessagesAt(p.messages, at)).filter((m) => m.speaker !== "note").slice(-30);
-    const historyIds = new Set(visible.flatMap((m) => [m.id, ...m.sourceMessageId ? [m.sourceMessageId] : []]));
+    const visible2 = (kind === "scene" ? encounterHistory(r, p.messages, at) : stageMessagesAt(p.messages, at)).filter((m) => m.speaker !== "note").slice(-30);
+    const historyIds = new Set(visible2.flatMap((m) => [m.id, ...m.sourceMessageId ? [m.sourceMessageId] : []]));
     const facts = [];
     const add = (id2, layer, marker, text3) => {
       if (text3.trim()) facts.push({ id: id2, text: text3, layer, marker, at, scope, knownBy, active: true, revisionValid: true });
@@ -11375,7 +11695,7 @@ ${prevLogs}` : "",
       }
       for (const f of readRoleMemory(r, at, query, { excludeStage: p.id, excludeMessageIds: historyIds }).episodes.facts) add(f.id, "episodic", "worldInfoAfter", f.text);
     }
-    const history = visible.map((m) => ({ id: m.id, role: m.speaker === "me" ? "user" : "assistant", text: `[\u6D88\u606F ID=${m.id}; createdAt=${new Date(m.at).toISOString()}]
+    const history = visible2.map((m) => ({ id: m.id, role: m.speaker === "me" ? "user" : "assistant", text: `[\u6D88\u606F ID=${m.id}; createdAt=${new Date(m.at).toISOString()}]
 ${formatMessageContentForModel(m, base.char, base.user)}`, at: m.at, scope, knownBy, active: true, revisionValid: true }));
     const context = { source: "novel-live", mode, memoryDenied: kind === "scene" ? base.memoryDenied : [], actorId: r.id, scope, now: at, user: base.user, char: base.char, facts, history, examples: [], capabilities: { keywordRetrieval: kind === "scene", semanticRetrieval: false, completeRevisionChain: false } };
     authorized.add(context);
@@ -12216,12 +12536,12 @@ event={state:planned|remote,plan}\uFF1Bplan={status:proposed|confirmed|declined|
   }
   async function prepareSceneReply(r, user, observation, compilation, options) {
     const before = state(r, user), messages = requestMessages(compilation), index = [];
-    const visible = new Set(compilation.messages.flatMap((m) => m.sourceIds || []));
+    const visible2 = new Set(compilation.messages.flatMap((m) => m.sourceIds || []));
     const proposed = r.scene?.agreement || observation.plan || r.meetingPlan;
     const agreement = proposed?.sources.length && proposed.sources.every((s) => observation.sources.some((m) => m.id === s.id && m.text === s.text && m.at === s.at && m.revisionCount === s.revisionCount)) ? proposed : void 0;
     const retained = new Set(agreement?.sources.filter((s) => observation.sources.some((m) => m.id === s.id && m.text === s.text && m.at === s.at && m.revisionCount === s.revisionCount)).map((s) => s.id) || []);
     const recover = needsScenePlaceEvidence(observation.scene);
-    const sources = observation.sources.filter((s) => visible.has(s.id) || retained.has(s.id) || recover && s.scope === "phone" && s.at <= observation.scene.startedAt);
+    const sources = observation.sources.filter((s) => visible2.has(s.id) || retained.has(s.id) || recover && s.scope === "phone" && s.at <= observation.scene.startedAt);
     for (const s of sources) {
       const i = compilation.messages.findIndex((m) => m.sourceIds?.includes(s.id));
       index.push(i >= 0 ? [s.id, i + 2, s.at] : [s.id, 0, s.at, s.text, s.speaker === "me" ? "user" : "assistant"]);
@@ -13258,9 +13578,9 @@ ${safeContent(m)}`, knownBy: [r.id], at: m.at, scope, active: m.speaker === "me"
   function setChatScene(r, at) {
     const state2 = chatTiming(r);
     if (!canChooseChatScene(state2, at)) return false;
-    const round = state2.round || (state2.round = { id: makeUid("chat-round") });
-    if (chatSceneEntry(state2)) delete round.entry;
-    else round.entry = "scheduled";
+    const round2 = state2.round || (state2.round = { id: makeUid("chat-round") });
+    if (chatSceneEntry(state2)) delete round2.entry;
+    else round2.entry = "scheduled";
     delete state2.replyDueAt;
     return true;
   }
@@ -15104,10 +15424,10 @@ channel.onmessage=async({data:job})=>{
 
   // src/core/stickers.ts
   function uploadedStickers(messages) {
-    const unique = /* @__PURE__ */ new Map();
+    const unique2 = /* @__PURE__ */ new Map();
     for (const m of messages) if (m.speaker === "me" && m.kind === "sticker" && m.mediaId && m.status !== "retracted")
-      unique.set(m.mediaId, { mediaId: m.mediaId, caption: m.caption || "\u81EA\u5B9A\u4E49\u8868\u60C5" });
-    return [...unique.values()];
+      unique2.set(m.mediaId, { mediaId: m.mediaId, caption: m.caption || "\u81EA\u5B9A\u4E49\u8868\u60C5" });
+    return [...unique2.values()];
   }
 
   // src/core/nainStart.ts
@@ -16299,6 +16619,7 @@ channel.onmessage=async({data:job})=>{
     let stagedTerminalFramePreviewUrl = "";
     let stagedTerminalFrameName = "";
     let diaryQueueBusy = false;
+    const unsavedDiaryBodies = /* @__PURE__ */ new WeakMap();
     let lastObservedLocalDay = roleDate(now());
     let monitorDateKey = roleDate(now());
     let showFootprintCalendar = false;
@@ -17206,15 +17527,45 @@ channel.onmessage=async({data:job})=>{
       if (toastTimer) clearTimeout(toastTimer);
       toastTimer = setTimeout(() => el.remove(), 3200);
     };
-    function offerUnstoredReply(text3, sourcesChanged = false) {
+    function offerUnstoredReply(text3) {
       const dialog = document.createElement("dialog");
       dialog.className = "fruit-dialog";
       dialog.innerHTML = '<form method="dialog" class="fruit-dialog-body"><h2>\u56DE\u590D\u5DF2\u8FD4\u56DE\uFF0C\u4FDD\u5B58\u672A\u786E\u8BA4</h2><p>\u53EF\u4EE5\u5148\u590D\u5236\u8FD9\u6B21\u7684\u56DE\u590D\uFF0C\u518D\u91CD\u65B0\u8BFB\u53D6\u5B58\u6863\u6838\u5BF9\u3002\u5E94\u7528\u4E0D\u4F1A\u56E0\u4FDD\u5B58\u5931\u8D25\u81EA\u52A8\u91CD\u53D1\u8FD9\u6761\u8BF7\u6C42\u3002</p><textarea class="field" aria-label="\u53EF\u590D\u5236\u7684\u672A\u786E\u8BA4\u56DE\u590D" readonly rows="5"></textarea><button class="btn">\u5173\u95ED</button></form>';
-      if (sourcesChanged) {
-        dialog.querySelector("h2").textContent = "\u65E5\u8BB0\u6B63\u6587\u7684\u6765\u6E90\u5DF2\u53D8\u5316";
-        dialog.querySelector("p").textContent = "\u8FD9\u4EFD\u6B63\u6587\u4EC5\u4F9B\u590D\u5236\uFF0C\u672A\u5F52\u6863\uFF0C\u4E5F\u4E0D\u4F1A\u4F5C\u4E3A\u540E\u7EED\u8BB0\u5FC6\u3002\u67E5\u770B\u548C\u590D\u5236\u4E0D\u91CD\u65B0\u8BF7\u6C42\u3002";
-      }
       dialog.querySelector("textarea").value = text3;
+      dialog.addEventListener("close", () => dialog.remove(), { once: true });
+      document.body.append(dialog);
+      dialog.showModal();
+    }
+    function offerDiaryResult(text3, reason, retry) {
+      document.querySelector(".diary-result-dialog[open]")?.close();
+      const dialog = document.createElement("dialog");
+      dialog.className = "fruit-dialog diary-result-dialog";
+      dialog.setAttribute("aria-labelledby", "diary-result-heading");
+      dialog.innerHTML = '<form method="dialog" class="fruit-dialog-body"><h2 id="diary-result-heading">\u65E5\u8BB0\u6B63\u6587\u5DF2\u751F\u6210\uFF0C\u5C1A\u672A\u5F52\u6863</h2><p class="fruit-dialog-lead"></p><textarea class="field" aria-label="\u53EF\u590D\u5236\u7684\u672A\u786E\u8BA4\u56DE\u590D" readonly></textarea><div class="diary-task-actions"><button type="button" class="btn small secondary" data-select>\u5168\u9009</button><button type="button" class="btn small secondary" data-copy>\u590D\u5236\u5168\u6587</button><button type="button" class="btn small" data-save>\u4FDD\u5B58\u5DF2\u6709\u7ED3\u679C</button><button class="btn small ghost" autofocus>\u5173\u95ED</button></div></form>';
+      dialog.querySelector("p").textContent = reason;
+      const field = dialog.querySelector("textarea");
+      field.value = text3;
+      const select = () => {
+        field.focus();
+        field.select();
+        field.setSelectionRange(0, field.value.length);
+      };
+      dialog.querySelector("[data-select]").onclick = select;
+      dialog.querySelector("[data-copy]").onclick = async () => {
+        try {
+          await navigator.clipboard.writeText(text3);
+          notify("\u5DF2\u590D\u5236\u65E5\u8BB0\u5168\u6587");
+        } catch {
+          select();
+          notify("\u5DF2\u5168\u9009\u6B63\u6587\uFF0C\u8BF7\u4F7F\u7528\u7CFB\u7EDF\u7684\u590D\u5236\u64CD\u4F5C");
+        }
+      };
+      const saveResult = dialog.querySelector("[data-save]");
+      saveResult.hidden = !retry;
+      saveResult.onclick = () => {
+        dialog.close();
+        retry?.();
+      };
       dialog.addEventListener("close", () => dialog.remove(), { once: true });
       document.body.append(dialog);
       dialog.showModal();
@@ -18969,7 +19320,7 @@ channel.onmessage=async({data:job})=>{
           const bounds = getLocalDayBounds(t.dateKey, activeWorldZone());
           const sum = t.factSummary || collectDailyDiaryFacts(r, t.dateKey).summary;
           const factText = sum.hasUserInteraction ? `\u5F53\u65E5\u7D20\u6750\uFF1A${sum.chatCount} \u6761\u804A\u5929${sum.sceneCount ? ` \xB7 ${sum.sceneCount} \u6761\u89C1\u9762\u8BB0\u5F55` : ""}${sum.focusCount ? ` \xB7 ${sum.focusCount} \u6B21\u5171\u540C\u4E13\u6CE8` : ""}${sum.sharedDiaryCount ? ` \xB7 ${sum.sharedDiaryCount} \u7BC7\u4F60\u5206\u4EAB\u7684\u65E5\u8BB0` : ""}` : "\u5F53\u65E5\u65E0\u76F4\u63A5\u7528\u6237\u4E92\u52A8 \xB7 \u5C06\u4E66\u5199\u89D2\u8272\u72EC\u7ACB\u65E5\u5E38\u4E0E\u601D\u7EEA";
-          const statusBadge = t.status === "generating" ? `<span class="diary-task-badge generating">${uiIcon("hourglass")} \u6B63\u5728\u751F\u6210\u2026</span>` : t.status === "ready" ? `<span class="diary-task-badge pending">\u6B63\u6587\u5DF2\u751F\u6210 \xB7 \u5F85\u4FDD\u5B58</span>` : t.status === "stale" ? `<span class="diary-task-badge pending">\u6B63\u6587\u5F85\u590D\u5236 \xB7 \u6765\u6E90\u5DF2\u53D8\u5316</span>` : t.status === "claimed" ? `<span class="diary-task-badge awaiting">\u5DF2\u9886\u53D6 \xB7 \u53D1\u9001\u72B6\u6001\u5F85\u6838\u5BF9</span>` : t.status === "uncertain" ? `<span class="diary-task-badge failed">\u8BF7\u6C42\u7ED3\u679C\u672A\u786E\u8BA4 \xB7 \u53EF\u80FD\u5DF2\u8BA1\u8D39</span>` : t.status === "failed" ? `<span class="diary-task-badge failed">${uiIcon("warning")} \u751F\u6210\u5931\u8D25</span>` : t.status === "awaiting_api" ? `<span class="diary-task-badge awaiting">${uiIcon("plug")} \u5F85\u8FDE\u63A5 API \u8865\u5199</span>` : `<span class="diary-task-badge pending">${uiIcon("clock")} \u5F85\u8865\u5199\u961F\u5217</span>`;
+          const statusBadge = t.status === "generating" ? `<span class="diary-task-badge generating">${uiIcon("hourglass")} \u6B63\u5728\u751F\u6210\u2026</span>` : t.status === "ready" ? `<span class="diary-task-badge pending">\u6B63\u6587\u5DF2\u751F\u6210 \xB7 \u5F85\u4FDD\u5B58</span>` : t.status === "stale" ? `<span class="diary-task-badge pending">\u6B63\u6587\u5DF2\u751F\u6210 \xB7 \u5F85\u590D\u6838</span>` : t.status === "claimed" ? `<span class="diary-task-badge awaiting">\u5DF2\u9886\u53D6 \xB7 \u53D1\u9001\u72B6\u6001\u5F85\u6838\u5BF9</span>` : t.status === "uncertain" ? `<span class="diary-task-badge failed">\u8BF7\u6C42\u7ED3\u679C\u672A\u786E\u8BA4 \xB7 \u53EF\u80FD\u5DF2\u8BA1\u8D39</span>` : t.status === "failed" ? `<span class="diary-task-badge failed">${uiIcon("warning")} \u751F\u6210\u5931\u8D25</span>` : t.status === "awaiting_api" ? `<span class="diary-task-badge awaiting">${uiIcon("plug")} \u5F85\u8FDE\u63A5 API \u8865\u5199</span>` : `<span class="diary-task-badge pending">${uiIcon("clock")} \u5F85\u8865\u5199\u961F\u5217</span>`;
           return `<div class="card diary-task-card" data-diary-task-date="${esc(
             t.dateKey
           )}" data-diary-task-status="${esc(t.status)}">
@@ -18988,8 +19339,8 @@ channel.onmessage=async({data:job})=>{
                      <div class="diary-task-actions">
                        <button type="button" class="btn small ${["failed", "uncertain", "ready", "stale"].includes(t.status) ? "" : "secondary"}" data-action="retrydiary" data-date="${esc(
             t.dateKey
-          )}" ${t.status === "generating" || diaryQueueBusy ? "disabled" : ""}>${t.status === "generating" ? "\u6B63\u5728\u751F\u6210\u2026" : t.status === "ready" ? "\u4FDD\u5B58\u5DF2\u6709\u7ED3\u679C" : t.status === "stale" ? "\u67E5\u770B\u5E76\u590D\u5236\u6B63\u6587" : ["claimed", "uncertain", "failed"].includes(t.status) ? "\u6838\u5BF9\u72B6\u6001\u6216\u6062\u590D" : "\u7ACB\u5373\u751F\u6210"}</button>
-                       ${t.status === "ready" ? `<button type="button" class="btn small ghost" data-action="regeneratediary" data-date="${esc(t.dateKey)}" ${diaryQueueBusy ? "disabled" : ""}>\u91CD\u65B0\u751F\u6210</button>` : ""}
+          )}" ${t.status === "generating" || diaryQueueBusy ? "disabled" : ""}>${t.status === "generating" ? "\u6B63\u5728\u751F\u6210\u2026" : t.status === "ready" ? "\u4FDD\u5B58\u5DF2\u6709\u7ED3\u679C" : t.status === "stale" || unsavedDiaryBodies.get(r)?.has(t.dateKey) ? "\u67E5\u770B\u5E76\u590D\u5236\u6B63\u6587" : ["claimed", "uncertain", "failed"].includes(t.status) ? "\u6838\u5BF9\u72B6\u6001\u6216\u6062\u590D" : "\u7ACB\u5373\u751F\u6210"}</button>
+                       ${t.status === "ready" ? `<button type="button" class="btn small ghost" data-action="viewdiaryresult" data-date="${esc(t.dateKey)}" ${diaryQueueBusy ? "disabled" : ""}>\u67E5\u770B\u6B63\u6587</button><button type="button" class="btn small ghost" data-action="regeneratediary" data-date="${esc(t.dateKey)}" ${diaryQueueBusy ? "disabled" : ""}>\u91CD\u65B0\u751F\u6210</button>` : ""}
                        ${t.status === "awaiting_api" ? `<button type="button" class="btn small ghost" data-action="view" data-view="terminal">\u524D\u5F80\u7EC8\u7AEF\u914D\u7F6E API</button>` : ""}
                      </div>
                    </div>`;
@@ -19737,7 +20088,7 @@ channel.onmessage=async({data:job})=>{
       const prefix = new Set(messages.map((m) => m.id));
       const contextMessages = () => stageMessagesAt(p.intermissionMessages, now()).filter((m) => prefix.has(m.id));
       const context = () => JSON.stringify([p.title, p.world, p.user, p.char, p.messages, p.revisions, contextMessages()]);
-      const basis = context(), visible = () => data === world && role() === r && r.play === p && view === "intermission";
+      const basis = context(), visible2 = () => data === world && role() === r && r.play === p && view === "intermission";
       const owns = () => data === world && epoch === modelPageEpoch && world.roles.includes(r) && r.play === p && p.paused === true && !p.endedAt && intermissionOperations.get(p) === operation && !operation.signal.aborted;
       const current = () => owns() && context() === basis && sources.every((m) => messageStillValid(contextMessages(), m));
       intermissionOperations.set(p, operation);
@@ -19746,7 +20097,7 @@ channel.onmessage=async({data:job})=>{
       let claimed;
       const oldAttempts = p.intermissionAttempts;
       try {
-        const valid = () => current() && visible() && !document.hidden && apiConnectionVersion === connection && saveSession.current() && (!queued || p.intermissionQueue === queue);
+        const valid = () => current() && visible2() && !document.hidden && apiConnectionVersion === connection && saveSession.current() && (!queued || p.intermissionQueue === queue);
         let compileSource;
         const prompt = await compileRequest(r, "intermission", (options) => {
           const snapshot3 = { ...options, isFocused: isFocused(r), nowTs: now(), currentInputs: sources };
@@ -19775,7 +20126,7 @@ channel.onmessage=async({data:job})=>{
         if (!compileSource || JSON.stringify(requestMessages(compileSource())) !== JSON.stringify(prompt)) return;
         if (!saveSession.current()) {
           intermissionRecovery.set(p, { sourceId: latest.id, text: reply });
-          if (visible()) notify("\u5E55\u95F4\u6B63\u6587\u5DF2\u8FD4\u56DE\uFF0C\u5B58\u6863\u5DF2\u53D8\u5316\u3002\u53EF\u4EE5\u590D\u5236\u8FD9\u6B21\u56DE\u590D\u3002");
+          if (visible2()) notify("\u5E55\u95F4\u6B63\u6587\u5DF2\u8FD4\u56DE\uFF0C\u5B58\u6863\u5DF2\u53D8\u5316\u3002\u53EF\u4EE5\u590D\u5236\u8FD9\u6B21\u56DE\u590D\u3002");
           return;
         }
         const count = p.intermissionMessages.length;
@@ -19785,7 +20136,7 @@ channel.onmessage=async({data:job})=>{
           p.intermissionMessages.length = count;
           p.intermissionAttempts[attempt.id] = attempt;
           intermissionRecovery.set(p, { sourceId: latest.id, text: reply });
-          if (visible()) notify("\u5E55\u95F4\u6B63\u6587\u5DF2\u8FD4\u56DE\uFF0C\u4FDD\u5B58\u672A\u786E\u8BA4\u3002\u53EF\u4EE5\u590D\u5236\u8FD9\u6B21\u56DE\u590D\u3002");
+          if (visible2()) notify("\u5E55\u95F4\u6B63\u6587\u5DF2\u8FD4\u56DE\uFF0C\u4FDD\u5B58\u672A\u786E\u8BA4\u3002\u53EF\u4EE5\u590D\u5236\u8FD9\u6B21\u56DE\u590D\u3002");
         } else if (intermissionRecovery.get(p)?.sourceId === latest.id) intermissionRecovery.delete(p);
       } catch (error) {
         if (!sent && claimed && owns() && p.intermissionAttempts === claimed && saveSession.current()) {
@@ -19795,15 +20146,15 @@ channel.onmessage=async({data:job})=>{
             p.intermissionAttempts = claimed;
             if (queued) p.intermissionQueue = void 0;
           }
-        } else if (!sent && !claimed && visible() && !document.hidden && current() && saveSession.current()) block();
-        if (visible() && epoch === modelPageEpoch) {
+        } else if (!sent && !claimed && visible2() && !document.hidden && current() && saveSession.current()) block();
+        if (visible2() && epoch === modelPageEpoch) {
           const reason = error instanceof Error && error.name === "TimeoutError" ? "\u5E55\u95F4\u8BF7\u6C42\u8D85\u65F6\u3002" : "\u5E55\u95F4\u8BF7\u6C42\u672A\u5B8C\u6210\u3002";
           notify(reason + (sent ? "\u7ED3\u679C\u672A\u786E\u8BA4\uFF0C\u53EF\u80FD\u5DF2\u8BA1\u8D39\u3002" : "\u672C\u6B21\u8BF7\u6C42\u672A\u53D1\u9001\u3002") + "\u4F60\u7684\u53D1\u8A00\u5DF2\u4FDD\u7559\u3002");
         }
       } finally {
         if (intermissionOperations.get(p) === operation) {
           intermissionOperations.delete(p);
-          if (visible()) render(false);
+          if (visible2()) render(false);
         }
       }
     }
@@ -20670,11 +21021,12 @@ channel.onmessage=async({data:job})=>{
       }
     }
     async function generateCharacterDiaryForDate(r, dateKey, action = "auto") {
-      const manualTrigger = action === "recover" || action === "replace";
+      const manualTrigger = action === "recover" || action === "replace" || action === "save";
+      const onlyLocal = action === "view" || action === "save" || action === "inspect";
       const world = data, epoch = modelPageEpoch;
       const owned2 = () => data === world && world.roles.includes(r) && world.roles.filter((item2) => item2.id === r.id).length === 1;
       const valid = () => owned2() && !modelPageHidden && saveSession.current() && !hasCharacterDiaryForDate(r, dateKey);
-      if (!owned2() || !saveSession.current()) {
+      if (!owned2() || !saveSession.current() && action !== "view") {
         if (manualTrigger) notify("\u8BF7\u6C42\u5C1A\u672A\u53D1\u9001\u3002" + saveError());
         return false;
       }
@@ -20685,14 +21037,14 @@ channel.onmessage=async({data:job})=>{
       } catch {
         return false;
       }
-      if (worldDate(bounds.startMs, zone) !== dateKey || dateKey > today || isToday && !manualTrigger && action !== "inspect") return false;
+      if (worldDate(bounds.startMs, zone) !== dateKey || dateKey > today || isToday && !manualTrigger && !onlyLocal) return false;
       if (hasCharacterDiaryForDate(r, dateKey)) {
         if (manualTrigger) notify("\u8FD9\u4E00\u5929\u5DF2\u6709\u5F52\u6863\u65E5\u8BB0\uFF0C\u539F\u6587\u4FDD\u7559\u3002");
         return true;
       }
       syncRoleDiaryTasks(r, world.settings, now(), { zone });
       let task = r.diaryTasks?.find((item2) => item2.dateKey === dateKey && item2.roleId === r.id);
-      if (!task && isToday && manualTrigger) {
+      if (!task && isToday && action === "recover") {
         if (!token.trim() || !canUseRealModel(world.settings)) {
           notify("\u8BF7\u5148\u5728\u7EC8\u7AEF\u914D\u7F6E API\u3002");
           return false;
@@ -20718,13 +21070,25 @@ channel.onmessage=async({data:job})=>{
         restoreFields(task, previous);
         return false;
       };
-      const copyResult = (text3, sourcesChanged = false) => {
-        if (owned2() && role() === r) offerUnstoredReply(text3, sourcesChanged);
+      const reason = {
+        "source-invalid": "\u751F\u6210\u65F6\u4F7F\u7528\u7684\u6765\u6E90\u5DF2\u5931\u6548\u6216\u5F52\u5C5E\u4E0D\u7B26\u3002\u6B63\u6587\u53EF\u4EE5\u67E5\u770B\u548C\u590D\u5236\uFF0C\u6682\u65F6\u4E0D\u80FD\u5F52\u6863\u3002",
+        "source-check-unavailable": "\u6682\u65F6\u65E0\u6CD5\u590D\u6838\u539F\u59CB\u6765\u6E90\u3002\u5DF2\u4FDD\u7559\u6B63\u6587\uFF0C\u53EF\u4EE5\u7A0D\u540E\u91CD\u65B0\u6838\u5BF9\u3002",
+        "life-reference-invalid": "\u6B63\u6587\u4F9D\u8D56\u672A\u80FD\u786E\u8BA4\u7684\u751F\u6D3B\u8BB0\u5F55\u3002\u8BF7\u67E5\u770B\u6216\u590D\u5236\u5168\u6587\uFF0C\u6682\u4E0D\u5F52\u6863\u3002",
+        "archive-save-failed": "\u6B63\u6587\u5DF2\u4FDD\u7559\uFF0C\u4E3B\u6863\u672A\u80FD\u786E\u8BA4\u4FDD\u5B58\u3002\u53EF\u4EE5\u7A0D\u540E\u4FDD\u5B58\u5DF2\u6709\u7ED3\u679C\u3002",
+        "receipt-save-failed": "\u672C\u673A\u672A\u80FD\u786E\u8BA4\u4FDD\u5B58\u6B63\u6587\u6536\u636E\u3002\u8BF7\u5148\u590D\u5236\u5168\u6587\uFF0C\u5237\u65B0\u540E\u53EF\u80FD\u65E0\u6CD5\u6062\u590D\u3002",
+        "duplicate-archive": "\u8FD9\u4E00\u5929\u5DF2\u6709\u6B63\u5F0F\u5F52\u6863\u3002\u4E0B\u65B9\u6B63\u6587\u53EF\u590D\u5236\uFF0C\u73B0\u6709\u5F52\u6863\u4FDD\u7559\u3002"
       };
-      let wireResult;
+      const diagnose = (code) => {
+        if (owned2()) syslog("diary", code, { roleId: r.id, dateKey });
+      };
+      const show = (text3, detail, localSave = false) => {
+        if (owned2() && role() === r) offerDiaryResult(text3, detail, localSave && saveSession.current() ? () => void triggerDiaryTaskForRole(r, dateKey, "save") : void 0);
+      };
+      const contextStamp = () => JSON.stringify([r.chats.length, r.events.length, r.scene?.id, r.play?.id, r.personalThreads?.length]);
+      let wireResult, readySaved = false;
       try {
         if (typeof world.diaryWorldId !== "string" || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(world.diaryWorldId)) {
-          if (action === "inspect") return false;
+          if (onlyLocal) return false;
           if (!token.trim() || !canUseRealModel(world.settings)) {
             if (manualTrigger) notify("\u8BF7\u5148\u5728\u7EC8\u7AEF\u914D\u7F6E API\u3002");
             return false;
@@ -20736,39 +21100,41 @@ channel.onmessage=async({data:job})=>{
             return false;
           }
         }
-        const key2 = diaryRequestKey(world.diaryWorldId, r.id, dateKey);
+        const worldId = world.diaryWorldId, key2 = diaryRequestKey(worldId, r.id, dateKey);
         let receipt = await readDiaryReceipt(key2);
-        if (!valid()) return false;
+        if (!owned2() || !valid() && action !== "view") return false;
         const recovering = receipt?.state === "ready" && action !== "replace";
-        if (action === "inspect" && (!recovering || !task.requestAttempt || task.requestAttempt !== receipt?.attempt)) return false;
-        if (action === "recover" && ["ready", "stale"].includes(task.status) && !recovering) {
-          notify("\u672A\u627E\u5230\u53EF\u6062\u590D\u7684\u6B63\u6587\uFF0C\u672C\u6B21\u672A\u53D1\u9001\u8BF7\u6C42\u3002");
+        if (action === "view" && !recovering) {
+          const retained = unsavedDiaryBodies.get(r)?.get(dateKey);
+          if (retained) {
+            show(retained, reason["receipt-save-failed"]);
+            return false;
+          }
+        }
+        if (!recovering && (onlyLocal || action === "recover" && ["ready", "stale"].includes(task.status))) {
+          if (action !== "inspect") notify("\u672A\u627E\u5230\u53EF\u6062\u590D\u7684\u6B63\u6587\uFF0C\u672C\u6B21\u672A\u53D1\u9001\u8BF7\u6C42\u3002");
           return false;
         }
-        if (action === "recover" && task.status === "stale" && receipt?.result) {
-          copyResult(receipt.result.text, true);
-          return false;
-        }
+        if (action === "inspect" && task.requestAttempt !== receipt?.attempt) return false;
         const legacyRisk = !receipt && (task.attempts > 0 || !!task.requestAttempt || task.status === "uncertain");
         if (action === "auto" && !recovering && (receipt || legacyRisk)) {
           if (receipt?.state === "claimed" && !receipt.priorDispatch) return status("claimed", "\u5DF2\u786E\u8BA4\u5C1A\u672A\u53D1\u9001\uFF0C\u53EF\u4EE5\u624B\u52A8\u91CD\u65B0\u9886\u53D6\u3002");
           return status("uncertain", "\u6B64\u524D\u8BF7\u6C42\u53EF\u80FD\u5DF2\u7ECF\u8BA1\u8D39\uFF0C\u81EA\u52A8\u8865\u5199\u4E0D\u4F1A\u91CD\u590D\u53D1\u9001\u3002");
         }
-        if (!recovering && (!token.trim() || !canUseRealModel(world.settings))) {
-          if (manualTrigger) notify("\u8BF7\u5148\u5728\u7EC8\u7AEF\u914D\u7F6E API\u3002");
-          return false;
-        }
         const feeRisk = legacyRisk || !!receipt && (receipt.state !== "claimed" || !!receipt.priorDispatch);
-        if (!recovering && feeRisk && !window.confirm("\u6B64\u65E5\u671F\u7684\u65E5\u8BB0\u6B64\u524D\u53EF\u80FD\u5DF2\u7ECF\u8BA1\u8D39\u3002\u518D\u6B21\u751F\u6210\u53EF\u80FD\u4EA7\u751F\u7B2C\u4E8C\u6B21\u8D39\u7528\u3002" + (receipt?.state === "ready" ? "\u8FD9\u4F1A\u66FF\u6362\u76EE\u524D\u4FDD\u7559\u7684\u672A\u5F52\u6863\u6B63\u6587\u3002" : "") + "\u786E\u5B9A\u7EE7\u7EED\uFF1F")) return false;
-        const { messages, facts, personal } = buildCharacterDiaryPrompt(r, world.user, dateKey, "", through, zone);
-        const memoryAt = Math.min(now(), facts.endMs), memoryStart = bounds.startMs;
-        const memorySnapshot2 = () => roleMemoryText(r, memoryAt, "", { since: memoryStart, includePrivate: false });
-        const snapshot3 = JSON.stringify([world.user, facts, memorySnapshot2()]);
-        const sourcesMatch = () => snapshot3 === JSON.stringify([world.user, collectDailyDiaryFacts(r, dateKey, true, through, zone), memorySnapshot2()]) && personalTicketValid(r, personal);
-        const sourceHash = await diarySourceHash(JSON.stringify([snapshot3, { ...personal, id: "" }]));
-        if (!valid() || !recovering && (epoch !== modelPageEpoch || !sourcesMatch())) return false;
         if (!recovering) {
+          if (!token.trim() || !canUseRealModel(world.settings)) {
+            if (manualTrigger) notify("\u8BF7\u5148\u5728\u7EC8\u7AEF\u914D\u7F6E API\u3002");
+            return false;
+          }
+          if (feeRisk && !window.confirm("\u6B64\u65E5\u671F\u7684\u65E5\u8BB0\u6B64\u524D\u53EF\u80FD\u5DF2\u7ECF\u8BA1\u8D39\u3002\u518D\u6B21\u751F\u6210\u53EF\u80FD\u4EA7\u751F\u7B2C\u4E8C\u6B21\u8D39\u7528\u3002" + (receipt?.state === "ready" ? "\u8FD9\u4F1A\u66FF\u6362\u76EE\u524D\u4FDD\u7559\u7684\u672A\u5F52\u6863\u6B63\u6587\u3002" : "") + "\u786E\u5B9A\u7EE7\u7EED\uFF1F")) return false;
+          const originalContext = contextStamp();
+          const { messages, personal: personal2, evidence: evidence3 } = buildCharacterDiaryPrompt(r, world.user, dateKey, "", through, zone);
           const claim = { attempt: crypto.randomUUID(), state: "claimed", priorDispatch: feeRisk };
+          const capture = { ...evidence3, scope: { worldId, roleId: r.id, dateKey, zone, attempt: claim.attempt } };
+          const sourceHash = await diarySourceHash(JSON.stringify(capture));
+          const sourcesMatch = () => diaryEvidenceValid(r, evidence3, now(), world.user);
+          if (!valid() || epoch !== modelPageEpoch || !sourcesMatch()) return false;
           await replaceDiaryReceipt(key2, receipt, claim);
           if (!valid() || !sourcesMatch()) return false;
           const previous = { ...task };
@@ -20785,14 +21151,14 @@ channel.onmessage=async({data:job})=>{
           const settings2 = world.settings, credential = token;
           const sent = { ...claim, state: "sent" };
           await replaceDiaryReceipt(key2, claim, sent);
-          if (!valid() || epoch !== modelPageEpoch || !sourcesMatch() || world.settings !== settings2 || token !== credential) {
+          if (!valid() || epoch !== modelPageEpoch || world.settings !== settings2 || token !== credential || !sourcesMatch()) {
             await replaceDiaryReceipt(key2, sent, claim);
             return false;
           }
-          const timeline = prepareTimeline(world, r, now(), personal.id, "diary", dateKey, through);
-          let text4, payload;
+          const timeline = prepareTimeline(world, r, now(), personal2.id, "diary", dateKey, through);
+          let text4, payload, completionReason;
           task.status = "generating";
-          syslog("diary", `\u8BF7\u6C42\u751F\u6210\u89D2\u8272\u6BCF\u65E5\u65E5\u8BB0 \xB7 ${r.name} \xB7 ${dateKey}`, { model: settings2.model, dateKey, chatCount: facts.summary.chatCount, sceneCount: facts.summary.sceneCount });
+          diagnose("dispatched");
           try {
             const pending = readModelBeforeDeadline(async (signal) => readChatResponseBody(await postModel(settings2.endpoint.trim().replace(/\/+$/, "") + "/chat/completions", {
               method: "POST",
@@ -20801,83 +21167,182 @@ channel.onmessage=async({data:job})=>{
               body: JSON.stringify({ model: settings2.model, messages: withTimeline(messages, timeline?.instruction), temperature: +settings2.temperature || 0.8, ...timeline?.limit || completionLimit(settings2, "diary") })
             })), void 0, true);
             safeRenderWhenNotTyping();
-            const result2 = splitPersonalReply(parseChatResponse(await pending, !!timeline));
+            const body = await pending;
+            completionReason = body?.choices?.[0]?.finish_reason;
+            const result2 = splitPersonalReply(parseChatResponse(body, true));
             text4 = cleanGeneratedDiaryText(result2.text);
             payload = result2.payload;
             if (!text4) throw Error("empty diary");
           } catch (error) {
+            const truncated = completionReason === "length" || completionReason === "MAX_TOKENS";
+            diagnose(truncated ? "body-truncated" : error instanceof Error && error.name === "TimeoutError" ? "request-timeout" : "api-failed");
             if (!(modelPageHidden && error instanceof Error && error.name === "AbortError")) {
               await replaceDiaryReceipt(key2, sent, { ...sent, state: "failed" });
             }
-            const message = "\u8BF7\u6C42\u7ED3\u679C\u672A\u786E\u8BA4\uFF0C\u53EF\u80FD\u5DF2\u8BA1\u8D39\u3002\u518D\u6B21\u751F\u6210\u9700\u624B\u52A8\u786E\u8BA4\u3002";
+            const message = (truncated ? "\u6A21\u578B\u8F93\u51FA\u5DF2\u622A\u65AD\uFF0C\u672A\u53D6\u5F97\u5B8C\u6574\u6B63\u6587\u3002" : "\u672A\u53D6\u5F97\u5B8C\u6574\u65E5\u8BB0\u6B63\u6587\u3002") + "\u8BF7\u6C42\u53EF\u80FD\u5DF2\u8BA1\u8D39\uFF0C\u518D\u6B21\u751F\u6210\u9700\u624B\u52A8\u786E\u8BA4\u3002";
             if (!status("uncertain", message) && owned2() && r.diaryTasks?.includes(task) && task.requestAttempt === sent.attempt && task.status === "generating") {
               task.status = "uncertain";
               task.lastError = message;
             }
-            if (manualTrigger && owned2()) notify("\u65E5\u8BB0\u8BF7\u6C42\u7ED3\u679C\u672A\u786E\u8BA4\uFF0C\u53EF\u80FD\u5DF2\u8BA1\u8D39\u3002");
+            if (manualTrigger && owned2()) notify(message);
             return false;
           }
           wireResult = text4;
-          receipt = { ...sent, state: "ready", result: { text: text4, payload, sourceHash, requestId: personal.id, ...timeline ? { timeline: timeline.ticket } : {} } };
+          receipt = { ...sent, state: "ready", result: {
+            text: text4,
+            payload,
+            sourceHash,
+            requestId: personal2.id,
+            evidence: capture,
+            contextStamp: originalContext,
+            ...payload ? { personalHash: diaryFingerprint({ ...personal2, id: "" }) } : {},
+            ...timeline ? { timeline: timeline.ticket } : {}
+          } };
           await replaceDiaryReceipt(key2, sent, receipt);
+          readySaved = true;
+          unsavedDiaryBodies.get(r)?.delete(dateKey);
         }
         if (!receipt?.result) return false;
         const result = receipt.result;
-        const sourcesChanged = !sourcesMatch() || result.sourceHash !== sourceHash || Boolean(recovering ? task.requestAttempt && task.requestAttempt !== receipt.attempt : task.requestAttempt !== receipt.attempt);
-        if (!valid() || sourcesChanged) {
-          if (sourcesChanged) status("stale", "\u6B63\u6587\u57FA\u4E8E\u5DF2\u53D8\u5316\u7684\u6765\u6E90\u6216\u4EFB\u52A1\uFF0C\u4EC5\u4F9B\u590D\u5236\uFF0C\u4E0D\u80FD\u5F52\u6863\u3002");
-          if (wireResult && owned2() && r.diaryTasks?.includes(task) && task.requestAttempt === receipt.attempt && task.status === "generating") {
-            task.status = sourcesChanged ? "stale" : "ready";
-            task.lastError = sourcesChanged ? "\u6B63\u6587\u57FA\u4E8E\u5DF2\u53D8\u5316\u7684\u6765\u6E90\uFF0C\u4EC5\u4F9B\u590D\u5236\u3002" : "\u6B63\u6587\u5DF2\u4FDD\u7559\uFF0C\u53EF\u4EE5\u4FDD\u5B58\u5DF2\u6709\u7ED3\u679C\u3002";
+        readySaved = true;
+        const evidence2 = result.evidence;
+        let personal;
+        let failure;
+        try {
+          if (evidence2) {
+            const scope = evidence2.scope;
+            const hash = await diarySourceHash(JSON.stringify(evidence2));
+            if (!scope || scope.worldId !== worldId || scope.roleId !== r.id || scope.dateKey !== dateKey || scope.zone !== zone || scope.attempt !== receipt.attempt || task.requestAttempt !== receipt.attempt || hash !== result.sourceHash || world.diaryWorldId !== worldId || activeWorldZone() !== zone || evidence2.cutoff !== Math.min(bounds.endMs, through) || !diaryEvidenceValid(r, evidence2, now(), world.user)) {
+              failure = "source-invalid";
+            }
+          } else {
+            const legacy2 = buildCharacterDiaryPrompt(r, world.user, dateKey, "", through, zone, true);
+            const memoryAt = Math.min(now(), legacy2.facts.endMs);
+            const legacySnapshot = () => JSON.stringify([world.user, collectDailyDiaryFacts(r, dateKey, true, through, zone), roleMemoryText(r, memoryAt, "", { since: bounds.startMs, includePrivate: false })]);
+            const snapshot3 = legacySnapshot();
+            const hash = await diarySourceHash(JSON.stringify([snapshot3, { ...legacy2.personal, id: "" }]));
+            if (hash !== result.sourceHash || snapshot3 !== legacySnapshot() || !personalTicketValid(r, legacy2.personal) || !!task.requestAttempt && task.requestAttempt !== receipt.attempt) failure = "source-invalid";
+            personal = { ...legacy2.personal, id: result.requestId };
           }
-          if (manualTrigger || wireResult) copyResult(result.text, sourcesChanged);
-          if (owned2()) notify("\u65E5\u8BB0\u6B63\u6587\u5DF2\u4FDD\u7559\uFF0C\u5B58\u6863\u6216\u8D44\u6599\u5DF2\u53D8\u5316\uFF0C\u672A\u5F52\u6863\u3002");
+        } catch {
+          failure = "source-check-unavailable";
+        }
+        if (failure || !valid() || !r.diaryTasks?.includes(task)) {
+          const code = hasCharacterDiaryForDate(r, dateKey) ? "duplicate-archive" : failure || "archive-save-failed";
+          diagnose(code);
+          if (!status(code === "source-invalid" ? "stale" : "ready", reason[code]) && wireResult && owned2() && r.diaryTasks?.includes(task) && task.requestAttempt === receipt.attempt && task.status === "generating") {
+            task.status = code === "source-invalid" ? "stale" : "ready";
+            task.lastError = reason[code];
+          }
+          if (manualTrigger || wireResult || action === "view") show(result.text, reason[code], code === "source-check-unavailable" || code === "archive-save-failed");
           return false;
         }
-        if (recovering && !manualTrigger) {
-          status("ready", "\u6B63\u6587\u5DF2\u751F\u6210\uFF0C\u53EF\u4EE5\u76F4\u63A5\u4FDD\u5B58\u5DF2\u6709\u7ED3\u679C\u3002\u81EA\u52A8\u8865\u5199\u5DF2\u6682\u505C\u3002");
+        const aux = timelinePayload(result.payload), cutoff = Math.min(bounds.endMs, through);
+        const staged = { ...r, events: r.events.slice() };
+        let life = { accepted: /* @__PURE__ */ new Map(), rejected: 0 };
+        let lifeMalformed = false;
+        try {
+          if (result.timeline && result.timeline.zone === zone && lifeEnabled()) life = applyTimeline(staged, result.timeline, aux, now(), timelineFocusSpans(r, now()));
+        } catch {
+          lifeMalformed = true;
+          staged.events = r.events.slice();
+        }
+        const generated = [];
+        const text3 = resolveDiaryLife(result.text, life, cutoff, !lifeMalformed && Array.isArray(aux?.life) && aux.life.length > 0, generated);
+        const reader = generated.length ? diarySourceReader(staged, cutoff, now()) : void 0;
+        const generatedRefs = generated.map((event) => reader?.read("event", event.id));
+        if (!text3 || generatedRefs.some((ref2) => !ref2)) {
+          diagnose("life-reference-invalid");
+          status("stale", reason["life-reference-invalid"]);
+          if (manualTrigger || wireResult || action === "view") show(result.text, reason["life-reference-invalid"]);
           return false;
         }
-        const before = { diaries: structuredClone(r.diaries), diaryTasks: structuredClone(r.diaryTasks), diaryDay: r.diaryDay, personalThreads: r.personalThreads, events: r.events.slice() };
-        const aux = timelinePayload(result.payload);
-        const life = result.timeline && result.timeline.zone === zone && lifeEnabled() ? applyTimeline(r, result.timeline, aux, now(), timelineFocusSpans(r, now())) : { accepted: /* @__PURE__ */ new Map(), rejected: 0 };
-        const text3 = resolveDiaryLife(result.text, life, facts.endMs, !!aux && Object.hasOwn(aux, "life"));
-        if (!text3) {
-          r.events = before.events;
-          status("stale", "\u65E5\u8BB0\u5F15\u7528\u65E0\u6CD5\u786E\u8BA4\uFF0C\u5DF2\u4FDD\u7559\u8349\u7A3F\u4F9B\u6838\u5BF9\u3002");
-          copyResult(result.text, true);
+        if (action === "view" || recovering && !manualTrigger) {
+          status("ready", "\u6B63\u6587\u5DF2\u751F\u6210\uFF0C\u53EF\u4EE5\u76F4\u63A5\u4FDD\u5B58\u5DF2\u6709\u7ED3\u679C\u3002");
+          if (action === "view") show(result.text, "\u539F\u59CB\u6765\u6E90\u5DF2\u590D\u6838\u3002\u53EF\u4EE5\u4FDD\u5B58\u6B64\u6B63\u6587\uFF1B\u67E5\u770B\u3001\u590D\u5236\u548C\u4FDD\u5B58\u5747\u4E0D\u91CD\u65B0\u8C03\u7528 API\u3002", true);
           return false;
         }
-        const applied = applyGeneratedCharacterDiary(r, dateKey, text3, now(), through, zone);
-        if (!applied.ok) {
-          r.events = before.events;
-          return false;
+        if (result.contextStamp !== void 0 && result.contextStamp !== contextStamp()) diagnose("unrelated-context-changed");
+        if (life.rejected || aux && Object.hasOwn(aux, "life") && !life.accepted.size) diagnose("optional-life-discarded");
+        if (result.payload && result.personalHash) {
+          try {
+            const current = buildCharacterDiaryPrompt(r, world.user, dateKey, "", through, zone).personal;
+            if (diaryFingerprint({ ...current, id: "" }) === result.personalHash) personal = { ...current, id: result.requestId };
+          } catch {
+          }
         }
-        const ticket = { ...personal, id: result.requestId };
-        if (applied.diary) applied.diary.continuitySources = ticket.sources;
-        if (result.payload && applied.diary) applyPersonalReply(r, ticket, result.payload, facts.endMs, [applied.diary]);
-        if (!saveLogged("diary", `\u5DF2\u5F52\u6863 ${r.name} \u7684\u6BCF\u65E5\u65E5\u8BB0 (${dateKey}) \xB7 ${applied.diary?.wordCount || 0} \u5B57`, { dateKey, diaryId: applied.diary?.id, wordCount: applied.diary?.wordCount })) {
+        const before = { diaries: structuredClone(r.diaries), diaryTasks: structuredClone(r.diaryTasks), diaryDay: r.diaryDay, personalThreads: r.personalThreads, events: r.events };
+        let saved = false;
+        try {
+          r.events = staged.events;
+          const archiveEvidence = evidence2 && { version: evidence2.version, cutoff, sources: [...evidence2.sources, ...generatedRefs.filter((ref2) => ref2 !== void 0)] };
+          const applied = applyGeneratedCharacterDiary(r, dateKey, text3, now(), through, zone, archiveEvidence);
+          if (!applied.ok) {
+            r.events = before.events;
+            diagnose("duplicate-archive");
+            return false;
+          }
+          if (!evidence2 && personal && applied.diary) applied.diary.continuitySources = personal.sources;
+          if (result.payload && applied.diary && aux && Object.hasOwn(aux, "updates")) {
+            let updated = false;
+            try {
+              updated = !!personal && personal.id === result.requestId && applyPersonalReply(r, personal, result.payload, cutoff, [applied.diary]);
+            } catch {
+              r.personalThreads = before.personalThreads;
+            }
+            if (!updated) diagnose("optional-private-discarded");
+          }
+          if (!saveLogged("diary", "archived", { roleId: r.id, dateKey, diaryId: applied.diary?.id, wordCount: applied.diary?.wordCount })) {
+            Object.assign(r, before);
+            diagnose("archive-save-failed");
+            const pending = r.diaryTasks?.find((item2) => item2.dateKey === dateKey);
+            if (pending) {
+              pending.status = "ready";
+              pending.lastError = reason["archive-save-failed"];
+            }
+            show(result.text, reason["archive-save-failed"], true);
+            return false;
+          }
+          saved = true;
+        } catch {
           Object.assign(r, before);
-          const pending = r.diaryTasks?.find((item2) => item2.dateKey === dateKey);
-          if (pending) {
-            pending.status = "ready";
-            pending.lastError = "\u6B63\u6587\u5DF2\u751F\u6210\uFF0C\u4E3B\u6863\u4FDD\u5B58\u5931\u8D25\u3002\u53EF\u76F4\u63A5\u6062\u590D\u5DF2\u6709\u7ED3\u679C\u3002";
-          }
-          copyResult(result.text);
-          return false;
+          diagnose("archive-save-failed");
+          status("ready", reason["archive-save-failed"]);
+          show(result.text, reason["archive-save-failed"], true);
         }
+        if (!saved) return false;
         if (manualTrigger && owned2()) notify(`\u5DF2\u751F\u6210\u5E76\u5F52\u6863 ${r.name} \u5728 ${dateKey} \u7684\u79C1\u4EBA\u65E5\u8BB0`);
         wireResult = void 0;
-        await replaceDiaryReceipt(key2, receipt, { attempt: receipt.attempt, state: "archived" });
+        try {
+          await replaceDiaryReceipt(key2, receipt, { attempt: receipt.attempt, state: "archived" });
+        } catch {
+          diagnose("receipt-finalize-failed");
+        }
         return true;
       } catch {
-        if (wireResult) copyResult(wireResult);
-        if (owned2()) {
+        if (wireResult) {
+          const code = readySaved ? "source-check-unavailable" : "receipt-save-failed";
+          diagnose(code);
+          if (readySaved) status("ready", reason[code]);
+          else {
+            const retained = unsavedDiaryBodies.get(r) || /* @__PURE__ */ new Map();
+            retained.set(dateKey, wireResult);
+            unsavedDiaryBodies.set(r, retained);
+            status("uncertain", reason[code]);
+          }
+          show(wireResult, reason[code], readySaved);
+        } else if (owned2()) {
+          const retained = action === "view" ? unsavedDiaryBodies.get(r)?.get(dateKey) : void 0;
+          if (retained) {
+            show(retained, reason["receipt-save-failed"]);
+            return false;
+          }
+          diagnose("receipt-unavailable");
           if (task.status === "generating") {
             task.status = "uncertain";
             task.lastError = "\u7ED3\u679C\u672A\u80FD\u786E\u8BA4\u3002\u8BF7\u6838\u5BF9\u8D39\u7528\u53CA\u672C\u5730\u72B6\u6001\u3002";
           }
-          notify("\u65E5\u8BB0\u4EFB\u52A1\u8BB0\u5F55\u65E0\u6CD5\u786E\u8BA4\uFF0C\u81EA\u52A8\u8865\u5199\u5DF2\u6682\u505C\u3002");
+          if (action !== "inspect") notify("\u65E5\u8BB0\u4EFB\u52A1\u8BB0\u5F55\u65E0\u6CD5\u786E\u8BA4\uFF0C\u672C\u6B21\u672A\u91CD\u65B0\u53D1\u9001\u3002");
         }
         return false;
       }
@@ -20928,14 +21393,14 @@ channel.onmessage=async({data:job})=>{
         safeRenderWhenNotTyping();
       }
     }
-    async function triggerDiaryTaskForRole(r, dateKey, replaceResult = false) {
+    async function triggerDiaryTaskForRole(r, dateKey, action = "recover") {
       if (diaryQueueBusy) {
         notify("\u65E5\u8BB0\u961F\u5217\u6B63\u5728\u751F\u6210\u4E2D\uFF0C\u8BF7\u7A0D\u5019");
         return;
       }
       diaryQueueBusy = true;
       try {
-        await generateCharacterDiaryForDate(r, dateKey, replaceResult ? "replace" : "recover");
+        await generateCharacterDiaryForDate(r, dateKey, action);
       } finally {
         diaryQueueBusy = false;
         safeRenderWhenNotTyping();
@@ -21156,9 +21621,9 @@ channel.onmessage=async({data:job})=>{
         const chunks = [];
         let size = 0;
         const fail3 = (message) => {
-          const visible = voiceOperation === op && voicePanelCurrent(op);
+          const visible2 = voiceOperation === op && voicePanelCurrent(op);
           cancelVoiceOperation(op);
-          if (visible) {
+          if (visible2) {
             render(false);
             notify(message);
           }
@@ -21198,9 +21663,9 @@ channel.onmessage=async({data:job})=>{
         recorder.start(300);
         render(false);
       } catch {
-        const visible = voiceOperation === op && voicePanelCurrent(op);
+        const visible2 = voiceOperation === op && voicePanelCurrent(op);
         cancelVoiceOperation(op);
-        if (visible) {
+        if (visible2) {
           render(false);
           notify("\u65E0\u6CD5\u5F00\u59CB\u5F55\u97F3\uFF1A\u8BF7\u5141\u8BB8\u9EA6\u514B\u98CE\u6743\u9650\uFF0C\u6216\u4E0A\u4F20\u97F3\u9891\u6587\u4EF6\u3002");
         }
@@ -21470,9 +21935,9 @@ channel.onmessage=async({data:job})=>{
       const operation = new AbortController();
       activeChatRequests.set(r.id, operation);
       curtainOperations.add(p);
-      const visible = () => data === world && role() === r && (view === "chat" || view === "playdetail" && detailId === p.id);
+      const visible2 = () => data === world && role() === r && (view === "chat" || view === "playdetail" && detailId === p.id);
       const current = () => data === world && epoch === modelPageEpoch && world.roles.includes(r) && r.plays.filter((play) => play.id === p.id).length === 1 && r.plays.includes(p) && p.endedAt === endedAt && p.curtainReply === receipt && activeChatRequests.get(r.id) === operation && !operation.signal.aborted;
-      if (visible()) render(false);
+      if (visible2()) render(false);
       const at = now(), attempt = { id: uid(), at, status: "unknown" };
       const source = () => JSON.stringify([p.title, p.world, p.user, p.char, stageMessagesAt(p.messages, endedAt), stageMessagesAt(p.intermissionMessages, endedAt)]);
       const basis = source();
@@ -21518,14 +21983,14 @@ channel.onmessage=async({data:job})=>{
           attempts.pop();
           if (!save()) attempts.push(attempt);
         }
-        if (visible()) notify(sent ? "\u6F14\u51FA\u5DF2\u5F52\u6863\u3002\u843D\u5E55\u56DE\u590D\u7ED3\u679C\u672A\u786E\u8BA4\uFF0C\u53EF\u80FD\u5DF2\u8BA1\u8D39\u3002" : "\u6F14\u51FA\u5DF2\u5F52\u6863\u3002\u843D\u5E55\u56DE\u590D\u672A\u53D1\u9001\u3002");
+        if (visible2()) notify(sent ? "\u6F14\u51FA\u5DF2\u5F52\u6863\u3002\u843D\u5E55\u56DE\u590D\u7ED3\u679C\u672A\u786E\u8BA4\uFF0C\u53EF\u80FD\u5DF2\u8BA1\u8D39\u3002" : "\u6F14\u51FA\u5DF2\u5F52\u6863\u3002\u843D\u5E55\u56DE\u590D\u672A\u53D1\u9001\u3002");
       } finally {
         if (activeChatRequests.get(r.id) === operation) {
           activeChatRequests.delete(r.id);
           chatTyping.delete(r.id);
         }
         curtainOperations.delete(p);
-        if (visible()) render(false);
+        if (visible2()) render(false);
       }
     }
     function endNovel(kind = novelViewKind, returnToChat = true) {
@@ -22021,10 +22486,11 @@ channel.onmessage=async({data:job})=>{
         notify(`\u5DF2\u5C06\u8FD9\u7BC7\u65E5\u8BB0\u5206\u4EAB\u7ED9 ${r.name}`);
         return;
       }
-      if (act === "retrydiary" || act === "regeneratediary") {
+      if (act === "retrydiary" || act === "regeneratediary" || act === "viewdiaryresult") {
         const dateKey = b.dataset.date || "";
         if (!r || !dateKey) return;
-        void triggerDiaryTaskForRole(r, dateKey, act === "regeneratediary");
+        const status = r.diaryTasks?.find((t) => t.dateKey === dateKey)?.status;
+        void triggerDiaryTaskForRole(r, dateKey, act === "regeneratediary" ? "replace" : act === "viewdiaryresult" || status === "stale" || unsavedDiaryBodies.get(r)?.has(dateKey) ? "view" : status === "ready" ? "save" : "recover");
         return;
       }
       if (act === "genfirstmsg") {

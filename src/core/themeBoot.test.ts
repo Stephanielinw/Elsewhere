@@ -35,4 +35,8 @@ test('theme bootstrap tolerates unavailable storage and keeps user zoom enabled'
  const script=html.match(/<script id="theme-boot">([\s\S]*?)<\/script>/)?.[1];assert.ok(script);
  assert.doesNotThrow(()=>runInNewContext(script,{localStorage:{getItem(){throw Error('unavailable');}}}));
  assert.match(html,/viewport-fit=cover/);assert.doesNotMatch(html,/user-scalable=no|maximum-scale=1/);
+ assert.match(html,/<meta name="apple-mobile-web-app-title" content="Elsewhere"\s*\/>/);
+ assert.match(html,/<link rel="apple-touch-icon" sizes="180x180" href="\/apple-touch-icon\.png"\s*\/>/);
+ assert.match(html,/<link rel="icon" type="image\/png" href="\/assets\/aistudio\/image_8fde87a3\.png"\s*\/>/);
 });
+

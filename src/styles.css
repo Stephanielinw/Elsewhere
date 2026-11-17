@@ -138,7 +138,7 @@ html,body{overflow:hidden;background:var(--bg)}
 .app-view .field,.app-view .chat-drawer,.app-view .compose,.chat-view .chat-drawer,.intermission-compose{background:color-mix(in srgb,var(--surface) 43%,transparent)!important;border-color:var(--glass-stroke)!important;backdrop-filter:blur(20px) saturate(160%);-webkit-backdrop-filter:blur(20px) saturate(160%)}
 .chat-view .chat-header,.chat-view .compose{background:var(--bg)}
 .app-view .viewport,.chat-view .chat-history{background:transparent}.role,.role-row{background:color-mix(in srgb,var(--surface) 9%,transparent)}
-.login-list{color:var(--ink);overflow:hidden}.landing-mark{background:color-mix(in srgb,var(--surface) 48%,transparent);border-color:var(--glass-stroke)}.landing .lead,.logo{color:var(--muted)}.landing .brand{color:var(--ink)}
+.login-list{color:var(--ink);overflow:hidden}.landing-mark{background:color-mix(in srgb,var(--surface) 48%,transparent);border-color:var(--glass-stroke);overflow:hidden}.landing-mark-icon{width:42px;height:42px;display:block;object-fit:contain;pointer-events:none;user-select:none}html[data-theme="night"] .landing-mark-icon{filter:brightness(0) invert(.9)}.landing .lead,.logo{color:var(--muted)}.landing .brand{color:var(--ink)}
 /* Real backstage window: visual and semantic separation from the fictional novel. */
 .intermission-view{display:flex;flex-direction:column;min-height:0}.intermission-top{flex-shrink:0;gap:8px}.intermission-top h1{font-size:15px}.intermission-top .small{font-size:10px;color:var(--muted)}
 .pause-pill{font:700 9px/1 -apple-system,sans-serif;letter-spacing:1.3px;background:color-mix(in srgb,var(--surface) 56%,transparent);border:1px solid var(--glass-stroke);border-radius:20px;padding:9px 10px;color:var(--accent)}

@@ -29,6 +29,9 @@ const result = await esbuild.build({
 
 const jsCode = result.outputFiles[0].text.replaceAll('// raw-source:' + root + path.sep, '// raw-source:');
 
+const touchIconB64 = fs.readFileSync(path.join(root, 'public/apple-touch-icon.png')).toString('base64');
+const touchIconHref = `data:image/png;base64,${touchIconB64}`;
+
 const html = `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -38,6 +41,9 @@ const html = `<!doctype html>
 <meta name="color-scheme" content="light">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Elsewhere">
+<link rel="apple-touch-icon" sizes="180x180" href="${touchIconHref}">
+<link rel="icon" type="image/png" sizes="180x180" href="${touchIconHref}">
 <title>Elsewhere · 一角色一手机 (Phase 1 Standalone)</title>
 <style>
 ${css}

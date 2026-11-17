@@ -19,7 +19,7 @@ function distManifest(dir) {
     if (file.isDirectory()) continue;
     const full = path.join(file.parentPath, file.name);
     const name = path.relative(dir, full).split(path.sep).join('/');
-    assert.match(name, /^(?:index\.html|Elsewhere_Phase1_Standalone\.html|assets\/[\w-]+\.(?:js|css))$/, 'Unexpected published file');
+    assert.match(name, /^(?:index\.html|Elsewhere_Phase1_Standalone\.html|apple-touch-icon\.png|assets\/(?:aistudio\/)?[\w.-]+\.(?:js|css|png))$/, 'Unexpected published file');
     const bytes = fs.readFileSync(full);
     assert.ok(bytes.length > 0, 'Empty published file');
     const text = bytes.toString('utf8');
@@ -127,8 +127,8 @@ async function main() {
       if (req.method !== 'GET' || !name.startsWith('/Elsewhere/') || !Object.hasOwn(frozen, relative)) {
         res.writeHead(404).end(); return;
       }
-      const mime = relative.endsWith('.js') ? 'text/javascript' : relative.endsWith('.css') ? 'text/css' : 'text/html';
-      res.writeHead(200, {'content-type':mime+'; charset=utf-8','cache-control':'no-store'});
+      const mime = relative.endsWith('.js') ? 'text/javascript; charset=utf-8' : relative.endsWith('.css') ? 'text/css; charset=utf-8' : relative.endsWith('.png') ? 'image/png' : 'text/html; charset=utf-8';
+      res.writeHead(200, {'content-type':mime,'cache-control':'no-store'});
       fs.createReadStream(path.join(dir,relative)).pipe(res);
     });
     await new Promise((resolve,reject) => {server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});

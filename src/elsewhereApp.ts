@@ -19,6 +19,7 @@ import {createNovelTasks,commitNovelReply,prepareNovelRegeneration,parseNovelRes
 import {monitorItemsForDisplay} from './core/monitorPresentation';
 import {uiIcon,plainUiLabel,normalizeIconTheme,setUiIconTheme,installDoodleIcons} from './uiIcons';
 import {doodleIcons,doodleAnimation,doodleNotice} from './doodleAssets';
+import {BRAND_ICON_ASSET_PATH,LANDING_MARK_ICON_DATA_URL} from './brandIcon';
 import {createDoodleMotion} from './doodleMotion';
 import {chatTiming,setChatFocused,enqueueChat,prepareChatDue,claimChatBatch,canChooseChatScene,chatSceneEntry,setChatScene,chatBatchValid,chatRevisionKey,completeChatBatch,failChatBatch,recoverChatTiming,retryChatTiming,reviseChatTiming,sourceStillValid,messageStillValid} from './core/chatScheduler';
 import {compileChatBatchPrompt,buildPhoneRegeneration,parseChatResponse,readChatResponse,readChatResponseBody} from './core/chatBatchPrompt';
@@ -2558,7 +2559,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     return shell(
       `<div class="landing" data-testid="landing-page">
         <div class="landing-heading">
-          <div class="landing-mark">e.</div>
+          <div class="landing-mark"><img class="landing-mark-icon" src="${LANDING_MARK_ICON_DATA_URL}" data-icon-src="${BRAND_ICON_ASSET_PATH}" alt="Elsewhere" /></div>
           <div class="logo">ELSEWHERE / PERSONAL SPACE</div>
           <div class="brand">欢迎回来。</div>
           <p class="lead">选择一个角色，打开你们的手机。</p>

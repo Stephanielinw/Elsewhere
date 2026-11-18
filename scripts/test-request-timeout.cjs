@@ -331,11 +331,24 @@ async function main(){
       await t.release();await t.advance();assert.equal((await t.role()).scene,null);
     });
     if(new URL(url).protocol==='https:')await run('real BFCache returns to uncertain intermission without resending',{body:1,posts:1},async t=>{
-      await t.stage();await t.send();await t.advance(31000);await t.bodyReady();
+      await t.stage();
+      // Settle initial document/brand subresources before starting the held request.
+      // Do not wait for network idle after sending: that would change the in-flight scenario.
+      await t.p.waitForLoadState('networkidle');
+      const cdp=await t.ctx.newCDPSession(t.p);
+      const misses=[];
+      await cdp.send('Page.enable');
+      cdp.on('Page.backForwardCacheNotUsed',event=>misses.push(event.notRestoredExplanations));
+      await t.send();await t.advance(31000);await t.bodyReady();
       const id=await t.p.evaluate(()=>window.timeoutFixture.document);
       await t.p.goto(away);await t.p.goBack({waitUntil:'commit'});await ready(t.p);
       await t.p.locator('#app[data-write-access=writer]').waitFor();
-      assert.equal(await t.p.evaluate(()=>window.timeoutFixture.document),id);
+      const restored=await t.p.evaluate(()=>window.timeoutFixture.document);
+      if(restored!==id){
+        const reasons=await t.p.evaluate(()=>performance.getEntriesByType('navigation').at(-1)?.notRestoredReasons?.toJSON?.()??null);
+        console.error('BFCache diagnostics:',JSON.stringify({misses,reasons}));
+      }
+      assert.equal(restored,id,'BFCache must restore the same document');
       assert.equal(await t.p.evaluate(()=>window.timeoutFixture.shows.at(-1)),true);
       await status(t.p).filter({hasText:'可能已计费'}).waitFor();
       await t.release();await t.advance();assert.equal(await t.chars(),0);

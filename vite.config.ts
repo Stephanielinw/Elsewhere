@@ -2,11 +2,21 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig} from 'vite';
+import {ensureBrandAssets} from './scripts/ensure-brand-assets.mjs';
 
 export default defineConfig(() => {
   return {
     base: process.env.GITHUB_PAGES === 'true' ? '/Elsewhere/' : '/',
-    plugins: [react(), tailwindcss()],
+    plugins: [
+      {
+        name: 'ensure-elsewhere-brand-assets',
+        configResolved() {
+          ensureBrandAssets(__dirname);
+        },
+      },
+      react(),
+      tailwindcss(),
+    ],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

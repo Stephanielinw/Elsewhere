@@ -1,8 +1,10 @@
 import * as esbuild from 'esbuild';
 import fs from 'node:fs';
 import path from 'node:path';
+import {ensureBrandAssets} from './ensure-brand-assets.mjs';
 
 const root = process.cwd();
+ensureBrandAssets(root);
 const css = fs.readFileSync(path.join(root, 'src/styles.css'), 'utf8');
 const themeBoot = fs.readFileSync(path.join(root, 'index.html'), 'utf8').match(/<script id="theme-boot">[\s\S]*?<\/script>/)?.[0];
 if (!themeBoot) throw new Error('Missing first-paint theme bootstrap');

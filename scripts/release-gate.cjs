@@ -128,7 +128,9 @@ async function main() {
         res.writeHead(404).end(); return;
       }
       const mime = relative.endsWith('.js') ? 'text/javascript; charset=utf-8' : relative.endsWith('.css') ? 'text/css; charset=utf-8' : relative.endsWith('.png') ? 'image/png' : 'text/html; charset=utf-8';
-      res.writeHead(200, {'content-type':mime,'cache-control':'no-store'});
+      // Serve only frozen public build bytes, with revalidation on ordinary requests.
+      // no-store on the test document can itself prevent a genuine BFCache restore.
+      res.writeHead(200, {'content-type':mime,'cache-control':'no-cache'});
       fs.createReadStream(path.join(dir,relative)).pipe(res);
     });
     await new Promise((resolve,reject) => {server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});

@@ -2558,12 +2558,16 @@ export function initElsewhereApp(saveSession:SaveSession): void {
 
     return shell(
       `<div class="landing" data-testid="landing-page">
-        <div class="landing-heading">
-          <div class="landing-mark"><img class="landing-mark-icon" src="${LANDING_MARK_ICON_DATA_URL}" data-icon-src="${BRAND_ICON_ASSET_PATH}" alt="Elsewhere" /></div>
-          <div class="logo">ELSEWHERE / PERSONAL SPACE</div>
-          <div class="brand">欢迎回来。</div>
-          <p class="lead">选择一个角色，打开你们的手机。</p>
-        </div>
+        <header class="landing-heading">
+          <div class="landing-brand-lockup">
+            <div class="landing-mark"><img class="landing-mark-icon" src="${LANDING_MARK_ICON_DATA_URL}" data-icon-src="${BRAND_ICON_ASSET_PATH}" alt="Elsewhere" /></div>
+            <div class="landing-heading-copy">
+              <div class="logo">ELSEWHERE / PERSONAL SPACE</div>
+              <h1 class="brand">欢迎回来。</h1>
+              <p class="lead">选择一个角色，打开你们的手机。</p>
+            </div>
+          </div>
+        </header>
 
         <section class="landing-card landing-profile-card" data-testid="card-my-profile" aria-label="我的资料">
           <div class="landing-card-header">
@@ -2580,7 +2584,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
                 <span class="who">${esc(u.name || '填写我自己的信息')}</span>
                 <span class="about">${esc(userSub)}</span>
               </span>
-              <span class="right">›</span>
+              <span class="right" aria-hidden="true">›</span>
             </button>${
               hasUserDetails
                 ? `<div class="landing-user-details" data-testid="profile-details-content">${
@@ -2634,7 +2638,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
                           r.name
                         )}</span><span class="about">${esc(r.job)} · ${esc(
                           r.place
-                        )}</span></span><span class="right">›</span></button><button type="button" class="role-edit" aria-label="编辑${esc(
+                        )}</span></span><span class="right" aria-hidden="true">›</span></button><button type="button" class="role-edit" aria-label="编辑${esc(
                           r.name
                         )}" title="编辑角色" data-action="editrole" data-id="${esc(
                           r.id
@@ -2653,7 +2657,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
           </div>
           <div class="landing-backup-actions">
             <button type="button" class="btn small secondary" data-action="export">导出备份</button>
-            <label class="btn small ghost" style="cursor:pointer">恢复备份<input id="landing-backup-file" type="file" accept=".json" hidden></label>
+            <label class="btn small ghost landing-restore-btn">恢复备份<input id="landing-backup-file" type="file" accept=".json" hidden></label>
             <button type="button" class="btn small ghost" data-action="downloadstandalone">下载独立离线版 (.html)</button>
           </div>
         </section>

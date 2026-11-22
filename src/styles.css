@@ -2595,3 +2595,21 @@ button.bubble-quote{display:block;text-align:left;font-family:inherit;border-top
  .home-view svg.is-doodle-drawing path:nth-child(3){animation-delay:.22s}
  .home-view svg.is-doodle-drawing path:nth-child(n+4){animation-delay:.32s}
 }
+
+
+/* Shared tap-to-open chat bubble action sheet */
+.message-inner .bubble[data-action="openbubbleactions"]{cursor:pointer;transition:filter .16s ease,transform .16s ease}
+.message-inner .bubble[data-action="openbubbleactions"]:hover{filter:brightness(.98)}
+.message-inner .bubble[data-action="openbubbleactions"]:active{transform:scale(.985)}
+.message-inner .bubble[data-action="openbubbleactions"]:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+.chat-bubble-action-overlay{position:fixed;inset:0;z-index:1200;display:flex;align-items:flex-end;justify-content:center;padding:16px}
+.chat-bubble-action-backdrop{position:absolute;inset:0;border:0;background:rgba(0,0,0,.42);cursor:default}
+.chat-bubble-action-dialog{position:relative;z-index:1;background:var(--surface,#fff);color:var(--ink);border:1px solid var(--line,#ddd);border-radius:20px;width:min(460px,100%);padding:18px;box-shadow:0 18px 55px rgba(0,0,0,.2);max-height:min(80dvh,600px);overflow:auto}
+.chat-bubble-action-caption{font-size:12px;font-weight:750;color:var(--muted,var(--ink));margin-bottom:7px}
+.chat-bubble-action-excerpt{padding:12px;background:var(--surface-soft,#f8f6f3);border:1px solid var(--line,#ddd);border-radius:12px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.55;max-height:125px;overflow:auto}
+.chat-bubble-action-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:14px 0}
+.chat-bubble-action-option,.chat-bubble-action-cancel{font:inherit;min-height:43px;border:1px solid var(--line,#ddd);border-radius:11px;color:var(--ink);background:var(--surface-soft,#f8f6f3);cursor:pointer;padding:10px 9px}
+.chat-bubble-action-option.is-danger{color:#b43a38}
+.chat-bubble-action-option:focus-visible,.chat-bubble-action-cancel:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.chat-bubble-action-cancel{width:100%;font-weight:700}
+@media(min-width:720px){.chat-bubble-action-overlay{align-items:center}}

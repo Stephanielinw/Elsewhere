@@ -1,6 +1,7 @@
 import type {EventRecord,FootprintArtifact,RoleData,SceneData,PlayData} from './types';
 import type {PersonalSource} from './roleLife';
 import {scenePlaceAt} from './messageProvenance';
+import {appointmentOverlaps} from './encounter';
 import {dateDayNumber} from './homeTasks';
 export type LifeAction='rest'|'walk'|'read'|'organize'|'practice'|'care'|'social'|'prepare-rest'|'reminder';
 export interface LifeIntent {
@@ -72,7 +73,8 @@ export function advanceLifePlans(r:RoleData,at:number,allowed:boolean,sourcesVal
   for(const step of plan.intents){
    if(!['pending','running'].includes(step.status))continue;
    const running=step.status==='running',prior=step.after?plan.intents.find(s=>s.id===step.after):undefined;
-   const blocked=!allowed||lifeStageOccupied(r)||r.chatTiming?.pending.length||r.chatTiming?.inFlight||r.pendingReplies?.length||!sourcesValid(plan.sources)||rollback||step.action==='social';
+   const reserved=appointmentOverlaps(r,at,running?step.startedAt!:at,running?step.until!:at+step.durationMinutes*60000);
+   const blocked=!allowed||reserved||lifeStageOccupied(r)||r.chatTiming?.pending.length||r.chatTiming?.inFlight||r.pendingReplies?.length||!sourcesValid(plan.sources)||rollback||step.action==='social';
    if(running){
     if(blocked||overlaps(r,step.startedAt!,Math.min(at,step.until!))){step.status='interrupted';step.reason='条件、来源或活动占用已变化；没有完成记录';changed=true;continue;}
     if(at<step.until!)continue;

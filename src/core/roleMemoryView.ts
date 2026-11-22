@@ -5,9 +5,9 @@ import {collectRoleLife,personalContext,lifeSourcesValid} from './roleLife';
 import {experienceContext,observedRoleState,roleEpisodes} from './roleExperience';
 import {meetingPlan} from './encounter';
 import {sceneMessagesAt,scenePlaceAt,stageMessagesAt} from './messageProvenance';
-import {lifeActivity,lifePlanShape} from './lifeExecution';
+import {lifeActivity,lifePlanShape,lifeOverruledByMeeting} from './lifeExecution';
 export function roleCurrentState(r:RoleData,at:number,life=collectRoleLife(r,at)){
- const observed=observedRoleState(r,at),plans=(Array.isArray(r.lifePlans)?r.lifePlans:[]).filter(p=>lifePlanShape(r,p)&&p.acceptedAt<=at&&p.expiresAt>at&&lifeSourcesValid(r,p.sources,at)),running=plans.flatMap(p=>p.intents).find(s=>s.status==='running'&&s.startedAt!<=at&&s.until!>at);
+ const observed=observedRoleState(r,at),plans=(Array.isArray(r.lifePlans)?r.lifePlans:[]).filter(p=>lifePlanShape(r,p)&&p.acceptedAt<=at&&p.expiresAt>at&&lifeSourcesValid(r,p.sources,at)),running=plans.flatMap(p=>p.intents.filter(s=>s.status==='running'&&s.startedAt!<=at&&s.until!>at&&!lifeOverruledByMeeting(r,p.acceptedAt,s.startedAt!,s.until!,at))).at(0);
  if(observed.kind!=='unknown')return observed;
  const current=timelineState(r,at);if(current)return current;
  if(running)return {kind:'life' as const,label:lifeActivity(running.action,r.name,running.focus,running.person,running.where)[0],where:running.where||'地点未记录',sourceId:running.id,at:running.startedAt!};

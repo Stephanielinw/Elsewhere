@@ -39,6 +39,17 @@ export function syncRoleExperiences(r:RoleData,at:number):void{
  if(JSON.stringify(r.memory?.experiences)!==JSON.stringify(experiences))r.memory={...(r.memory||{version:1,records:[]}),experiences};
 }
 export function publicUserText(m:ChatMessage):boolean{return !!m.sourceMessageId||/^(?:我(?:说|回答|问|告诉你)[：:]?\s*[「“"]|[「“"]).+[」”"]\s*[。.!！?？]?$/.test(m.text)&&!/(?:心想|心里|默念|梦|假如|如果|假装|台词)/.test(m.text);}
+/** User-authored, already-performed physical actions are public to the meeting.
+ * Never turn an intention, private thought or hypothetical into a witnessed fact. */
+function publicSceneAction(m:ChatMessage):boolean {
+ if(m.speaker!=='me'||typeof m.text!=='string')return false;
+ const words=m.text.trim();
+ if(!words||words.length>280||/(?:心想|心里|内心|默念|梦里|梦见|做梦|如果|假如|假装|台词|剧本|转述|幻想|想象)/.test(words))return false;
+ const action=/(?:下(?:了)?车|拉开(?:了)?车门|推开(?:了)?车门|上(?:了)?车|走进|走出|进门|出门|抵达|到达)/;
+ if(!action.test(words)||/(?:没|未|不|还没|尚未|准备|打算|想|将要|可能).{0,8}(?:下车|上车|车门|走进|走出|进门|出门|抵达|到达)/.test(words))return false;
+ return /^(?:我|Lin|拉开|推开|下车|上车|走进|走出|进门|出门|抵达|到达)/.test(words)||/(?:^|[。！？\n])\s*我.{0,90}(?:下(?:了)?车|拉开车门|上(?:了)?车|走进|走出|进门|出门|抵达|到达)/.test(words);
+}
+
 /** Fragments are exact attributed spans; they do not turn narration or intentions into Canon. */
 export function episodeExcerpt(text:string,query:string,budget:number):string{
  if(estimateTextTokens(text)<=budget)return text;
@@ -72,7 +83,7 @@ export function experienceContext(r:RoleData,query:string,at:number,rejected:Rea
  const messages=(e:RoleEpisode)=>{
   const p=(e.kind==='meeting'?[...(r.meetings||[]),...(r.scene?[r.scene]:[])]:[...(r.plays||[]),...(r.play?[r.play]:[])]).find(s=>s.id===e.containerId);
   const effective=e.kind==='phone'?(byPhoneThread.get(String(phoneGroup(e)))||[]):e.kind==='meeting'?sceneMessagesAt(r,p?.messages,at):stageMessagesAt(e.kind==='backstage'?(p as PlayData)?.intermissionMessages:p?.messages,at);
-  return effective.filter(m=>(options.since===undefined||m.at>=options.since)&&!options.excludeMessageIds?.has(m.id)&&!options.excludeMessageIds?.has(m.sourceMessageId||'')&&!diaryPhoneIds?.has(m.sourceMessageId||'')&&!(e.kind==='phone'&&diaryPhoneIds?.has(m.id))&&(e.kind==='phone'||e.sources.some(s=>s.id===m.id&&s.at===m.at&&s.revision===(m.revisionCount||0)))&&m.speaker!=='note'&&(e.domain!=='real'||all.has(m.id))&&!withheld.has(m.id)&&!withheld.has(m.sourceMessageId||'')&&!rejected.has(m.id)&&!rejected.has(m.sourceMessageId||'')&&(m.speaker==='char'||e.kind==='phone'||e.kind==='backstage'||e.domain==='performance'||publicUserText(m)));
+  return effective.filter(m=>(options.since===undefined||m.at>=options.since)&&!options.excludeMessageIds?.has(m.id)&&!options.excludeMessageIds?.has(m.sourceMessageId||'')&&!diaryPhoneIds?.has(m.sourceMessageId||'')&&!(e.kind==='phone'&&diaryPhoneIds?.has(m.id))&&(e.kind==='phone'||e.sources.some(s=>s.id===m.id&&s.at===m.at&&s.revision===(m.revisionCount||0)))&&m.speaker!=='note'&&(e.domain!=='real'||all.has(m.id))&&!withheld.has(m.id)&&!withheld.has(m.sourceMessageId||'')&&!rejected.has(m.id)&&!rejected.has(m.sourceMessageId||'')&&(m.speaker==='char'||e.kind==='phone'||e.kind==='backstage'||e.domain==='performance'||publicUserText(m)||e.kind==='meeting'&&publicSceneAction(m)));
  };
  const seenPhone=new Set<string>();
  const ranked=candidates.flatMap(e=>{

@@ -4,7 +4,7 @@ import {validWorldZone,worldDate,worldDay} from './worldClock';
 import {completionLimit} from './outputBudget';
 import {estimateTextTokens} from './contextBudget';
 import {collectRoleLife,lifeSourcesValid,splitPersonalReply,type PersonalSource} from './roleLife';
-import {lifePlanShape,lifeStageOccupied,stageIntervals} from './lifeExecution';
+import {lifePlanShape,lifeStageOccupied,stageIntervals,lifeOverruledByMeeting} from './lifeExecution';
 import {phoneMessagesAt,scenePlaceAt} from './messageProvenance';
 
 const minute=60_000;
@@ -193,7 +193,7 @@ export function timelineEvidence(r:RoleData,e:EventRecord,at:number):boolean {
  const record=e.lifeRecord,t=record?.timeline;
  if(record?.version!==3||!t||typeof t.requestId!=='string'||!t.requestId||t.requestId.length>120||
   typeof t.key!=='string'||!/^[a-zA-Z0-9_-]{1,24}$/.test(t.key)||!isAction(record.action)||record.roleId!==r.id||t.requestId!==record.taskId||e.source!=='timeline:'+t.requestId||
-  e.id!==eventId(r.id,t.requestId,t.key)||e.kind!=='life'||e.lifeEvidence!=='confirmed'||e.status!=='active'||!e.knownBy?.includes(r.id)||
+  e.id!==eventId(r.id,t.requestId,t.key)||e.kind!=='life'||e.lifeEvidence!=='confirmed'||e.status!=='active'||!e.knownBy?.includes(r.id)||lifeOverruledByMeeting(r,t.generatedAt,t.from,t.to,at)||
   ![e.at,t.from,t.to,t.generatedAt,record.until].every(Number.isFinite)||e.at!==t.from||e.at>at||record.until<=e.at||record.until>t.to||
   t.to-t.from>26*3600000||!['running','ended','interrupted'].includes(t.state)||e.title!==actions[record.action][0]||e.detail!=='我'+actions[record.action][1]+'。'||
   record.sources?.length!==1||record.sources[0]?.kind!=='profile'||record.sources[0].id!==r.id||!Number.isFinite(record.sources[0].at)||record.sources[0].at>t.generatedAt||r.events.filter(item=>item.id===e.id).length!==1)return false;
@@ -219,7 +219,7 @@ export function advanceTimeline(r:RoleData,at:number,allowed:boolean,blocked:Spa
   if(!t||!['running','pending'].includes(t.state))continue;
   const legacyRunning=overlaps(t.from,Math.min(t.to,at+1),legacy);
   const conflicts=[...occupancy(r,at+1),...blocked].filter(([from,to])=>from<Math.min(t.to,at+1)&&to>t.from);
-  const occupied=!allowed||legacyRunning||lifeStageOccupied(r)||conflicts.length>0||appointmentOverlaps(r,at,t.from,t.to);
+  const occupied=!allowed||legacyRunning||lifeOverruledByMeeting(r,t.generatedAt,t.from,t.to,at)||lifeStageOccupied(r)||conflicts.length>0||appointmentOverlaps(r,at,t.from,t.to);
   const valid=lifeSourcesValid(r,rec.sources,at);
   if(t.state==='running'){
    if(!valid||occupied){

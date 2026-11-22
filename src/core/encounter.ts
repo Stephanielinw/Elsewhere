@@ -59,6 +59,9 @@ export function meetingPlan(r:RoleData,at:number):MeetingPlan|null {
   let previous:ChatMessage|undefined;
   const lastSemantic=semantic?Math.max(...messages.flatMap(({m},i)=>semantic.sources.some(s=>s.id===m.id)?[i]:[])):-1;
   for(const [i,{m}] of messages.entries()){if(i>lastSemantic)plan=advancePlan(plan,m,previous);previous=m;}
+  // An untimed pickup is only actionable while the discussion is fresh.
+  if(plan?.status==='confirmed'&&plan.scheduledAt===undefined&&plan.sources.length&&at-Math.max(...plan.sources.map(s=>s.at))>6*3600000)
+    return {...plan,status:'proposed',acceptedBy:[]};
   return plan;
 }
 function advancePlan(plan:MeetingPlan|null,m:ChatMessage,previous?:ChatMessage):MeetingPlan|null {
@@ -87,7 +90,7 @@ function advancePlan(plan:MeetingPlan|null,m:ChatMessage,previous?:ChatMessage):
   }else if(plan&&plan.status!=='declined'&&plan.status!=='cancelled'&&agrees)
     plan={...plan,acceptedBy:[...new Set([...plan.acceptedBy,speaker])],sources:[...plan.sources,source]};
   // The two parties can agree on a place without specifying a clock time; do not invent one.
-  if(plan&&plan.acceptedBy.length===2&&plan.where)plan.status='confirmed';
+  if(plan&&plan.acceptedBy.length===2&&plan.where&&((plan.scheduledAt!==undefined&&plan.expiresAt!==undefined)||!plan.timeText))plan.status='confirmed';
   return plan;
 }
 

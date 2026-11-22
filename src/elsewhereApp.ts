@@ -7705,6 +7705,15 @@ export function initElsewhereApp(saveSession:SaveSession): void {
 
   appRoot.addEventListener('keydown', (e) => {
     const target = e.target as HTMLElement;
+    const bubble=target.closest<HTMLElement>('[data-action="openbubbleactions"]');
+    if(bubble&&(e.key==='Enter'||e.key===' ')){
+      e.preventDefault();
+      const r=role();if(r&&bubble.dataset.id)openBubbleActionSheet(r,bubble.dataset.id);
+      return;
+    }
+    if(e.key==='Escape'&&appRoot.querySelector('#chat-bubble-action-sheet')){
+      closeBubbleActionSheet();return;
+    }
     if (
       target.id === 'focus-task-input' &&
       e.key === 'Enter' &&

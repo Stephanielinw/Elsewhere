@@ -136,9 +136,9 @@ async function main(){
    await quotes.click();await t.p.locator('.toast').filter({hasText:'无法定位'}).waitFor();assert.equal(await t.p.locator('[data-msg-id=m0]').count(),0);assert.equal(t.posts.length,0);
   });
   await run('editing and retracting touch only the affected visible message',{},async t=>{
-   await t.play();await t.p.locator('[data-action=starteditmsg][data-id=m199]').click();await t.p.locator('#inline-edit-form textarea').fill('合成编辑后的正文');await t.p.locator('#inline-edit-form [type=submit]').click();
+   await t.play();await t.p.locator('[data-action=openbubbleactions][data-id=m199]').click();await t.p.locator('#chat-bubble-action-sheet [data-action=starteditmsg]').click();await t.p.locator('#inline-edit-form textarea').fill('合成编辑后的正文');await t.p.locator('#inline-edit-form [type=submit]').click();
    assert.equal((await t.saved()).roles[0].chats.find(m=>m.id==='m199').text,'合成编辑后的正文');assert.equal(await t.p.evaluate(()=>window.oldMeasuredAudio===document.querySelector('audio')),true);
-   await t.p.locator('[data-action=retractmsg][data-id=m199]').click();assert.equal(await t.p.locator('[data-msg-id=m199]').count(),0);assert.equal(await t.p.evaluate(()=>window.oldMeasuredAudio===document.querySelector('audio')),true);
+   await t.p.locator('[data-action=openbubbleactions][data-id=m199]').click();await t.p.locator('#chat-bubble-action-sheet [data-action=retractmsg]').click();assert.equal(await t.p.locator('[data-msg-id=m199]').count(),0);assert.equal(await t.p.evaluate(()=>window.oldMeasuredAudio===document.querySelector('audio')),true);
   });
   await run('a refused send keeps draft and confirmed history',{},async t=>{
    const before=(await t.saved()).roles[0].chats;await t.p.evaluate(()=>window.chatMeasure.reject=true);await t.p.locator('#message-input').fill('未确认发送的草稿');await t.p.locator('#message-form .send-btn').click();
@@ -150,7 +150,7 @@ async function main(){
    t.release();await t.p.locator('.bubble').filter({hasText:'合成模型回复'}).waitFor();assert.equal(t.posts.length,1);assert.equal(await t.p.evaluate(()=>window.oldMeasuredAudio===document.querySelector('audio')),true);
   });
   await run('regenerating a visible reply preserves the playing audio and source history',{api:true,alter:r=>r.chats.at(-1).replyTo='m196'},async t=>{
-   await t.play();await t.p.locator('[data-action=regenmsg][data-id=m199]').click();await t.p.waitForFunction(()=>document.querySelector('.chat-conversation').textContent.includes('合成模型回复'));
+   await t.play();await t.p.locator('[data-action=openbubbleactions][data-id=m199]').click();await t.p.locator('#chat-bubble-action-sheet [data-action=regenmsg]').click();await t.p.waitForFunction(()=>document.querySelector('.chat-conversation').textContent.includes('合成模型回复'));
    assert.equal(t.posts.length,1);const chats=(await t.saved()).roles[0].chats;assert.equal(chats.find(m=>m.id==='m199').status,'retracted');assert.equal(chats.filter(m=>m.text==='合成模型回复').length,1);
    assert.equal(await t.p.evaluate(()=>window.oldMeasuredAudio===document.querySelector('audio')),true);assert.ok(await t.p.locator('audio').evaluate(a=>!a.paused&&a.currentTime>=1.25));
   });

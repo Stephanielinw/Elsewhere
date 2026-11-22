@@ -86,6 +86,7 @@ import {
   buildQuoteMetadata,
   editMessage,
   ensureRevisionsList,
+  forgetChatMessagePermanently,
   getActiveEvents,
   getActiveMessages,
   getScopeMessages,
@@ -3179,6 +3180,40 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     </div>`;
   }
 
+  function closeBubbleActionSheet():void {
+    appRoot.querySelector('#chat-bubble-action-sheet')?.remove();
+  }
+  function openBubbleActionSheet(r:RoleData,id:string):void {
+    closeBubbleActionSheet();
+    if(view!=='chat'||r.id!==role()?.id)return;
+    const active=getActiveMessages(r.chats),msg=active.find(m=>m.id===id);
+    if(!msg||msg.speaker==='note')return;
+    const quoted=msg.speaker==='me'?'你':r.name;
+    const related=msg.speaker==='char'?active.filter(m=>m.speaker==='char'&&(
+      msg.replyTurnId?m.replyTurnId===msg.replyTurnId:
+      msg.replyTo?m.replyTo===msg.replyTo:
+      m.id===msg.id)):[],
+      count=related.length||1;
+    const menu=[
+      ['quotemsg','引用'],
+      ...((!msg.kind||msg.kind==='chat')?[['starteditmsg','编辑']]:[]),
+      ...(msg.speaker==='me'?[['retractmsg','撤回']]:[['regenmsg',`重抽这一轮（${count}条）`]]),
+      ['forgetchatmsg','永久删除']
+    ];
+    const sheet=document.createElement('div');
+    sheet.id='chat-bubble-action-sheet';
+    sheet.className='chat-bubble-action-overlay';
+    sheet.innerHTML=`<button class="chat-bubble-action-backdrop" type="button" data-action="closebubbleactions" aria-label="关闭消息操作"></button>
+      <div class="chat-bubble-action-dialog" role="dialog" aria-modal="true" aria-label="消息操作">
+        <div class="chat-bubble-action-caption">来自 ${esc(quoted)} 的消息</div>
+        <div class="chat-bubble-action-excerpt">${esc(msg.text.slice(0,150))}</div>
+        <div class="chat-bubble-action-grid">${menu.map(([act,label])=>`<button type="button" data-action="${act}" data-scope="chat" data-id="${esc(msg.id)}" ${act==='regenmsg'&&busy?'disabled':''} class="chat-bubble-action-option ${act==='forgetchatmsg'?'is-danger':''}">${esc(label)}</button>`).join('')}</div>
+        <button type="button" class="chat-bubble-action-cancel" data-action="closebubbleactions">取消</button>
+      </div>`;
+    appRoot.appendChild(sheet);
+    sheet.querySelector<HTMLElement>('.chat-bubble-action-option')?.focus();
+  }
+
   function renderChatMessagesHtml(r: RoleData): string {
     const page=chatHistory.windowFor(r),timeline=page.items;
     return `<div class="chat-privacy">你与 ${esc(
@@ -3202,7 +3237,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
           m.speaker === 'me' ? 'mine' : 'theirs'
         }" data-chat-key="message:${esc(m.id)}" data-msg-id="${esc(m.id)}">${
           m.speaker === 'char' ? `<button type="button" class="thought-avatar" data-action="reply-thought" data-role-id="${esc(r.id)}" data-id="${esc(m.id)}" aria-label="查看${esc(r.name)}的心声">${avatarTag(r,'avatar sm')}</button>` : ''
-        }<div class="message-inner"><div class="bubble ${
+        }<div class="message-inner"><div role="button" tabindex="0" data-action="openbubbleactions" data-scope="chat" data-id="${esc(m.id)}" aria-label="点击这条消息查看操作" class="bubble ${
           m.kind && m.kind !== 'chat' ? 'bubble-' + esc(m.kind) : ''
         }">${bubbleContent(m, r)}</div>
         ${
@@ -3218,35 +3253,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
                   <button type="submit" class="btn small">保存修改</button>
                 </div>
               </form>`
-            : `<div class="message-meta-row">
-                <small>${hm(m.at)}${m.proactive ? ' · 主动消息' : ''}${
-                m.editedAt ? ' · <span class="edited-tag">已编辑</span>' : ''
-              }</small>
-                <span class="msg-actions">
-                  <button type="button" class="msg-action-btn" data-action="quotemsg" data-scope="chat" data-id="${esc(
-                    m.id
-                  )}" aria-label="引用消息">引用</button>
-                  ${
-                    canEditText
-                      ? `<button type="button" class="msg-action-btn" data-action="starteditmsg" data-scope="chat" data-id="${esc(
-                          m.id
-                        )}" aria-label="编辑消息">编辑</button>`
-                      : ''
-                  }
-                  ${
-                    m.speaker === 'char'
-                      ? `<button type="button" class="msg-action-btn" data-action="regenmsg" data-scope="chat" data-id="${esc(
-                          m.id
-                        )}" aria-label="重抽回复" ${
-                          busy ? 'disabled' : ''
-                        }>重抽</button>`
-                      : ''
-                  }
-                  <button type="button" class="msg-action-btn" data-action="retractmsg" data-scope="chat" data-id="${esc(
-                    m.id
-                  )}" aria-label="撤回消息">撤回</button>
-                </span>
-              </div>`
+            : `<div class="message-meta-row"><small>${hm(m.at)}${m.proactive ? ' · 主动消息' : ''}${m.editedAt ? ' · <span class="edited-tag">已编辑</span>' : ''}</small></div>`
         }
         </div></div>`;
       })
@@ -6286,6 +6293,9 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     const b = targetEl?.closest<HTMLElement>('[data-action]');
     if (!b) return;
     const act = b.dataset.action;
+    if(act==='closebubbleactions'){closeBubbleActionSheet();return;}
+    if(act==='openbubbleactions'){if(r&&b.dataset.id)openBubbleActionSheet(r,b.dataset.id);return;}
+    if(b.closest('#chat-bubble-action-sheet'))closeBubbleActionSheet();
     let r = role();
     if(act==='reloadworld'){
       if(window.confirm('重新读取会关闭当前页面的未保存草稿。请先复制需要保留的内容。现在重新读取？'))location.reload();
@@ -6694,8 +6704,22 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       render(false);
       return;
     }
+    if(act==='forgetchatmsg'){
+      if(!r||!b.dataset.id||view!=='chat')return;
+      if(!window.confirm('永久删除这条手机消息？将清除原文、直接关联的记忆与修订历史，操作无法撤销。其他已经生成的对话、历史诊断日志及独立见面档案不会自动改写，建议先备份。'))return;
+      const previous=structuredClone(r);
+      const res=forgetChatMessagePermanently(r,b.dataset.id,now());
+      if(!res.ok){notify(res.reason||'永久删除失败');return;}
+      revisePhoneSchedule(r,false,b.dataset.id);
+      if(!save()){restoreFields(r,previous);notify('删除未能保存，原记录已恢复');return;}
+      activeChatRequests.get(r.id)?.abort();chatTyping.delete(r.id);
+      if(quotingMessage?.id===b.dataset.id)quotingMessage=null;
+      if(editingMessageId===b.dataset.id){editingMessageId=null;editingMessageDraft='';}
+      render(false);notify('消息已永久删除，并清理直接关联的记忆和引用');return;
+    }
     if (act === 'retractmsg') {
       if (!r || !b.dataset.id) return;
+      if((b.dataset.scope||'chat')==='chat'&&!getActiveMessages(r.chats).some(m=>m.id===b.dataset.id&&m.speaker==='me')){notify('只能撤回自己发送的消息');return;}
       const scope = (b.dataset.scope as RevisionScope) || 'chat';
       const previous=structuredClone(r);
       if(scope==='intermission'&&(view!=='intermission'||!r.play?.paused))return;

@@ -11,6 +11,15 @@ export interface LifeIntent {
 }
 export interface RoleLifePlan {version:1;id:string;roleId:string;taskId:string;acceptedAt:number;expiresAt:number;sources:PersonalSource[];origin?:{where:string;at:number;sourceId:string};intents:LifeIntent[];lastCheckedAt?:number}
 export const LIFE_ACTIONS:LifeAction[]=['rest','walk','read','organize','practice','care','social','prepare-rest','reminder'];
+/** Read-time guard for saved forecasts from older builds. A later actual Scene
+ * supersedes any simulated overlapping interval or pre-generated future plan.
+ * This doesn't edit existing history and still permits new plans after the Scene. */
+export function lifeOverruledByMeeting(r:RoleData,generatedAt:number,from:number,to:number,at:number):boolean {
+ if(![generatedAt,from,to,at].every(Number.isFinite)||to<=from)return true;
+ return (r.meetings||[]).some(scene=>scene.endedAt!==undefined&&scene.endedAt<=at&&
+  scene.startedAt<to&&(from<scene.endedAt||generatedAt<=scene.endedAt));
+}
+
 export function lifeActivity(action:string,name:string,focus?:string,person?:string,where?:string):[string,string]{
  const actions:Record<string,[string,string]>={rest:['歇息片刻',`${name}让自己歇了片刻。`],walk:['走动片刻',`${name}${where?'在'+where:''}走动了一会儿。`],read:['翻阅资料',`${name}翻看了关于「${focus}」的已有资料。`],organize:['整理手头物件',`${name}整理了「${focus}」。`],practice:['练习基本技巧',`${name}练习了与「${focus}」有关的基本技巧。`],care:['日常照料',`${name}照看、维护了「${focus}」。`],social:['短暂交谈',`${name}与${person}说了几句近况。`],'prepare-rest':['准备歇息',`${name}安放好「${focus}」，准备歇息。`],reminder:['留下提醒',`${name}在「${focus}」上记下已有待办的提醒。`]};return actions[action]||['',''];
 }
@@ -60,7 +69,7 @@ export function lifeExecutionEvidence(r:RoleData,e:EventRecord,at:number):RoleLi
  if(!['rest','walk','social'].includes(step.action)&&(!step.focus||!sourceText.includes(step.focus))||step.action==='social')return;
  const [title,detail]=lifeActivity(step.action,name,step.focus,step.person,step.where);
  if(e.title!==title||e.detail!==detail)return;
- if(step.where&&lifeOrigin(r,e.at)?.where!==step.where)return;
+ if(lifeOverruledByMeeting(r,plan!.acceptedAt,e.at,record.until,at)||step.where&&lifeOrigin(r,e.at)?.where!==step.where)return;
  return plan;
 }
 function overlaps(r:RoleData,from:number,to:number){return [...(r.meetings||[]),...(r.plays||[]),...(r.scene?[r.scene]:[]),...(r.play?[r.play]:[])].some(s=>stageIntervals(s,to).some(w=>from<w.to&&to>w.from));}
@@ -74,7 +83,7 @@ export function advanceLifePlans(r:RoleData,at:number,allowed:boolean,sourcesVal
    if(!['pending','running'].includes(step.status))continue;
    const running=step.status==='running',prior=step.after?plan.intents.find(s=>s.id===step.after):undefined;
    const reserved=appointmentOverlaps(r,at,running?step.startedAt!:at,running?step.until!:at+step.durationMinutes*60000);
-   const blocked=!allowed||reserved||lifeStageOccupied(r)||r.chatTiming?.pending.length||r.chatTiming?.inFlight||r.pendingReplies?.length||!sourcesValid(plan.sources)||rollback||step.action==='social';
+   const blocked=!allowed||reserved||lifeOverruledByMeeting(r,plan.acceptedAt,running?step.startedAt!:step.notBefore,running?step.until!:step.expiresAt,at)||lifeStageOccupied(r)||r.chatTiming?.pending.length||r.chatTiming?.inFlight||r.pendingReplies?.length||!sourcesValid(plan.sources)||rollback||step.action==='social';
    if(running){
     if(blocked||overlaps(r,step.startedAt!,Math.min(at,step.until!))){step.status='interrupted';step.reason='条件、来源或活动占用已变化；没有完成记录';changed=true;continue;}
     if(at<step.until!)continue;

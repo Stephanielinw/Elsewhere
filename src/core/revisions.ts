@@ -149,6 +149,7 @@ export function retractMessage(
   const list = getScopeMessages(role, scope);
   const msg = list.find((m) => m.id === messageId && m.status !== 'retracted');
   if (!msg) return { ok: false, reason: '未找到可撤回的消息' };
+  if(scope==='chat'&&msg.speaker!=='me')return {ok:false,reason:'只能撤回自己发送的消息'};
   if(scope==='chat')syncRoleMemory(role,nowTs);
 
   const linked = findLinkedEvents(role, msg);
@@ -181,6 +182,35 @@ export function retractMessage(
   ensureRevisionsList(role).push(revision);
   delete msg.sceneReply;reconcileSceneSources(role);
   return { ok: true, revision };
+}
+
+/**
+ * Permanent removal is different from a soft recall: the original phone
+ * message, linked memory text and its revision history must not remain in
+ * the active save. Archived in-person scenes are independent sources.
+ */
+export function forgetChatMessagePermanently(role:RoleData,messageId:string,nowTs=Date.now()):
+ {ok:boolean;reason?:string} {
+ const msg=role.chats.find(m=>m.id===messageId);
+ if(!msg)return {ok:false,reason:'消息已经不存在'};
+ if(msg.speaker==='me'){
+  const result=retractMessage(role,'chat',messageId,nowTs);
+  if(!result.ok)return {ok:false,reason:result.reason};
+ }
+ // User and AI messages can be erased locally, but only the user can retract.
+ role.chats=role.chats.filter(m=>m.id!==messageId);
+ for(const item of role.chats)if(item.quote?.id===messageId)item.quote=null;
+ role.events=(role.events||[]).filter(e=>e.messageId!==messageId);
+ role.pendingReplies=(role.pendingReplies||[]).filter(job=>job.replyTo!==messageId&&!job.sources?.some(s=>s.id===messageId));
+ role.messageRevisions=(role.messageRevisions||[]).filter(rev=>rev.targetMessageId!==messageId);
+ if(role.memory?.version===1){
+  role.memory.records=role.memory.records.filter(f=>f.source?.id!==messageId&&f.contextSource?.id!==messageId);
+  if(role.memory.experiences?.version===1)
+   role.memory.experiences.episodes=role.memory.experiences.episodes.filter(e=>!e.sources.some(src=>src.id===messageId));
+ }
+ syncRoleMemory(role,nowTs);
+ reconcileSceneSources(role);
+ return {ok:true};
 }
 
 export function prepareRegenerateReply(

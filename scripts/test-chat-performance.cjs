@@ -136,9 +136,9 @@ async function main(){
    await quotes.click();await t.p.locator('.toast').filter({hasText:'无法定位'}).waitFor();assert.equal(await t.p.locator('[data-msg-id=m0]').count(),0);assert.equal(t.posts.length,0);
   });
   await run('editing and retracting touch only the affected visible message',{},async t=>{
-   await t.play();await t.p.locator('[data-action=openbubbleactions][data-id=m199]').click();await t.p.locator('#chat-bubble-action-sheet [data-action=starteditmsg]').click();await t.p.locator('#inline-edit-form textarea').fill('合成编辑后的正文');await t.p.locator('#inline-edit-form [type=submit]').click();
-   assert.equal((await t.saved()).roles[0].chats.find(m=>m.id==='m199').text,'合成编辑后的正文');assert.equal(await t.p.evaluate(()=>window.oldMeasuredAudio===document.querySelector('audio')),true);
-   await t.p.locator('[data-action=openbubbleactions][data-id=m199]').click();await t.p.locator('#chat-bubble-action-sheet [data-action=retractmsg]').click();assert.equal(await t.p.locator('[data-msg-id=m199]').count(),0);assert.equal(await t.p.evaluate(()=>window.oldMeasuredAudio===document.querySelector('audio')),true);
+   await t.play();await t.p.locator('[data-action=openbubbleactions][data-id=m196]').click();await t.p.locator('#chat-bubble-action-sheet [data-action=starteditmsg]').click();await t.p.locator('#inline-edit-form textarea').fill('合成编辑后的正文');await t.p.locator('#inline-edit-form [type=submit]').click();
+   assert.equal((await t.saved()).roles[0].chats.find(m=>m.id==='m196').text,'合成编辑后的正文');assert.equal(await t.p.evaluate(()=>window.oldMeasuredAudio===document.querySelector('audio')),true);
+   await t.p.locator('[data-action=openbubbleactions][data-id=m196]').click();await t.p.locator('#chat-bubble-action-sheet [data-action=retractmsg]').click();assert.equal(await t.p.locator('[data-msg-id=m196]').count(),0);assert.equal(await t.p.evaluate(()=>window.oldMeasuredAudio===document.querySelector('audio')),true);
   });
   await run('a refused send keeps draft and confirmed history',{},async t=>{
    const before=(await t.saved()).roles[0].chats;await t.p.evaluate(()=>window.chatMeasure.reject=true);await t.p.locator('#message-input').fill('未确认发送的草稿');await t.p.locator('#message-form .send-btn').click();

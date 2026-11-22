@@ -93,6 +93,7 @@ import {
   makeUid,
   prepareRegenerateReply,
   retractMessage,
+  retractOwnChatMessage,
 } from './core/revisions';
 import {
   AVATAR_FRAME_AUDIT_STATS,
@@ -6723,7 +6724,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       const scope = (b.dataset.scope as RevisionScope) || 'chat';
       const previous=structuredClone(r);
       if(scope==='intermission'&&(view!=='intermission'||!r.play?.paused))return;
-      const res = retractMessage(r, scope, b.dataset.id, now());
+      const res = retractOwnChatMessage(r, scope, b.dataset.id, now());
       if (!res.ok) {
         notify(res.reason || '撤回失败');
         return;

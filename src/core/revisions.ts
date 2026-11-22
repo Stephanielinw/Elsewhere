@@ -149,7 +149,6 @@ export function retractMessage(
   const list = getScopeMessages(role, scope);
   const msg = list.find((m) => m.id === messageId && m.status !== 'retracted');
   if (!msg) return { ok: false, reason: '未找到可撤回的消息' };
-  if(scope==='chat'&&msg.speaker!=='me')return {ok:false,reason:'只能撤回自己发送的消息'};
   if(scope==='chat')syncRoleMemory(role,nowTs);
 
   const linked = findLinkedEvents(role, msg);
@@ -182,6 +181,19 @@ export function retractMessage(
   ensureRevisionsList(role).push(revision);
   delete msg.sceneReply;reconcileSceneSources(role);
   return { ok: true, revision };
+}
+
+/**
+ * Player-facing recall is restricted to the sender. Internal revision and
+ * regeneration code may still retract generated turns when their source
+ * changes, without pretending the user withdrew another person's message.
+ */
+export function retractOwnChatMessage(
+ role:RoleData,scope:RevisionScope,messageId:string,nowTs=Date.now()
+):ReturnType<typeof retractMessage> {
+ if(scope==='chat'&&!getActiveMessages(role.chats).some(m=>m.id===messageId&&m.speaker==='me'))
+  return {ok:false,reason:'只能撤回自己发送的消息'};
+ return retractMessage(role,scope,messageId,nowTs);
 }
 
 /**

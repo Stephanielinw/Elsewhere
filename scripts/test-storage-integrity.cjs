@@ -414,12 +414,15 @@ async function main() {
       const sent=(await stored(p)).roles[0].chats;
       assert.equal(sent.length,2);
       assert.deepEqual((await readMedia(p))[sent[1].mediaId],incomingPhoto);
-      const retract=p.locator('[data-action=retractmsg][data-id=fixture-chat]');
+      const bubbleMenu=p.locator('[data-action=openbubbleactions][data-id=fixture-chat]');
+      await bubbleMenu.click();
+      const retract=p.locator('#chat-bubble-action-sheet [data-action=retractmsg]');
       const beforeRetract=await raw(p);
       await arm(p,{main:'before'});
       await retract.evaluate(el=>el.click());
       await toast(p,'存档未保存');assert.equal(await raw(p),beforeRetract);
       await arm(p);
+      await bubbleMenu.click();
       await retract.evaluate(el=>el.click());
       await toast(p,'消息已撤回');
       assert.equal((await stored(p)).roles[0].chats[0].status,'retracted');

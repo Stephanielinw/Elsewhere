@@ -6293,10 +6293,10 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     const b = targetEl?.closest<HTMLElement>('[data-action]');
     if (!b) return;
     const act = b.dataset.action;
+    let r = role();
     if(act==='closebubbleactions'){closeBubbleActionSheet();return;}
     if(act==='openbubbleactions'){if(r&&b.dataset.id)openBubbleActionSheet(r,b.dataset.id);return;}
     if(b.closest('#chat-bubble-action-sheet'))closeBubbleActionSheet();
-    let r = role();
     if(act==='reloadworld'){
       if(window.confirm('重新读取会关闭当前页面的未保存草稿。请先复制需要保留的内容。现在重新读取？'))location.reload();
       return;

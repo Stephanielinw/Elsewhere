@@ -6,7 +6,7 @@ import {structuredMeetingPlan,sceneDecisionStillValid,arrivalEvidence,scenePhone
 
 // The local path requires affirmative user evidence; optional same-call metadata handles other wording.
 const hypothetical=/(如果|假如|要是|开玩笑|逗你|玩笑|台词|转述|他说|她说|我想说|比如)/;
-const intent=/(见面|碰面|碰头|会合|相见|见吧|见好吗|见如何|见怎么样|等你|等我|找你|过去|过来)/;
+const intent=/(见面|碰面|碰头|会合|相见|见吧|见好吗|见如何|见怎么样|等你|等我|找你|过去|过来|接我|接你|接上我|接上你)/;
 const refusal=/(不能|没法|无法|不想|不愿|不方便|不行|不了|拒绝|不去|不见)/;
 const cancellation=/(取消|改天再|下次再|别来了|不用来了|不必来了)/;
 const uncertain=/不一定|可能|也许|到时再|再看看|看情况|有空再|尽量|争取/;
@@ -43,7 +43,7 @@ function meetingTime(text:string,at:number):Pick<MeetingPlan,'timeText'|'schedul
 }
 function meetingPlace(text:string):string|undefined {
   // Bound extraction to a preposition and a meeting/arrival verb, not arbitrary nearby nouns.
-  const match=text.match(/(?<!现)(?:在|到|去)\s*([^，。！？!?；;\n]{1,32}?)(?:见面|碰面|碰头|会合|相见|等你|等我|见吧|见好吗|见如何|见怎么样|见[，。！？!?\s]|见$|到了|了[，。！？!?\s]|了$)/);
+  const match=text.match(/(?<!现)(?:在|到|去|来|往)\s*([^，。！？!?；;\n]{1,32}?)(?:见面|碰面|碰头|会合|相见|接上?[我你]|等你|等我|见吧|见好吗|见如何|见怎么样|见[，。！？!?\s]|见$|到了|了[，。！？!?\s]|了$)/);
   let place=match?.[1]?.trim().replace(/^(?:了|达了|达)/,'').replace(/(?:再|一起|那里|那儿)$/,'');
   if(!place||/^(?:这|那|这里|那里|这儿|那儿|你那|你这|老地方|约好的地方|约定地点|时候|时)$/.test(place)||/[我你他她]|\d.*点|明天|今天|下午|晚上/.test(place))return undefined;
   return place;
@@ -86,8 +86,21 @@ function advancePlan(plan:MeetingPlan|null,m:ChatMessage,previous?:ChatMessage):
     plan={status:'proposed',where:where||inherit?.where,...(when||{timeText:inherit?.timeText,scheduledAt:inherit?.scheduledAt,expiresAt:inherit?.expiresAt}),proposedBy:speaker,acceptedBy:[speaker],sources:[...(inherit?.sources||[]),source]};
   }else if(plan&&plan.status!=='declined'&&plan.status!=='cancelled'&&agrees)
     plan={...plan,acceptedBy:[...new Set([...plan.acceptedBy,speaker])],sources:[...plan.sources,source]};
-  if(plan&&plan.acceptedBy.length===2&&plan.where&&plan.scheduledAt!==undefined&&plan.expiresAt!==undefined)plan.status='confirmed';
+  // The two parties can agree on a place without specifying a clock time; do not invent one.
+  if(plan&&plan.acceptedBy.length===2&&plan.where)plan.status='confirmed';
   return plan;
+}
+
+/** Reserve an agreed visit against optional life simulations, without marking arrival. */
+export function appointmentReservation(r:RoleData,at:number):{from:number;to:number;where:string}|undefined {
+  const plan=meetingPlan(r,at);
+  if(plan?.status!=='confirmed'||!plan.where||plan.scheduledAt===undefined||plan.expiresAt===undefined)return;
+  const from=plan.scheduledAt-30*60000,to=Math.min(plan.expiresAt,plan.scheduledAt+2*3600000);
+  return to>from?{from,to,where:plan.where}:undefined;
+}
+export function appointmentOverlaps(r:RoleData,at:number,from:number,to:number):boolean {
+  const slot=appointmentReservation(r,at);
+  return Boolean(slot&&from<slot.to&&to>slot.from);
 }
 
 const arrivalPlace=(words:string)=>explicitArrivalPlace(words)||meetingPlace(words);
@@ -132,13 +145,22 @@ export function createEncounter(r:RoleData,arrival:ChatMessage|null,at:number,id
   const semantic=decision&&sceneDecisionStillValid(r,decision)&&decision.action==='arrive'&&decision.arrival?.id===arrival?.id;
   if(r.scene||r.play||arrival&&(!getActiveMessages(r.chats).some(m=>m.id===arrival.id&&m.speaker==='me'&&m.text===arrival.text&&m.at===arrival.at)||!semantic&&!isArrival(r,arrival.text,at)))return null;
   const plan=semantic?decision.plan:meetingPlan(r,at),confirmed=plan?.status==='confirmed'&&(semantic||plan.scheduledAt===undefined||at>=plan.scheduledAt-30*60000&&at<=(plan.expiresAt??-Infinity));
-  const plannedWhere=semantic?decision.location!.name:confirmed&&plan.where?plan.where:undefined;
+  // A manual meeting can use a recent, shared pickup-place discussion even if the
+  // invitation is still proposed. The user's action starts the scene; it does not
+  // retrospectively turn the phone proposal into a mutual promise.
+  const placeMentions=!arrival&&!semantic&&plan?.status==='proposed'&&plan.where
+    ?phoneMessagesAt(r,at).filter(m=>m.at>=at-6*3600000&&ownWords(m.text).includes(plan.where!)&&!hypothetical.test(ownWords(m.text))&&!/(不去|不在|没去|取消|别来)/.test(ownWords(m.text)))
+    :[];
+  const sharedProposal=placeMentions.some(m=>m.speaker==='me')&&placeMentions.some(m=>m.speaker==='char')?plan?.where:undefined;
+  const plannedWhere=semantic?decision.location!.name:confirmed&&plan.where?plan.where:sharedProposal;
   const current=timelineState(r,at);
-  if(current?.where==='途中'||current?.where&&plannedWhere&&current.where!==plannedWhere)return null;
+  // Generated life activities are conditional; they cannot overrule an explicit
+  // meeting choice at the location both participants discussed.
+  if(current?.where==='途中'&&!plannedWhere)return null;
   const where=plannedWhere||current?.where||'地点待确认';
   const entryPhase=semantic?decision.entryPhase:undefined;
   const opening=entryPhase?entryDescription[entryPhase]:arrival?entryDescription.nearby:'你们开始当面交谈。';
-  return {id,startedAt:at,where,...(current?.where?{lifeEntry:{eventId:current.sourceId,label:current.label,startedAt:current.at}}:{}),...(current?.where&&!confirmed?{locationEvidence:{origin:'life' as const,lifeEventId:current.sourceId,at,sources:[]}}:{}),...(entryPhase?{entryPhase}:{}),...(confirmed?{agreement:structuredClone(plan),locationEvidence:{origin:'agreement' as const,at,sources:structuredClone(plan.sources)}}:{}),messages:[
+  return {id,startedAt:at,where,...(current?.where===where?{lifeEntry:{eventId:current.sourceId,label:current.label,startedAt:current.at}}:{}),...(sharedProposal?{locationEvidence:{origin:'generated' as const,at,sources:placeMentions.map(snapshot)}}:current?.where&&!confirmed?{locationEvidence:{origin:'life' as const,lifeEventId:current.sourceId,at,sources:[]}}:{}),...(entryPhase?{entryPhase}:{}),...(confirmed?{agreement:structuredClone(plan),locationEvidence:{origin:'agreement' as const,at,sources:structuredClone(plan.sources)}}:{}),messages:[
     {id:id+':start',speaker:'note',text:`${where}。${opening}`,at,status:'active'},
     ...(arrival?[{...arrival,id:id+':arrival',sourceMessageId:arrival.id,kind:'scene'}]:[]),
   ]};

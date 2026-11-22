@@ -203,7 +203,8 @@ async function main(){
     await run('source edit invalidates derived history without deleting the stored event',async t=>{
       await t.phone();
       const message=t.p.locator('[data-msg-id=basis-message]');
-      await message.locator('[data-action=starteditmsg]').click();
+      await message.locator('[data-action=openbubbleactions]').click();
+      await t.p.locator('#chat-bubble-action-sheet [data-action=starteditmsg]').click();
       await t.p.locator('#inline-edit-form textarea').fill('合成材料尚未备好。');
       await t.p.locator('#inline-edit-form button[type=submit]').click();
       await t.edit({name:'合成新名'});await t.monitor();
@@ -211,12 +212,16 @@ async function main(){
       assert.ok((await t.owner()).events.some(e=>e.id===t.event.id));
       assert.equal(t.posts.length,0);
     },{basis:true});
-    await run('source withdrawal invalidates derived history after profile change',async t=>{
+    await run('permanent removal of an AI message removes linked derived history',async t=>{
       await t.phone();t.p.once('dialog',d=>d.accept());
-      await t.p.locator('[data-msg-id=basis-message] [data-action=retractmsg]').click();
+      await t.p.locator('[data-msg-id=basis-message] [data-action=openbubbleactions]').click();
+      assert.equal(await t.p.locator('#chat-bubble-action-sheet [data-action=retractmsg]').count(),0,'player cannot recall AI messages');
+      await t.p.locator('#chat-bubble-action-sheet [data-action=forgetchatmsg]').click();
       await t.edit({name:'合成新名'});await t.monitor();
       assert.equal(await t.lifeCards.count(),0);
-      assert.ok((await t.owner()).events.some(e=>e.id===t.event.id));
+      const remaining=(await t.owner()).events;
+      assert.ok(!remaining.some(e=>e.id==='basis-event'),'permanent deletion purges its directly linked source event');
+      assert.ok(remaining.some(e=>e.id===t.event.id),'derived task audit remains stored but has no valid source and cannot display');
       assert.equal(t.posts.length,0);
     },{basis:true});
     await run('explicit history withdrawal stays withdrawn through rename and refresh',async t=>{

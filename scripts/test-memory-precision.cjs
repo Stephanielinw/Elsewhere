@@ -40,8 +40,8 @@ async function main(){
    const open=async(id='precision-role')=>{await p.locator('[data-action=enter][data-id='+id+']').click();await p.locator('.dock [data-view=chat]').click();};
    const raw=()=>p.evaluate(key=>JSON.parse(localStorage.getItem(key)),key);
    await p.reload();await ready();await open(options.other?'other':'precision-role');assert.equal(posts.length,0);
-   if(options.edit){await p.locator('[data-action=starteditmsg][data-id=source]').click();await p.locator('textarea[name=editText]').fill(options.edit);await p.getByRole('button',{name:'保存修改',exact:true}).click();}
-   if(options.retract)await p.locator('[data-action=retractmsg][data-id='+options.retract+']').click();
+   if(options.edit){await p.locator('[data-action=openbubbleactions][data-id=source]').click();await p.locator('#chat-bubble-action-sheet [data-action=starteditmsg]').click();await p.locator('textarea[name=editText]').fill(options.edit);await p.getByRole('button',{name:'保存修改',exact:true}).click();}
+   if(options.retract){await p.locator('[data-action=openbubbleactions][data-id='+options.retract+']').click();await p.locator('#chat-bubble-action-sheet [data-action=retractmsg]').click();}
    if(options.reload){await p.reload();await ready();await open();assert.equal(posts.length,0);}
    if(options.bfcache){const id=await p.evaluate(()=>window.precisionDocument);await p.goto(new URL('precision-away',url).href);await p.goBack({waitUntil:'commit'});await ready();assert.equal(await p.evaluate(()=>window.precisionDocument),id);assert.ok(await p.evaluate(()=>window.precisionShows.includes(true)));assert.equal(posts.length,0);}
    const input=options.live?text:'继续聊聊今天的风。';
@@ -53,7 +53,7 @@ async function main(){
    await p.locator('#message-input').fill(input);await p.locator('#message-form .send-btn').click();assert.equal(posts.length,0);
    const savedBeforeRequest=await raw();await p.evaluate(()=>window.precisionNow=Date.now()+61000);
    const deadline=Date.now()+12000;while(!posts.length&&Date.now()<deadline)await new Promise(r=>setTimeout(r,25));assert.equal(posts.length,1);
-   if(options.hold){await p.locator('[data-action=starteditmsg][data-id=source]').click();await p.locator('textarea[name=editText]').fill('不再作为身份自述。');await p.getByRole('button',{name:'保存修改',exact:true}).click();release();await new Promise(r=>setTimeout(r,150));assert.equal((await raw()).roles[0].chats.filter(m=>m.text==='合成角色已收到。').length,0);assert.equal(posts.length,1);}
+   if(options.hold){await p.locator('[data-action=openbubbleactions][data-id=source]').click();await p.locator('#chat-bubble-action-sheet [data-action=starteditmsg]').click();await p.locator('textarea[name=editText]').fill('不再作为身份自述。');await p.getByRole('button',{name:'保存修改',exact:true}).click();release();await new Promise(r=>setTimeout(r,150));assert.equal((await raw()).roles[0].chats.filter(m=>m.text==='合成角色已收到。').length,0);assert.equal(posts.length,1);}
    else await p.waitForFunction(key=>JSON.parse(localStorage.getItem(key)).roles.some(r=>r.chats.some(m=>m.speaker==='char'&&m.text==='合成角色已收到。')),key);
    const snapshot=options.hold?savedBeforeRequest:await raw(),current=snapshot.roles.find(r=>r.id===(options.other?'other':'precision-role'));
    const facts=projectRoleMemory(current,at+61000).facts;assert.deepEqual(facts.map(f=>[f.value,f.polarity,!!f.mutual]),expected);

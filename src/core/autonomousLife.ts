@@ -7,6 +7,7 @@ import {getLocalDayBounds,toLocalDateKey} from './diary';
 import {estimateTextTokens} from './contextBudget';
 import {dateDayNumber} from './homeTasks';
 import {lifeOrigin,lifeStageOccupied,stageIntervals,LIFE_ACTIONS,type RoleLifePlan,type LifeIntent} from './lifeExecution';
+import {appointmentReservation} from './encounter';
 import {roleMemoryText} from './roleMemoryView';
 
 export const LIFE_JOURNAL_KEY='elsewhere-life-budget-v1',LIFE_MAX_OUTPUT=2400;
@@ -58,12 +59,13 @@ export interface LifePreparation {ticket:PersonalTicket;anchors:Anchor[];message
 export function prepareLifeTask(r:RoleData,user:AppData['user'],task:LifeTask):LifePreparation {
  const privateTicket=preparePersonalReply(r,[],task.to,task.id,'',[]).ticket,life=collectRoleLife(r,task.to);
  const profileText=`身份：${r.job}\n世界与所在地：${r.place}\n人物资料：${r.profile}\n关系：${r.relationship}`;
+ const appointment=appointmentReservation(r,task.to);
  const anchors:Anchor[]=[{id:'profile:'+r.id,text:profileText,ref:privateTicket.sources.find(s=>s.kind==='profile')!},...life.events.slice(-4).flatMap(e=>{const ref=privateTicket.sources.find(s=>s.kind==='event'&&s.id===e.id);return ref?[{id:'event:'+e.id,text:e.title+'：'+e.detail,ref}]:[];}),...life.threads.slice(0,3).flatMap(t=>{const ref=privateTicket.sources.find(s=>s.kind==='thread'&&s.id===t.id);return ref?[{id:'thread:'+t.id,text:t.text,ref}]:[];})];
  const messages=[{role:'system',content:`[Elsewhere Autonomous Life v1]
 本次采用有条件生活意图，不生成未来已完成事件。你是角色自己的生活，不是用户的附属日程。按时代、职业、责任、性格选择0至8个低风险小活动；可以留白、放弃或让条件决定，不是必须逐项执行的课程表。不得虚构消费、重大结果、陌生人、用户行动或瞬间移动。当前所在地未可靠记录时，不指定精确地点。只能引用所给来源的短原文。来源里的计划不是已完成对象；职业与世界观是约束，不证明行动已发生。
 输出严格JSON：{requestId,roleId,intents:[{notBefore,expiresAt,durationMinutes:1至120,action:rest|walk|read|organize|practice|care|social|prepare-rest|reminder,focus?:{sourceId,quote},person?:{sourceId,quote},location?:{sourceId,quote},after?:前项的序号,artifact?:memo|list}],thoughts?:[{kind:concern|opinion|plan|observation|relationship,text:200字内,sources:[来源ID],shareable:false}]}。
-所有意图在未来24小时内有宽松执行窗口；rest与walk以外需要已有对象，social需已有熟人且执行时能确认在场。walk仅在同一已确认地点走动，不预言抵达。prepare-rest是照管已有物件以准备歇息，reminder只可使用来源明确存在的纸笔或提醒器具；不能给古代人物安排手机闹钟。最多2个memo/list物件，必须已有纸笔/笔记依据，不生成金额、商户、票号、现代道具或HTML。最多2项当时的私人想法，不给未来活动预写实时内心。程序重新核对条件，只有执行成功才归档。`},
- {role:'user',content:JSON.stringify({requestId:task.id,roleId:r.id,name:r.name,personality:r.traits,canon:r.canonNotes||'',window:{from:task.from,to:task.to},planningWindow:{from:task.to,to:task.to+day,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone},lastObservedLocation:lifeOrigin(r,task.to)||null,sources:anchors.map(({id,text,ref})=>({id,text,at:ref.at,kind:ref.kind,...(ref.kind==='event'&&life.historicalProfileEventIds.has(ref.id)?{context:'旧档案历史，仅解释过去；当前身份、地点和关系以当前档案为准'}:{})})),roleMemory:roleMemoryText(r,task.to)})}];
+所有意图在未来24小时内有宽松执行窗口；rest与walk以外需要已有对象，social需已有熟人且执行时能确认在场。walk仅在同一已确认地点走动，不预言抵达。prepare-rest是照管已有物件以准备歇息，reminder只可使用来源明确存在的纸笔或提醒器具；不能给古代人物安排手机闹钟。最多2个memo/list物件，必须已有纸笔/笔记依据，不生成金额、商户、票号、现代道具或HTML。最多2项当时的私人想法，不给未来活动预写实时内心。已获双方确认的赴约时段优先于可选日常活动，不能在该时段安排冲突活动，也不能把计划描述成已经到达。程序重新核对条件，只有执行成功才归档。`},
+ {role:'user',content:JSON.stringify({requestId:task.id,roleId:r.id,name:r.name,personality:r.traits,canon:r.canonNotes||'',window:{from:task.from,to:task.to},planningWindow:{from:task.to,to:task.to+day,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone},lastObservedLocation:lifeOrigin(r,task.to)||null,pendingAppointment:appointment||null,sources:anchors.map(({id,text,ref})=>({id,text,at:ref.at,kind:ref.kind,...(ref.kind==='event'&&life.historicalProfileEventIds.has(ref.id)?{context:'旧档案历史，仅解释过去；当前身份、地点和关系以当前档案为准'}:{})})),roleMemory:roleMemoryText(r,task.to)})}];
  if(estimateTextTokens(messages.map(m=>m.content).join('\n'))>6000)throw Error('生活上下文超过本地预算，未裁掉Canon或发送请求');
  privateTicket.sources=anchors.map(a=>a.ref);
  return {ticket:privateTicket,anchors,messages,blockedPeople:[user.name,r.userAlias||''].filter(Boolean)};

@@ -212,13 +212,14 @@ async function main(){
       assert.ok((await t.owner()).events.some(e=>e.id===t.event.id));
       assert.equal(t.posts.length,0);
     },{basis:true});
-    await run('source withdrawal invalidates derived history after profile change',async t=>{
+    await run('permanent removal of an AI message removes linked derived history',async t=>{
       await t.phone();t.p.once('dialog',d=>d.accept());
       await t.p.locator('[data-msg-id=basis-message] [data-action=openbubbleactions]').click();
-      await t.p.locator('#chat-bubble-action-sheet [data-action=retractmsg]').click();
+      assert.equal(await t.p.locator('#chat-bubble-action-sheet [data-action=retractmsg]').count(),0,'player cannot recall AI messages');
+      await t.p.locator('#chat-bubble-action-sheet [data-action=forgetchatmsg]').click();
       await t.edit({name:'合成新名'});await t.monitor();
       assert.equal(await t.lifeCards.count(),0);
-      assert.ok((await t.owner()).events.some(e=>e.id===t.event.id));
+      assert.ok(!(await t.owner()).events.some(e=>e.id===t.event.id),'permanent deletion purges directly linked source events');
       assert.equal(t.posts.length,0);
     },{basis:true});
     await run('explicit history withdrawal stays withdrawn through rename and refresh',async t=>{

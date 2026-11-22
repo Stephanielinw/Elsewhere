@@ -128,7 +128,7 @@ export function experienceContext(r:RoleData,query:string,at:number,rejected:Rea
    ?[available[Math.floor(available.length/2)],available[0],available[Math.floor(available.length/4)]]
    :[];
   const chosen=[...new Set([...available.slice(-2),...middle,...available.slice(0,-2).sort((a,b)=>memoryRelevance(b.text,query)-memoryRelevance(a.text,query))])].slice(0,5),lines:{index:number;text:string;id:string}[]=[];let cost=estimateTextTokens(heading);
-  for(const m of chosen){const prefix=`[消息=${m.id}; 修订=${m.revisionCount||0}; 原发于=${new Date(m.at).toISOString()}${m.editedAt!==undefined?'; 修订生效于='+new Date(m.editedAt).toISOString()+'（当前版本，不证明原发时已知）':''}; ${m.speaker==='char'?'角色原文（对话/叙述，主张不等于外部证实）':m.sourceMessageId?'用户已公开的手机原话':'用户已公开的原话'}] `;
+  for(const m of chosen){const prefix=`[消息=${m.id}; 修订=${m.revisionCount||0}; 原发于=${new Date(m.at).toISOString()}${m.editedAt!==undefined?'; 修订生效于='+new Date(m.editedAt).toISOString()+'（当前版本，不证明原发时已知）':''}; ${m.speaker==='char'?'角色原文（对话/叙述，主张不等于外部证实）':m.sourceMessageId?'用户已公开的手机原话':publicSceneAction(m)?'用户已实际执行的现场动作':'用户已公开的原话'}] `;
    const allowance=Math.min(300,limit-cost-estimateTextTokens(prefix)-14);if(allowance<35)continue;const text=prefix+episodeExcerpt(m.text,query,allowance),size=estimateTextTokens(text+'\n');if(cost+size>limit)continue;cost+=size;shown.add(m.sourceMessageId||m.id);lines.push({index:ms.indexOf(m),id:m.id,text});}
   if(lines.length){facts.push({id:e.kind==='meeting'?'meeting:'+e.containerId:e.id,text:heading+lines.sort((a,b)=>a.index-b.index).map(l=>l.text).join('\n'),at:e.until??e.at,sourceIds:lines.map(l=>l.id)});used+=cost;}
  }

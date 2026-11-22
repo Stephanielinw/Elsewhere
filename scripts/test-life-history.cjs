@@ -219,7 +219,9 @@ async function main(){
       await t.p.locator('#chat-bubble-action-sheet [data-action=forgetchatmsg]').click();
       await t.edit({name:'合成新名'});await t.monitor();
       assert.equal(await t.lifeCards.count(),0);
-      assert.ok(!(await t.owner()).events.some(e=>e.id===t.event.id),'permanent deletion purges directly linked source events');
+      const remaining=(await t.owner()).events;
+      assert.ok(!remaining.some(e=>e.id==='basis-event'),'permanent deletion purges its directly linked source event');
+      assert.ok(remaining.some(e=>e.id===t.event.id),'derived task audit remains stored but has no valid source and cannot display');
       assert.equal(t.posts.length,0);
     },{basis:true});
     await run('explicit history withdrawal stays withdrawn through rename and refresh',async t=>{

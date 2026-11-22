@@ -39,6 +39,17 @@ export function syncRoleExperiences(r:RoleData,at:number):void{
  if(JSON.stringify(r.memory?.experiences)!==JSON.stringify(experiences))r.memory={...(r.memory||{version:1,records:[]}),experiences};
 }
 export function publicUserText(m:ChatMessage):boolean{return !!m.sourceMessageId||/^(?:我(?:说|回答|问|告诉你)[：:]?\s*[「“"]|[「“"]).+[」”"]\s*[。.!！?？]?$/.test(m.text)&&!/(?:心想|心里|默念|梦|假如|如果|假装|台词)/.test(m.text);}
+/** User-authored, already-performed physical actions are public to the meeting.
+ * Never turn an intention, private thought or hypothetical into a witnessed fact. */
+function publicSceneAction(m:ChatMessage):boolean {
+ if(m.speaker!=='me'||typeof m.text!=='string')return false;
+ const words=m.text.trim();
+ if(!words||words.length>280||/(?:心想|心里|内心|默念|梦里|梦见|做梦|如果|假如|假装|台词|剧本|转述|幻想|想象)/.test(words))return false;
+ const action=/(?:下(?:了)?车|拉开(?:了)?车门|推开(?:了)?车门|上(?:了)?车|走进|走出|进门|出门|抵达|到达)/;
+ if(!action.test(words)||/(?:没|未|不|还没|尚未|准备|打算|想|将要|可能).{0,8}(?:下车|上车|车门|走进|走出|进门|出门|抵达|到达)/.test(words))return false;
+ return /^(?:我|Lin|拉开|推开|下车|上车|走进|走出|进门|出门|抵达|到达)/.test(words)||/(?:^|[。！？\n])\s*我.{0,90}(?:下(?:了)?车|拉开车门|上(?:了)?车|走进|走出|进门|出门|抵达|到达)/.test(words);
+}
+
 /** Fragments are exact attributed spans; they do not turn narration or intentions into Canon. */
 export function episodeExcerpt(text:string,query:string,budget:number):string{
  if(estimateTextTokens(text)<=budget)return text;
@@ -72,7 +83,7 @@ export function experienceContext(r:RoleData,query:string,at:number,rejected:Rea
  const messages=(e:RoleEpisode)=>{
   const p=(e.kind==='meeting'?[...(r.meetings||[]),...(r.scene?[r.scene]:[])]:[...(r.plays||[]),...(r.play?[r.play]:[])]).find(s=>s.id===e.containerId);
   const effective=e.kind==='phone'?(byPhoneThread.get(String(phoneGroup(e)))||[]):e.kind==='meeting'?sceneMessagesAt(r,p?.messages,at):stageMessagesAt(e.kind==='backstage'?(p as PlayData)?.intermissionMessages:p?.messages,at);
-  return effective.filter(m=>(options.since===undefined||m.at>=options.since)&&!options.excludeMessageIds?.has(m.id)&&!options.excludeMessageIds?.has(m.sourceMessageId||'')&&!diaryPhoneIds?.has(m.sourceMessageId||'')&&!(e.kind==='phone'&&diaryPhoneIds?.has(m.id))&&(e.kind==='phone'||e.sources.some(s=>s.id===m.id&&s.at===m.at&&s.revision===(m.revisionCount||0)))&&m.speaker!=='note'&&(e.domain!=='real'||all.has(m.id))&&!withheld.has(m.id)&&!withheld.has(m.sourceMessageId||'')&&!rejected.has(m.id)&&!rejected.has(m.sourceMessageId||'')&&(m.speaker==='char'||e.kind==='phone'||e.kind==='backstage'||e.domain==='performance'||publicUserText(m)));
+  return effective.filter(m=>(options.since===undefined||m.at>=options.since)&&!options.excludeMessageIds?.has(m.id)&&!options.excludeMessageIds?.has(m.sourceMessageId||'')&&!diaryPhoneIds?.has(m.sourceMessageId||'')&&!(e.kind==='phone'&&diaryPhoneIds?.has(m.id))&&(e.kind==='phone'||e.sources.some(s=>s.id===m.id&&s.at===m.at&&s.revision===(m.revisionCount||0)))&&m.speaker!=='note'&&(e.domain!=='real'||all.has(m.id))&&!withheld.has(m.id)&&!withheld.has(m.sourceMessageId||'')&&!rejected.has(m.id)&&!rejected.has(m.sourceMessageId||'')&&(m.speaker==='char'||e.kind==='phone'||e.kind==='backstage'||e.domain==='performance'||publicUserText(m)||e.kind==='meeting'&&publicSceneAction(m)));
  };
  const seenPhone=new Set<string>();
  const ranked=candidates.flatMap(e=>{
@@ -84,16 +95,23 @@ export function experienceContext(r:RoleData,query:string,at:number,rejected:Rea
   const performance=e.kind==='play'||e.kind==='backstage';
   const score=selected.reduce((best,m)=>Math.max(best,memoryRelevance(m.text,query)),performance?memoryRelevance(playTitles.get(e.containerId)||'',query):0);
   const age=at-(e.until??e.at);
-  const recent=age<=86400000&&(e.kind!=='phone'||!options.phoneRelevantOnly);
+  const recent=age<=86400000&&(e.kind!=='phone'||!options.phoneRelevantOnly)||Boolean(options.phoneRelevantOnly&&e.kind==='meeting'&&e.until!==undefined&&age<=3*86400000);
   const relevant=e.domain!=='performance'||!query||score>0||played.has(e.containerId)&&e.until!==undefined&&age<=3600000;
   return performance&&e.containerId===options.preferredPlayId||relevant&&(score>0||recent)?[{e,messages:selected,score}]:[];
  }).sort((a,b)=>b.e.at-a.e.at);
  // Keep recent meetings in view even when the current message uses different words.
  const prioritized=ranked.slice().sort((a,b)=>Number(b.e.containerId===options.preferredPlayId)-Number(a.e.containerId===options.preferredPlayId)||b.score-a.score||b.e.at-a.e.at);
- const anchors=options.includePerformance?['meeting','phone','backstage','play'].flatMap(kind=>{
+ const ordinaryAnchors=options.includePerformance?['meeting','phone','backstage','play'].flatMap(kind=>{
   const item=kind==='meeting'?ranked.find(x=>x.e.kind===kind):prioritized.find(x=>x.e.kind===kind);
   return item?[item]:[];
  }):ranked.slice(0,1);
+ // Immediately after a real encounter, the latest archived scene is a core
+ // continuity source even when the next SMS changes topic entirely.
+ const recentMeeting=options.phoneRelevantOnly
+  ?ranked.filter(x=>x.e.kind==='meeting'&&x.e.until!==undefined&&x.e.until<=at&&at-x.e.until<=3*86400000)
+    .sort((a,b)=>(b.e.until??b.e.at)-(a.e.until??a.e.at))[0]
+  :undefined;
+ const anchors=recentMeeting?[recentMeeting,...ordinaryAnchors.filter(x=>x!==recentMeeting)]:ordinaryAnchors;
  const earlierPlay=options.excludeStage===options.preferredPlayId&&options.preferredPlayId
   ?prioritized.find(x=>{const title=playTitles.get(x.e.containerId);return x.e.kind==='play'&&!anchors.includes(x)&&!!title&&query.includes(title);})
   :undefined;
@@ -106,8 +124,11 @@ export function experienceContext(r:RoleData,query:string,at:number,rejected:Rea
   const limit=1000-used-remaining*185;
   const heading=`[${e.kind==='phone'?'手机原话 · Turn=':e.kind==='meeting'?'见面原文 · Scene=':e.kind==='backstage'?'戏外幕间 · Play=':'演员演过的虚构内容 · Play='}${e.containerId}${playTitles.has(e.containerId)&&(e.kind==='play'||e.kind==='backstage')?'《'+playTitles.get(e.containerId)!.slice(0,80)+'》':''} · ${new Date(e.at).toISOString()}${e.until!==undefined?' 至 '+new Date(e.until).toISOString():''}]\n`;
   const available=ms.filter(m=>!shown.has(m.sourceMessageId||m.id));
-  const chosen=[...available.slice(-2),...available.slice(0,-2).sort((a,b)=>memoryRelevance(b.text,query)-memoryRelevance(a.text,query))].slice(0,5),lines:{index:number;text:string;id:string}[]=[];let cost=estimateTextTokens(heading);
-  for(const m of chosen){const prefix=`[消息=${m.id}; 修订=${m.revisionCount||0}; 原发于=${new Date(m.at).toISOString()}${m.editedAt!==undefined?'; 修订生效于='+new Date(m.editedAt).toISOString()+'（当前版本，不证明原发时已知）':''}; ${m.speaker==='char'?'角色原文（对话/叙述，主张不等于外部证实）':m.sourceMessageId?'用户已公开的手机原话':'用户已公开的原话'}] `;
+  const middle=recentMeeting?.e.containerId===e.containerId&&available.length>5
+   ?[available[Math.floor(available.length/2)],available[0],available[Math.floor(available.length/4)]]
+   :[];
+  const chosen=[...new Set([...available.slice(-2),...middle,...available.slice(0,-2).sort((a,b)=>memoryRelevance(b.text,query)-memoryRelevance(a.text,query))])].slice(0,5),lines:{index:number;text:string;id:string}[]=[];let cost=estimateTextTokens(heading);
+  for(const m of chosen){const prefix=`[消息=${m.id}; 修订=${m.revisionCount||0}; 原发于=${new Date(m.at).toISOString()}${m.editedAt!==undefined?'; 修订生效于='+new Date(m.editedAt).toISOString()+'（当前版本，不证明原发时已知）':''}; ${m.speaker==='char'?'角色原文（对话/叙述，主张不等于外部证实）':m.sourceMessageId?'用户已公开的手机原话':publicSceneAction(m)?'用户已实际执行的现场动作':'用户已公开的原话'}] `;
    const allowance=Math.min(300,limit-cost-estimateTextTokens(prefix)-14);if(allowance<35)continue;const text=prefix+episodeExcerpt(m.text,query,allowance),size=estimateTextTokens(text+'\n');if(cost+size>limit)continue;cost+=size;shown.add(m.sourceMessageId||m.id);lines.push({index:ms.indexOf(m),id:m.id,text});}
   if(lines.length){facts.push({id:e.kind==='meeting'?'meeting:'+e.containerId:e.id,text:heading+lines.sort((a,b)=>a.index-b.index).map(l=>l.text).join('\n'),at:e.until??e.at,sourceIds:lines.map(l=>l.id)});used+=cost;}
  }

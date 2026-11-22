@@ -1,3 +1,4 @@
+import {appointmentOverlaps} from './encounter';
 import type {ApiSettings,AppData,ChatMessage,EventRecord,RoleData} from './types';
 import {validWorldZone,worldDate,worldDay} from './worldClock';
 import {completionLimit} from './outputBudget';
@@ -173,7 +174,7 @@ export function applyTimeline(r:RoleData,ticket:TimelineTicket,payload:Aux|undef
    !Number.isInteger(item.from)||!Number.isInteger(item.to)||from<historyStart||from>=ticket.end||
    to>(elapsed?ticket.end:Math.max(ticket.end,ticket.at+12*3600000))||duration<minute||duration>26*3600000||
    (!elapsed&&!active&&!future)||!inGap||overlaps(from,to,occupied)||future&&planned>=2||
-   hasUnsupportedLocation||where&&previous&&where!==previous||action==='travel'&&!validDestination||action!=='travel'&&item.destination!==undefined||
+   hasUnsupportedLocation||appointmentOverlaps(r,at,from,to)||where&&previous&&where!==previous||action==='travel'&&!validDestination||action!=='travel'&&item.destination!==undefined||
    ancient&&(action==='drink'||[where,destination].some(place=>place?.endsWith('咖啡馆')))||contradicts){
    result.rejected++;continue;
   }
@@ -218,7 +219,7 @@ export function advanceTimeline(r:RoleData,at:number,allowed:boolean,blocked:Spa
   if(!t||!['running','pending'].includes(t.state))continue;
   const legacyRunning=overlaps(t.from,Math.min(t.to,at+1),legacy);
   const conflicts=[...occupancy(r,at+1),...blocked].filter(([from,to])=>from<Math.min(t.to,at+1)&&to>t.from);
-  const occupied=!allowed||legacyRunning||lifeStageOccupied(r)||conflicts.length>0;
+  const occupied=!allowed||legacyRunning||lifeStageOccupied(r)||conflicts.length>0||appointmentOverlaps(r,at,t.from,t.to);
   const valid=lifeSourcesValid(r,rec.sources,at);
   if(t.state==='running'){
    if(!valid||occupied){

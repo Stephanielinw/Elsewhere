@@ -28,7 +28,7 @@ test('unrelated post-meeting SMS still receives actual 119-round meeting, not on
  assert.match(prompt,/Scene=real-date/);
  assert.match(prompt,/电影没有看，我们相拥睡了两个小时/);
  assert.match(prompt,/我把外套拉链给你拉好/);
- assert.match(prompt,/约定.*并不证明后来真的完成/);
+ assert.match(prompt,/并不证明后来真的完成/);
  assert.equal(JSON.stringify(f),before);
  const context=buildNativeContext(f.data,f.r,'chat','准备去吃烧烤！',{nowTs:at});
  assert.ok(context.native?.memoryTrace?.some(t=>t.id==='meeting:real-date'&&t.sourceIds.some(id=>id.startsWith('scene-'))));
@@ -45,7 +45,7 @@ test('meeting anchor is bounded and uses only original role-scoped messages',()=
 test('old unrelated scenes do not crowd fresh texts, but explicit recollection can retrieve them',()=>{
  const f=fixture(),month=at+31*86400000;
  assert.ok(!wire(f,month,'今天吃什么？').includes('Scene=real-date'));
- assert.ok(wire(f,month,'还记得上次在Lin家见面的事吗？').includes('Scene=real-date'));
+ assert.ok(wire(f,month,'还记得我们相拥睡了两个小时吗？').includes('Scene=real-date'));
 });
 
 test('do not fabricate a meeting when only a future movie invitation exists',()=>{

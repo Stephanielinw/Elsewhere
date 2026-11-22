@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createRole} from './defaults';
-import {forgetChatMessagePermanently,prepareRegenerateReply,retractMessage} from './revisions';
+import {forgetChatMessagePermanently,prepareRegenerateReply,retractOwnChatMessage} from './revisions';
 
 const at=Date.parse('2026-11-22T05:00:00Z');
 function roleFixture(){
@@ -19,11 +19,11 @@ function roleFixture(){
 }
 test('only the owner may retract phone messages; AI messages cannot be recalled',()=>{
  const r=roleFixture(),before=JSON.stringify(r);
- const denied=retractMessage(r,'chat','ai-1',at);
+ const denied=retractOwnChatMessage(r,'chat','ai-1',at);
  assert.equal(denied.ok,false);
  assert.match(denied.reason||'',/只能撤回自己/);
  assert.equal(JSON.stringify(r),before);
- const recalled=retractMessage(r,'chat','lin-2',at);
+ const recalled=retractOwnChatMessage(r,'chat','lin-2',at);
  assert.equal(recalled.ok,true);
  assert.equal(r.chats.find(m=>m.id==='lin-2')?.status,'retracted');
 });

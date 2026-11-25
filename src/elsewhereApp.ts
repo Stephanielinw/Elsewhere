@@ -1928,8 +1928,8 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       }
     }
   }
-  function pumpRoleLife():void {
-    if(document.hidden||lifeJournalError||lifeBusy||busy||diaryQueueBusy||proactiveBusy||activeChatRequests.size||!token.trim()||!canUseRealModel(data.settings)||data.settings.autonomousLife===false||now()-lifeLastCheck<60000)return;
+  function pumpRoleLife(requestedRoleId?:string):void {
+    if(document.hidden||modelPageHidden||!saveSession.current()||lifeJournalError||lifeBusy||busy||diaryQueueBusy||proactiveBusy||activeChatRequests.size||!token.trim()||!canUseRealModel(data.settings)||data.settings.autonomousLife===false||!requestedRoleId&&now()-lifeLastCheck<60000){if(requestedRoleId)notify(lifeJournalError||'当前无法推进：请检查 API、存档权限及其他正在运行的任务。');return;}
     lifeLastCheck=now();
     if(!navigator.locks){lifeJournalError='此浏览器无法安全协调多标签页，自动推进已暂停。';return;}
     lifeBusy=true;
@@ -1937,11 +1937,11 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       if(!lock)return;
       let journal:LifeTask[];try{journal=await syncLifeBudget([...readLifeJournal(localStorage),...data.roles.flatMap(r=>r.lifeTasks||[])]);lifeClaims=journal;}catch{lifeJournalError='生活调用额度记录无法核验，自动推进已暂停。';return;}
       if(localStorage.getItem(STORAGE_KEY)!==saveSession.raw){lifeJournalError='其他标签页更新了存档，请刷新后继续生活推进。';return;}
-      const roles=[...data.roles].sort((a,b)=>(a.id===data.selected?-1:b.id===data.selected?1:0));
+      const roles=requestedRoleId?data.roles.filter(r=>r.id===requestedRoleId):[...data.roles].sort((a,b)=>(a.id===data.selected?-1:b.id===data.selected?1:0));
       for(const r of roles){
         if(isRoleInActiveFocus(r))continue;
         const previous=r.lifeTasks?structuredClone(r.lifeTasks):undefined;
-        const task=claimLifeTask(data.roles,r,now(),true,journal);if(!task)continue;
+        const task=claimLifeTask(data.roles,r,now(),true,journal,Boolean(requestedRoleId));if(!task){if(requestedRoleId)notify(lifeTaskState(data.roles,r,now(),true,lifeEnabled(),journal));continue;}
         try{if(!await reserveLifeAttempt(task,journal)){r.lifeTasks=previous;return;}}catch{r.lifeTasks=previous;lifeJournalError='生活额度无法可靠占用，未发送请求。';return;}
         journal=[...journal,task];lifeClaims=journal;
         try{writeLifeJournal(localStorage,journal);}catch{r.lifeTasks=previous;lifeJournalError='无法保存生活调用额度，未发送请求。';return;}
@@ -1955,6 +1955,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
           syslog('life','独立生活推进已开始',{roleId:r.id,taskId:task.id});
           if(modelPageHidden||controller.signal.aborted)throw Error('请求未派发');
           task.transport='unknown';task.dispatchedAt=now();if(!save())throw Error('生活领取未确认');
+          if(view==='monitor'&&role()?.id===r.id)render(false);
           const received=await readModelBeforeDeadline(async signal=>{
             const res=await postModel(settings.endpoint.trim().replace(/\/+$/,'')+'/chat/completions',{method:'POST',signal,headers:{'Content-Type':'application/json',Authorization:'Bearer '+credential},body:JSON.stringify({model:settings.model,messages:prepared.messages,temperature:settings.temperature,max_tokens:LIFE_MAX_OUTPUT,stream:false})});
             const body=await readChatResponseBody(res) as {usage?:{prompt_tokens?:number;completion_tokens?:number}};
@@ -1973,7 +1974,9 @@ export function initElsewhereApp(saveSession:SaveSession): void {
           try{maySave=maySave&&localStorage.getItem(STORAGE_KEY)===saveSession.raw;}catch{maySave=false;}
           task.status=controller.signal.aborted?'cancelled':'failed';
           // Never log a model body or arbitrary transport error into diagnostics.
-          task.error=controller.signal.aborted?'已取消或超时':error instanceof Error&&error.message==='生活记录保存失败'?'本地保存失败':'响应或来源未通过校验';
+          const reason=error instanceof Error?error.message:'';
+          const known=['生活响应不是完整JSON','生活意图身份或结构无效','生活意图时间或条件无效','生活意图引用无效','私人想法来源无效','生活任务或来源已变化，未归档','生活响应结构无效','生活来源或任务已变化','生活来源已变化','生活任务未能保存','生活领取未确认','回复未正常完成，请检查连接后重试','接口未返回有效聊天正文'];
+          task.error=controller.signal.aborted?'已取消或超时':reason==='生活记录保存失败'?'本地保存失败':/^回复请求失败（HTTP \d{3}）$/.test(reason)?reason:known.includes(reason)?reason:'响应或来源未通过校验';
           if(maySave)save();
           syslog('life','独立生活未归档，额度已占用，不自动重试',{roleId:r.id,code:task.status});
         }finally{
@@ -1983,7 +1986,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
         }
         return;
       }
-    }).catch(()=>{lifeJournalError='生活任务协调失败，自动推进已暂停。';}).finally(()=>{lifeBusy=false;});
+    }).catch(()=>{lifeJournalError='生活任务协调失败，自动推进已暂停。';}).finally(()=>{lifeBusy=false;if(view==='monitor'&&role())render(false);});
   }
 
   function acceptPhoneMessage(r:RoleData,item:ChatMessage,updateComposer=true):boolean {
@@ -3609,7 +3612,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       </div>${renderFootprintCalendarDrawer(r,monitorDateKey)}
       <div class="footprints-list" data-testid="footprints-list">${list||`<div class="fp-empty-card" data-testid="footprint-calm-empty">${uiIcon('leaf')}<h3>这一天还没有留下记录</h3></div>`}</div>
       ${thoughts.length?`<details class="life-private" data-testid="life-private"><summary>随手记下的话</summary><p class="tiny muted">这是${esc(r.name)}自己记下的想法、计划或判断，不等于外部事实，也不表示已经告诉了你。</p>${thoughts.map(t=>`<p>${esc(t.text)}<br><time class="tiny muted">${esc(roleTime(t.at))}</time></p>`).join('')}</details>`:''}
-      <details class="life-settings" data-testid="life-settings"><summary>生活设置与记录</summary><p data-testid="life-state">${esc(state)}</p><p class="tiny muted">网页打开且条件合适时执行生活意图；错过或中断的活动不会补写成已完成。每角色每天及最近 24 小时最多 1 次生活请求，全应用每天及最近 24 小时最多 2 次；失败计入额度，不自动重试。每次生活输出上限 2400 token（原为 1200，单次可能更贵），不增加请求次数。手机和日记可在同次请求补录生活；补录与已保存计划的执行不占独立生活次数。</p>${(r.lifeTasks||[]).filter(t=>t&&typeof t==='object').slice(-3).map(t=>`<p class="tiny muted life-cost-row">${esc(t.dateKey)} · ${t.transport==='not-sent'?'确定未发送':t.transport==='returned'?'正文已返回':t.status==='attempted'||t.transport==='unknown'?'发送或结果未确认':'既有调用记录'} · 输出上限 ${tokenCount(t.outputTokenLimit??1200)} token${t.usage?` · 服务商实报：输入 ${tokenCount(t.usage.input)} / 输出 ${tokenCount(t.usage.output)}`:' · 服务商未提供实际用量'}；计费以服务商为准。</p>`).join('')}<button class="btn small secondary" data-action="toggleautonomouslife">${data.settings.autonomousLife===false?'恢复自动推进':'暂停自动推进'}</button></details>
+      <details class="life-settings" data-testid="life-settings"><summary>生活设置与记录</summary><p data-testid="life-state">${esc(state)}</p><p class="tiny muted">网页打开且条件合适时执行生活意图；错过或中断的活动不会补写成已完成。每角色每天及最近 24 小时最多 1 次生活请求，全应用每天及最近 24 小时最多 2 次；失败计入额度，不自动重试。每次生活输出上限 2400 token（原为 1200，单次可能更贵），不增加请求次数。手机和日记可在同次请求补录生活；补录与已保存计划的执行不占独立生活次数。</p>${(r.lifeTasks||[]).filter(t=>t&&typeof t==='object').slice(-3).map(t=>`<p class="tiny muted life-cost-row">${esc(t.dateKey)} · ${t.transport==='not-sent'?'确定未发送':t.transport==='returned'?'正文已返回':t.status==='attempted'||t.transport==='unknown'?'发送或结果未确认':'既有调用记录'} · 输出上限 ${tokenCount(t.outputTokenLimit??1200)} token${t.usage?` · 服务商实报：输入 ${tokenCount(t.usage.input)} / 输出 ${tokenCount(t.usage.output)}`:' · 服务商未提供实际用量'}；计费以服务商为准。</p>`).join('')}<button class="btn small secondary" data-action="runautonomouslife" ${lifeBusy||data.settings.autonomousLife===false?'disabled':''}>推进一次生活（使用今日额度）</button> <button class="btn small secondary" data-action="toggleautonomouslife">${data.settings.autonomousLife===false?'恢复自动推进':'暂停自动推进'}</button></details>
     </div>`);
   }
 
@@ -6882,6 +6885,11 @@ export function initElsewhereApp(saveSession:SaveSession): void {
       footprintCalMonth = d.getMonth() + 1;
       render(false);
       return;
+    }
+    if(act==='runautonomouslife'){
+      const r=role();if(!r||view!=='monitor'||!checkWriteAccess())return;
+      if(isRoleInActiveFocus(r)){notify('专注陪伴期间不推进独立生活。');return;}
+      pumpRoleLife(r.id);return;
     }
     if(act==='toggleautonomouslife'){
       const previous=data.settings.autonomousLife;data.settings.autonomousLife=previous===false;

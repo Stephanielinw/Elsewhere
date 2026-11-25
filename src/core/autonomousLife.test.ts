@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {createRole,defaults} from './defaults';import {claimLifeTask,prepareLifeTask,commitLifeTask,readLifeJournal,writeLifeJournal,LIFE_JOURNAL_KEY} from './autonomousLife';import {collectRoleLife,personalContext,preparePersonalReply,applyPersonalReply} from './roleLife';import {collectDailyDiaryFacts,toLocalDateKey} from './diary';import {editMessage} from './revisions';
+import {createRole,defaults} from './defaults';import {claimLifeTask,prepareLifeTask,commitLifeTask,readLifeJournal,writeLifeJournal,LIFE_JOURNAL_KEY,lifeTaskState} from './autonomousLife';import {collectRoleLife,personalContext,preparePersonalReply,applyPersonalReply} from './roleLife';import {collectDailyDiaryFacts,toLocalDateKey} from './diary';import {editMessage} from './revisions';
 const at=new Date(2026,10,3,17).getTime(),hour=3600000;
 function fixture(id='actor'){const r=createRole('合成守档者','','航路记录者','寡言','古代海港');r.id=id;r.profile='整理航路笔记，和朋友伊洛熟识。';r.canonNotes='远征尚未开始。';r.chats=[];r.events=[];r.diaries=[];r.firstMessageState={status:'ready',updatedAt:at-4*hour};return r;}
 function prepare(r=fixture()){const task=claimLifeTask([r],r,at,true)!;assert.ok(task);return {r,task,p:prepareLifeTask(r,defaults().user,task)};}
@@ -44,3 +44,27 @@ test('a failed attempt before midnight still blocks the same role within the rol
  const first=claimLifeTask([r],r,late,true)!;assert.ok(first);first.status='failed';
  const restored=JSON.parse(JSON.stringify(r));assert.equal(claimLifeTask([restored],restored,late+4*hour,true),null);
 });
+
+ test('explicit life request uses the same receipt quota but can plan after recent chat',()=>{
+ const r=fixture();r.chats=[{id:'recent',speaker:'char',text:'刚聊过。',at:at-1000}];
+ assert.equal(claimLifeTask([r],r,at,true),null);
+ assert.match(lifeTaskState([r],r,at,true,true),/最近1小时/);
+ const task=claimLifeTask([r],r,at,true,[],true)!;assert.ok(task);
+ assert.equal(claimLifeTask([r],r,at,true,[task],true),null);
+ const occupied=fixture('occupied');occupied.scene={id:'scene',startedAt:at-1000,where:'港口',messages:[]};
+ assert.equal(claimLifeTask([occupied],occupied,at,true,[],true),null);
+ });
+ test('fenced JSON is accepted only as the complete response; durable receipt does not hide saved result',()=>{
+ const x=prepare(),receipt=structuredClone(x.task);
+ const raw=response(x,[activity(at-hour)]);
+ assert.equal(commitLifeTask(x.r,x.task,x.p,'\x60\x60\x60json\n'+raw+'\n\x60\x60\x60',at).length,1);
+ assert.match(lifeTaskState([x.r],x.r,at,true,true,[receipt]),/已归档/);
+ const y=prepare();assert.throws(()=>commitLifeTask(y.r,y.task,y.p,'prefix '+raw,at));
+ assert.equal(y.r.events.length,0);
+ });
+
+ test('terminal receipt reports a failed attempt even if the old world retains attempted status',()=>{
+ const x=prepare();const failed={...x.task,status:'failed' as const,error:'生活响应不是完整JSON'};
+ assert.match(lifeTaskState([x.r],x.r,at,true,true,[failed]),/生活响应不是完整JSON/);
+ assert.equal(claimLifeTask([x.r],x.r,at,true,[failed],true),null);
+ });

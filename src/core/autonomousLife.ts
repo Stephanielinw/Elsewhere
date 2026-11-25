@@ -32,27 +32,47 @@ export function decodeLifeJournal(value:unknown):LifeTask[] {
 }
 export function writeLifeJournal(store:Store,tasks:LifeTask[]):void {store.setItem(LIFE_JOURNAL_KEY,JSON.stringify({version:1,tasks}));}
 const allTasks=(roles:RoleData[],journal:LifeTask[])=>[...new Map([...roles.flatMap(r=>r.lifeTasks||[]),...journal].map(t=>[t.id,t])).values()];
+// For display, terminal outcomes outrank an initial durable reservation.
+// The quota calculation above still uses durable receipts, not display status.
+function displayedLifeTask(r:RoleData,at:number,journal:LifeTask[]):LifeTask|undefined {
+ const candidates=[...journal,...(r.lifeTasks||[])].filter(t=>t.roleId===r.id&&t.dateKey===toLocalDateKey(at));
+ return candidates.filter(t=>t.status!=='attempted').at(-1)||candidates.at(-1);
+}
 export function lifeQuotaAvailable(tasks:LifeTask[],roleId:string,at:number):boolean {
  const dateKey=toLocalDateKey(at),id='life:'+encodeURIComponent(roleId)+':'+dateKey;
  return !tasks.some(t=>t.id===id||t.roleId===roleId&&t.at>at-day)&&tasks.filter(t=>t.at>at-day||t.dateKey===dateKey).length<2;
 }
-export function claimLifeTask(roles:RoleData[],r:RoleData,at:number,ready:boolean,journal:LifeTask[]=[]):LifeTask|null {
- if(!ready||!roles.some(x=>x.id===r.id)||lifeStageOccupied(r)||r.chatTiming?.pending.length||r.chatTiming?.inFlight||r.pendingReplies?.length||r.firstMessageState?.status!=='ready'&&!getActiveMessages(r.chats).some(m=>m.speaker==='char'))return null;
+function lifeEligibility(roles:RoleData[],r:RoleData,at:number,ready:boolean,journal:LifeTask[],requested=false):{reason:string;from?:number} {
+ if(!ready)return {reason:'等待 API 可用；不会用演示文字冒充生活记录。'};
+ if(!roles.some(x=>x.id===r.id))return {reason:'角色已不在当前世界。'};
+ if(lifeStageOccupied(r))return {reason:'正在见面或演出；结束或暂停当前场景后再推进。'};
+ if(r.chatTiming?.pending.length||r.chatTiming?.inFlight||r.pendingReplies?.length)return {reason:'正在等待手机消息处理，完成后再推进。'};
+ const chats=getActiveMessages(r.chats),incoming=chats.filter(m=>m.speaker==='char');
+ if(r.firstMessageState?.status!=='ready'&&!incoming.length)return {reason:'等待角色首次有效回复。'};
  const dateKey=toLocalDateKey(at),tasks=allTasks(roles,journal),id='life:'+encodeURIComponent(r.id)+':'+dateKey;
- if(r.events.some(e=>e.lifeRecord?.taskId===id||e.source==='autonomous-life-v1:'+id))return null;
- if(!lifeQuotaAvailable(tasks,r.id,at))return null;
- const from=Math.max(getLocalDayBounds(dateKey).startMs,at-6*3600000,r.firstMessageState?.updatedAt||Math.min(...getActiveMessages(r.chats).filter(m=>m.speaker==='char').map(m=>m.at)));
- if(at-from<2*3600000)return null;
- const lastContact=Math.max(0,...getActiveMessages(r.chats).map(m=>m.at));if(at-lastContact<3600000)return null;
+ if(r.events.some(e=>e.lifeRecord?.taskId===id||e.source==='autonomous-life-v1:'+id))return {reason:'今天已有生活记录，不重复请求。'};
+ if(!lifeQuotaAvailable(tasks,r.id,at))return {reason:'当前角色或全应用已达到生活调用额度（包含最近24小时）。'};
+ const established=r.firstMessageState?.updatedAt??Math.min(...incoming.map(m=>m.at));
+ const from=Math.max(getLocalDayBounds(dateKey).startMs,at-6*3600000,established);
+ // An explicit request may plan future activity immediately, but never bypass
+ // established identity, occupancy, pending replies or the durable daily quota.
+ if(!requested&&at-from<2*3600000)return {reason:'等待当天及角色已建立至少2小时的生活窗口。'};
+ if(!requested&&at-Math.max(0,...chats.map(m=>m.at))<3600000)return {reason:'最近1小时内有聊天，等待角色空闲；也可手动推进一次。'};
+ if(!Number.isFinite(from)||from>at)return {reason:'角色时间来源无效，暂不生成。'};
+ return {reason:'条件满足，等待调度。',from};
+}
+export function claimLifeTask(roles:RoleData[],r:RoleData,at:number,ready:boolean,journal:LifeTask[]=[],requested=false):LifeTask|null {
+ const {from}=lifeEligibility(roles,r,at,ready,journal,requested);if(from===undefined)return null;
+ const dateKey=toLocalDateKey(at),id='life:'+encodeURIComponent(r.id)+':'+dateKey;
  const task:LifeTask={id,roleId:r.id,dateKey,at,from,to:at,status:'attempted',outputTokenLimit:LIFE_MAX_OUTPUT};r.lifeTasks=[...(r.lifeTasks||[]),task];return task;
 }
 export function lifeTaskState(roles:RoleData[],r:RoleData,at:number,ready:boolean,enabled:boolean,journal:LifeTask[]=[],running=false):string {
  if(!enabled)return '自动推进已暂停；已保存的生活记录仍可查看。';
- const task=allTasks(roles,journal).find(t=>t.roleId===r.id&&t.dateKey===toLocalDateKey(at));
+ const task=displayedLifeTask(r,at,journal);
  if(task)return task.status==='attempted'?(running?'正在推进一段已过去的生活…':'上次任务尚未完成或已中断，额度已保留，今天不会重复请求。'):task.status==='quiet'?'本次推进没有需要单独记录的事情。':task.status==='completed'?(task.planId?'生活意图已保存；只有条件满足并执行成功的小活动才归档。':'本次生活已归档，今天不会重复生成。'):`本次未归档：${task.error||'任务中断'}。今日不自动重试。`;
  if(!ready)return '等待 API 可用；不会用演示文字冒充生活记录。';
  if(allTasks(roles,journal).filter(t=>t.at>at-day||t.dateKey===toLocalDateKey(at)).length>=2)return '已达到全应用生活调用上限，已保存的记录仍可查看。';
- return '等待空闲时推进；每角色每天最多1次，全应用每天最多2次，失败不自动重试。';
+ return lifeEligibility(roles,r,at,ready,journal).reason;
 }
 interface Anchor {id:string;text:string;ref:PersonalSource}
 export interface LifePreparation {ticket:PersonalTicket;anchors:Anchor[];messages:{role:string;content:string}[];blockedPeople:string[]}
@@ -64,7 +84,7 @@ export function prepareLifeTask(r:RoleData,user:AppData['user'],task:LifeTask):L
  const messages=[{role:'system',content:`[Elsewhere Autonomous Life v1]
 本次采用有条件生活意图，不生成未来已完成事件。你是角色自己的生活，不是用户的附属日程。按时代、职业、责任、性格选择0至8个低风险小活动；可以留白、放弃或让条件决定，不是必须逐项执行的课程表。不得虚构消费、重大结果、陌生人、用户行动或瞬间移动。当前所在地未可靠记录时，不指定精确地点。只能引用所给来源的短原文。来源里的计划不是已完成对象；职业与世界观是约束，不证明行动已发生。
 输出严格JSON：{requestId,roleId,intents:[{notBefore,expiresAt,durationMinutes:1至120,action:rest|walk|read|organize|practice|care|social|prepare-rest|reminder,focus?:{sourceId,quote},person?:{sourceId,quote},location?:{sourceId,quote},after?:前项的序号,artifact?:memo|list}],thoughts?:[{kind:concern|opinion|plan|observation|relationship,text:200字内,sources:[来源ID],shareable:false}]}。
-所有意图在未来24小时内有宽松执行窗口；rest与walk以外需要已有对象，social需已有熟人且执行时能确认在场。walk仅在同一已确认地点走动，不预言抵达。prepare-rest是照管已有物件以准备歇息，reminder只可使用来源明确存在的纸笔或提醒器具；不能给古代人物安排手机闹钟。最多2个memo/list物件，必须已有纸笔/笔记依据，不生成金额、商户、票号、现代道具或HTML。最多2项当时的私人想法，不给未来活动预写实时内心。已获双方确认的赴约时段优先于可选日常活动，不能在该时段安排冲突活动，也不能把计划描述成已经到达。程序重新核对条件，只有执行成功才归档。`},
+所有 notBefore / expiresAt 必须是 JSON 数字（Unix 毫秒时间戳，13位），以用户消息 planningWindow.from/to 为绝对边界，不使用日期字符串或秒级时间戳。至少安排一个符合人设且有条件执行的低影响意图（例如 rest），除非角色确实无法安排；优先安排一个近期可执行、持续较短的活动。所有意图在未来24小时内有宽松执行窗口；rest与walk以外需要已有对象，social需已有熟人且执行时能确认在场。walk仅在同一已确认地点走动，不预言抵达。prepare-rest是照管已有物件以准备歇息，reminder只可使用来源明确存在的纸笔或提醒器具；不能给古代人物安排手机闹钟。最多2个memo/list物件，必须已有纸笔/笔记依据，不生成金额、商户、票号、现代道具或HTML。最多2项当时的私人想法，不给未来活动预写实时内心。已获双方确认的赴约时段优先于可选日常活动，不能在该时段安排冲突活动，也不能把计划描述成已经到达。程序重新核对条件，只有执行成功才归档。`},
  {role:'user',content:JSON.stringify({requestId:task.id,roleId:r.id,name:r.name,personality:r.traits,canon:r.canonNotes||'',window:{from:task.from,to:task.to},planningWindow:{from:task.to,to:task.to+day,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone},lastObservedLocation:lifeOrigin(r,task.to)||null,pendingAppointment:appointment||null,sources:anchors.map(({id,text,ref})=>({id,text,at:ref.at,kind:ref.kind,...(ref.kind==='event'&&life.historicalProfileEventIds.has(ref.id)?{context:'旧档案历史，仅解释过去；当前身份、地点和关系以当前档案为准'}:{})})),roleMemory:roleMemoryText(r,task.to)})}];
  if(estimateTextTokens(messages.map(m=>m.content).join('\n'))>6000)throw Error('生活上下文超过本地预算，未裁掉Canon或发送请求');
  privateTicket.sources=anchors.map(a=>a.ref);
@@ -103,7 +123,7 @@ function commitLifeIntentPlan(r:RoleData,task:LifeTask,p:LifePreparation,data:Re
 /** Commit only closed, low-stakes primitives; model-authored prose never becomes an external outcome. */
 export function commitLifeTask(r:RoleData,task:LifeTask,p:LifePreparation,raw:string,at:number):EventRecord[] {
  if(!lifeTaskValid(r,task,p)||raw.length>16000)throw Error('生活任务或来源已变化，未归档');
- let data;try{data=JSON.parse(raw);}catch{throw Error('生活响应不是完整JSON');}if(data&&Array.isArray(data.intents))return commitLifeIntentPlan(r,task,p,data,at);if(!data||data.requestId!==task.id||data.roleId!==r.id||Object.keys(data).some(k=>!['requestId','roleId','events','thoughts'].includes(k))||!Array.isArray(data.events)||data.events.length>3)throw Error('生活响应结构无效');
+ let data;try{const text=raw.trim(),fence=text.match(/^```(?:json)?\s*\r?\n([\s\S]*?)\r?\n```$/i);data=JSON.parse(fence?fence[1]:text);}catch{throw Error('生活响应不是完整JSON');}if(data&&Array.isArray(data.intents))return commitLifeIntentPlan(r,task,p,data,at);if(!data||data.requestId!==task.id||data.roleId!==r.id||Object.keys(data).some(k=>!['requestId','roleId','events','thoughts'].includes(k))||!Array.isArray(data.events)||data.events.length>3)throw Error('生活响应结构无效');
  const result:EventRecord[]=[],seen=new Set<string>();
  for(const [i,item]of data.events.entries()){
   if(!item||typeof item!=='object'||Object.keys(item).some(k=>!['at','action','durationMinutes','focus','person','location'].includes(k))||!Number.isFinite(item.at)||item.at<task.from||item.at>task.to||item.at>at||!Number.isInteger(item.durationMinutes)||item.durationMinutes<1||item.durationMinutes>30)throw Error('生活事件时间或字段无效');

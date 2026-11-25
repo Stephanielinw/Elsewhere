@@ -62,3 +62,9 @@ test('a failed attempt before midnight still blocks the same role within the rol
  const y=prepare();assert.throws(()=>commitLifeTask(y.r,y.task,y.p,'prefix '+raw,at));
  assert.equal(y.r.events.length,0);
  });
+
+ test('terminal receipt reports a failed attempt even if the old world retains attempted status',()=>{
+ const x=prepare();const failed={...x.task,status:'failed' as const,error:'生活响应不是完整JSON'};
+ assert.match(lifeTaskState([x.r],x.r,at,true,true,[failed]),/生活响应不是完整JSON/);
+ assert.equal(claimLifeTask([x.r],x.r,at,true,[failed],true),null);
+ });

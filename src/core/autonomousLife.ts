@@ -31,9 +31,13 @@ export function decodeLifeJournal(value:unknown):LifeTask[] {
  return data.tasks;
 }
 export function writeLifeJournal(store:Store,tasks:LifeTask[]):void {store.setItem(LIFE_JOURNAL_KEY,JSON.stringify({version:1,tasks}));}
-// The durable receipt reserves quota, but its initial attempted status must not
-// hide the final result already persisted in the authoritative world.
-const allTasks=(roles:RoleData[],journal:LifeTask[])=>[...new Map([...journal,...roles.flatMap(r=>r.lifeTasks||[])].map(t=>[t.id,t])).values()];
+const allTasks=(roles:RoleData[],journal:LifeTask[])=>[...new Map([...roles.flatMap(r=>r.lifeTasks||[]),...journal].map(t=>[t.id,t])).values()];
+// For display, terminal outcomes outrank an initial durable reservation.
+// The quota calculation above still uses durable receipts, not display status.
+function displayedLifeTask(r:RoleData,at:number,journal:LifeTask[]):LifeTask|undefined {
+ const candidates=[...journal,...(r.lifeTasks||[])].filter(t=>t.roleId===r.id&&t.dateKey===toLocalDateKey(at));
+ return candidates.filter(t=>t.status!=='attempted').at(-1)||candidates.at(-1);
+}
 export function lifeQuotaAvailable(tasks:LifeTask[],roleId:string,at:number):boolean {
  const dateKey=toLocalDateKey(at),id='life:'+encodeURIComponent(roleId)+':'+dateKey;
  return !tasks.some(t=>t.id===id||t.roleId===roleId&&t.at>at-day)&&tasks.filter(t=>t.at>at-day||t.dateKey===dateKey).length<2;
@@ -64,7 +68,7 @@ export function claimLifeTask(roles:RoleData[],r:RoleData,at:number,ready:boolea
 }
 export function lifeTaskState(roles:RoleData[],r:RoleData,at:number,ready:boolean,enabled:boolean,journal:LifeTask[]=[],running=false):string {
  if(!enabled)return '自动推进已暂停；已保存的生活记录仍可查看。';
- const task=allTasks(roles,journal).find(t=>t.roleId===r.id&&t.dateKey===toLocalDateKey(at));
+ const task=displayedLifeTask(r,at,journal);
  if(task)return task.status==='attempted'?(running?'正在推进一段已过去的生活…':'上次任务尚未完成或已中断，额度已保留，今天不会重复请求。'):task.status==='quiet'?'本次推进没有需要单独记录的事情。':task.status==='completed'?(task.planId?'生活意图已保存；只有条件满足并执行成功的小活动才归档。':'本次生活已归档，今天不会重复生成。'):`本次未归档：${task.error||'任务中断'}。今日不自动重试。`;
  if(!ready)return '等待 API 可用；不会用演示文字冒充生活记录。';
  if(allTasks(roles,journal).filter(t=>t.at>at-day||t.dateKey===toLocalDateKey(at)).length>=2)return '已达到全应用生活调用上限，已保存的记录仍可查看。';

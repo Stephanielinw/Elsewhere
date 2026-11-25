@@ -144,7 +144,7 @@ async function main() {
       ['storage-recovery',offline,26,12],
       ['request-timeout',pages,16,22],
       ['data-protection',pages,17,0],
-      ['life-history',pages,22,12],
+      ['life-history',pages,23,13],
     ]) {
       const output = await run(process.execPath,['--import','tsx','scripts/test-'+suite+'.cjs'],{TEST_URL:url,TEST_LABEL:'release-gate',CHROME_PATH:chromiumPath},path.join(out,suite+'.log'));
       results.push({suite,...validateSuite(output,expected,posts)});

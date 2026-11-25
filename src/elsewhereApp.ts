@@ -1934,7 +1934,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     if(!navigator.locks){lifeJournalError='此浏览器无法安全协调多标签页，自动推进已暂停。';return;}
     lifeBusy=true;
     void navigator.locks.request('elsewhere-life-budget-v1',{ifAvailable:true},async lock=>{
-      if(!lock)return;
+      if(!lock){if(requestedRoleId)notify('另一页面正在协调生活额度，请稍后再试。');return;}
       let journal:LifeTask[];try{journal=await syncLifeBudget([...readLifeJournal(localStorage),...data.roles.flatMap(r=>r.lifeTasks||[])]);lifeClaims=journal;}catch{lifeJournalError='生活调用额度记录无法核验，自动推进已暂停。';return;}
       if(localStorage.getItem(STORAGE_KEY)!==saveSession.raw){lifeJournalError='其他标签页更新了存档，请刷新后继续生活推进。';return;}
       const roles=requestedRoleId?data.roles.filter(r=>r.id===requestedRoleId):[...data.roles].sort((a,b)=>(a.id===data.selected?-1:b.id===data.selected?1:0));
@@ -3595,7 +3595,7 @@ export function initElsewhereApp(saveSession:SaveSession): void {
     const archive=getOrBuildDailyFootprints(r,monitorDateKey,at,activeWorldZone());
     const items=monitorItemsForDisplay(r,data.user,archive.items,at,activeWorldZone()),life=collectRoleLife(r,cutoff);
     let state=lifeJournalError;
-    if(!state)try{state=lifeTaskState(data.roles,r,at,Boolean(token.trim())&&canUseRealModel(data.settings),data.settings.autonomousLife!==false,[...readLifeJournal(localStorage),...lifeClaims.map(t=>data.roles.find(r=>r.id===t.roleId)?.lifeTasks?.find(x=>x.id===t.id)||t)],lifeBusy&&Boolean(lifeController));}catch{state='生活调用额度记录无法核验，自动推进已暂停。';}
+    if(!state)try{state=lifeTaskState(data.roles,r,at,Boolean(token.trim())&&canUseRealModel(data.settings),data.settings.autonomousLife!==false,[...lifeClaims,...readLifeJournal(localStorage)],lifeBusy&&Boolean(lifeController));}catch{state='生活调用额度记录无法核验，自动推进已暂停。';}
     const list=items.map(item=>`<article class="footprint-card life-timeline-item" data-testid="footprint-item" data-fp-category="${esc(item.category)}" data-fp-id="${esc(item.id)}">
       <time class="fp-time-badge">${esc(worldHour(item.timestamp,activeWorldZone()))}</time><div class="life-timeline-content"><button type="button" class="life-record-open" data-action="monitor-detail" data-id="${esc(item.id)}" data-role-id="${esc(r.id)}" aria-label="查看${esc(item.title)}"><h3>${esc(item.title)}</h3><p class="life-narrative">${esc(item.summary)}</p>${item.where?`<span class="tiny muted">${uiIcon('map')}${esc(item.where)}</span>`:''}</button>
       ${item.durationLabel?`<p class="tiny muted life-hours">${esc(item.durationLabel)}</p>`:''}

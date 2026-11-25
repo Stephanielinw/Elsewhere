@@ -20,7 +20,7 @@ async function main(){
   const browser=await chromium.launch({ignoreDefaultArgs:['--disable-back-forward-cache'],...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})});
   const deadline=setTimeout(()=>{console.error('Life history suite exceeded its deadline');process.exitCode=1;void browser.close();},180000);
   let failures=0;
-  async function run(label,check,{live=false,hold=false,archiveFailure=false,basis=false,diary=false,tz='America/Los_Angeles',alter}={}){
+  async function run(label,check,{live=false,hold=false,archiveFailure=false,basis=false,diary=false,intent=false,tz='America/Los_Angeles',alter}={}){
     if(process.env.TEST_CASE&&!label.includes(process.env.TEST_CASE))return;
     const ctx=await browser.newContext({...devices['iPhone 13'],ignoreHTTPSErrors:true,serviceWorkers:'block',timezoneId:tz});
     await approveBackupImports(ctx);
@@ -45,7 +45,7 @@ async function main(){
           posts.push({kind:life?'life':wire.includes('【私人日记】')?'diary':'chat',body,wire});
           if(hold&&life)await gate;
           const task=life?JSON.parse(body.messages.at(-1).content):null;
-          const content=life?JSON.stringify({requestId:task.requestId,roleId:task.roleId,events:[{at:task.window.to-20*60000,action:'walk',durationMinutes:5,location:{sourceId:'profile:'+task.roleId,quote:'旧港口'}}]}):wire.includes('【私人日记】')?'合成历史日记。':'合成手机回复。';
+          const content=life?(intent?'\x60\x60\x60json\n'+JSON.stringify({requestId:task.requestId,roleId:task.roleId,intents:[{notBefore:task.window.to,expiresAt:task.window.to+10*60000,durationMinutes:1,action:'rest'}]})+'\n\x60\x60\x60':JSON.stringify({requestId:task.requestId,roleId:task.roleId,events:[{at:task.window.to-20*60000,action:'walk',durationMinutes:5,location:{sourceId:'profile:'+task.roleId,quote:'旧港口'}}]})):wire.includes('【私人日记】')?'合成历史日记。':'合成手机回复。';
           return route.fulfill({headers,json:{choices:[{finish_reason:'stop',message:{role:'assistant',content}}]}}).catch(()=>{});
         }
         if(req.method()==='GET'&&(new URL(dest).protocol==='file:'||new URL(dest).origin===new URL(url).origin))return route.continue();
@@ -281,6 +281,21 @@ async function main(){
       assert.equal((await t.owner()).lifeTasks.filter(task=>task.id===taskId).length,1);
       await t.p.clock.fastForward(120000);assert.equal(t.posts.length,1);
     },{live:true});
+    await run('explicit monitor progress after recent chat executes a real saved intent exactly once',async t=>{
+      await t.monitor();
+      assert.equal(t.posts.length,0,'recent chat prevents automatic request');
+      await t.p.getByTestId('life-settings').locator('summary').click();
+      await t.p.locator('[data-action=runautonomouslife]').click();
+      await wait(async()=>(await t.owner()).lifeTasks?.[0]?.status==='completed','manual intent persisted');
+      assert.equal(t.posts.length,1);
+      await t.p.clock.fastForward(120000);
+      await t.p.clock.fastForward(120000);
+      await wait(async()=>(await t.owner()).events.some(e=>e.lifeRecord?.version===2),'started intent completed');
+      assert.equal(await t.lifeCards.count(),1);
+      await t.reload();await t.monitor();
+      assert.equal(await t.lifeCards.count(),1);
+      assert.equal(t.posts.length,1);
+    },{live:true,intent:true,alter:r=>{r.chats=[{id:'recent-chat',speaker:'char',text:'刚聊完。',at:at-60000,status:'active'}];}});
     await run('another writer updating the world blocks stale profile saves while preserving history',async t=>{
       const b=await t.ctx.newPage();b.setDefaultTimeout(8000);
       try{

@@ -127,3 +127,23 @@ test('a scheduled scene uses the original cutoff and a recovered preflight is kn
  retryChatTiming(restored);
  assert.equal(claimChatBatch(restored,90000,true)?.roundId,batch.roundId);
 });
+
+test('phone payload binds historical and latest timestamps to actual turns using the world clock',()=>{
+ const data=defaults(),r=fixture();data.roles=[r];data.worldTimeZone='America/Los_Angeles';
+ const prev=Date.parse('2026-11-26T08:13:00Z'),sent=Date.parse('2026-11-26T17:37:00Z'),at=Date.parse('2026-11-26T17:42:00Z');
+ r.chats.push({id:'night-user',speaker:'me',text:'太困了，晚安',at:prev-420000},{id:'night-ai',speaker:'char',text:'晚安',at:prev});
+ send(r,'所以不出来玩吗',sent);send(r,'好可怜的宝宝',sent+1000);
+ prepareChatDue(r,at,()=>0);const batch=claimChatBatch(r,at,true)!;assert.ok(batch);
+ const before=structuredClone(r),messages=buildChatBatchMessages(data,r,batch,at);
+ const historic=messages.find(m=>m.role==='assistant'&&m.content.endsWith('\n晚安'))!;
+ assert.match(historic.content,/【应用消息时间：2026-11-26 00:13 GMT-8/);
+ const first=messages.find(m=>m.role==='user'&&m.content.endsWith('所以不出来玩吗'))!;
+ assert.match(first.content,/距上一条消息 564 分钟/);
+ const latest=messages.at(-1)!;
+ assert.equal(latest.role,'user');
+ assert.match(latest.content,/本轮回复时钟：2026-11-26 09:42 GMT-8（上午）/);
+ assert.match(latest.content,/上次角色发言 2026-11-26 00:13 GMT-8（569 分钟前）/);
+ assert.match(latest.content,/不能把旧活动、睡眠或告别当作此刻状态/);
+ assert.ok(latest.content.endsWith('好可怜的宝宝'));
+ assert.deepEqual(r,before);
+});

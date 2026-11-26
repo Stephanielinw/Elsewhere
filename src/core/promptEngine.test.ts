@@ -12,6 +12,7 @@ import {compileFruitPrompt} from './fruit/compiler';
 import {decodePresetLibrary} from './fruit/library';
 
 const now=Date.parse('2026-10-30T14:00:00Z');
+const withoutPhoneClock=(s:string)=>s.replace(/^【应用消息时间：[^\n]*】\n/,'').replace(/^【本轮回复时钟：[^\n]*】\n/,'');
 function fixture(){const data=defaults(),r=createRole('合成甲','','职业','轻快、有主见','场景');data.roles=[r];data.preset=null;r.chats=[];r.events=[];r.diaries=[];r.profile='PRIVATE_ACTOR_CANON';r.canonNotes='CANON_BOUNDARY';r.scene={id:'scene',where:'见面地点',startedAt:now-1000,messages:[]};r.play={id:'play',title:'合成剧',world:'THEATRE_WORLD',user:'戏内访客',char:'戏内守灯人',startedAt:now-1000,messages:[]};return {data,r};}
 test('all native conversation modes compile through the shared engine and preserve mode boundaries',()=>{
  for(const mode of ['chat','scene','play','intermission']as const){
@@ -61,7 +62,8 @@ test('legacy role-over-global priority, empty override and tail injection remain
  r.preset={name:'role',prompts:[{content:'ROLE {{char}}',role:'user',enabled:true},{identifier:'chatHistory',marker:true,enabled:true},{content:'TAIL',role:'system',enabled:true,injection_position:1,injection_depth:0}]};
  r.chats=[{id:'u',speaker:'me',text:'REAL_INPUT',at:now-1}];const raw=structuredClone(r.preset);
  const result=requestMessages(compileNativeConversation(data,r,'chat','测试',{nowTs:now}));
- assert.deepEqual(result.slice(1),[{role:'user',content:'ROLE 合成甲'},{role:'user',content:'REAL_INPUT'},{role:'system',content:'TAIL'}]);
+ assert.deepEqual(result.slice(1).map(m=>({...m,content:withoutPhoneClock(m.content)})),[{role:'user',content:'ROLE 合成甲'},{role:'user',content:'REAL_INPUT'},{role:'system',content:'TAIL'}]);
+ assert.match(result.find(m=>m.content.endsWith('REAL_INPUT'))!.content,/【本轮回复时钟：/);
  assert.deepEqual(r.preset,raw);r.preset={name:'empty',prompts:[]};assert.ok(!JSON.stringify(requestMessages(compileNativeConversation(data,r,'chat','测试',{nowTs:now}))).includes('GLOBAL'));
 });
 test('unknown legacy macros block explicitly and a one-request native fallback preserves the configuration',()=>{
@@ -84,7 +86,7 @@ test('legacy compatibility matches the pre-change golden requests in all four na
   r.chats=[{id:'h1',speaker:'me',text:'历史输入',at:item.at-2000},{id:'h2',speaker:'char',text:'历史回答',at:item.at-1000}];
   r.scene!.messages=structuredClone(r.chats);Object.assign(r.play!,{world:'STAGE_WORLD',user:'戏内访客',char:'戏内人物',messages:structuredClone(r.chats),intermissionMessages:structuredClone(r.chats)});
   const before=structuredClone(data),messages=requestMessages(compileNativeConversation(data,r,item.mode,'测试',{nowTs:item.at}));messages[0].content='<NATIVE_CONTEXT>';
-  assert.deepEqual(messages,item.expected,item.mode);assert.deepEqual(data,before);
+  assert.deepEqual(messages.map(m=>({...m,content:withoutPhoneClock(m.content)})),item.expected,item.mode);assert.deepEqual(data,before);
  }
 });
 test('native context excludes future, private, invalid-source and theatre-only facts without changing records',()=>{

@@ -1,4 +1,5 @@
 import {isNativePreset,nativeEntryApplies,type ConversationMode} from './fruit/nativePreset';
+import {validWorldZone,worldDate,worldHour} from './worldClock';
 import type {PresetData} from './types';
 import {isLiveNovelContext} from './novelContext';
 import { applyFruitProfile } from './fruit/profile';
@@ -10,7 +11,7 @@ import {validateElsewherePreset,type ElsewherePreset} from './elsewherePreset';
 
 export interface ConversationContext extends Omit<FruitContext,'source'|'mode'> {
  source:'isolated-fixture'|'native-live'|'novel-live';mode:ConversationMode;memoryDenied?:{id:string;value:string}[];
- native?:{protectedText:string;values:Record<string,string>;legacy:PresetData|null;currentInputs:FruitContext['history'];suffix?:string;factFragments?:Record<string,string>;memoryTrace?:MemoryDecision[]};
+ native?:{protectedText:string;values:Record<string,string>;legacy:PresetData|null;currentInputs:FruitContext['history'];suffix?:string;factFragments?:Record<string,string>;memoryTrace?:MemoryDecision[];phoneClockZone?:string};
 }
 export interface ConversationCompilation extends Omit<FruitCompilation,'previewOnly'|'sendAllowed'|'mode'> {
  engine:'conversation-v1';origin:'native'|'third-party';mode:ConversationMode;
@@ -41,6 +42,40 @@ function prepareNativePreset(preset:FruitPreset,context:ConversationContext):Fru
  if(!inserted)entries.push({identifier:'chatHistory',enabled:true});
  order.splice(Math.max(0,index),0,...entries);return {...preset,prompts,order};
 }
+/** Request-only metadata; never changes persisted SMS, revision or memory text. */
+function bindPhoneClock(result:ConversationCompilation,context:ConversationContext):void {
+ if(context.mode!=='chat'||context.source!=='native-live')return;
+ const requested=context.native?.phoneClockZone;
+ const local=Intl.DateTimeFormat().resolvedOptions().timeZone;
+ const zone=validWorldZone(requested)?requested:validWorldZone(local)?local:'UTC';
+ const label=(at:number)=>worldDate(at,zone)+' '+worldHour(at,zone);
+ const allowed=[...context.history,...(context.native?.currentInputs||[])].filter(h=>h.active&&h.revisionValid&&h.scope===context.scope&&h.knownBy.includes(context.actorId)&&Number.isFinite(h.at)&&h.at<=context.now);
+ const byId=new Map(allowed.map(h=>[h.id,h]));
+ const turns=result.messages.flatMap(m=>{
+  if(m.marker!=='chatHistory'&&m.sourceId!=='current-input')return [];
+  const source=m.sourceIds?.length===1?byId.get(m.sourceIds[0]):undefined;
+  return source?[{m,source}]:[];
+ });
+ const elapsed=(from:number,to:number)=>Math.max(0,Math.floor((to-from)/60_000));
+ const hour=Number(worldHour(context.now,zone).slice(0,2));
+ const period=hour<5?'凌晨':hour<12?'上午':hour<18?'下午':'晚上';
+ turns.forEach(({m,source},i)=>{
+  const prev=turns[i-1]?.source;
+  let meta='【应用消息时间：'+label(source.at)+'；手机短信';
+  if(prev&&source.at>=prev.at&&(source.at-prev.at>=3_600_000||worldDate(source.at,zone)!==worldDate(prev.at,zone)))meta+='；距上一条消息 '+elapsed(prev.at,source.at)+' 分钟，旧情境不可视为仍在进行';
+  meta+='】\n';
+  if(i===turns.length-1){
+   const lastUser=[...turns].reverse().find(t=>t.source.role==='user')?.source;
+   const lastAi=[...turns].reverse().find(t=>t.source.role==='assistant')?.source;
+   meta+='【本轮回复时钟：'+label(context.now)+'（'+period+'）';
+   if(lastUser)meta+='；最后用户消息 '+label(lastUser.at)+'（'+elapsed(lastUser.at,context.now)+' 分钟前）';
+   if(lastAi)meta+='；上次角色发言 '+label(lastAi.at)+'（'+elapsed(lastAi.at,context.now)+' 分钟前）';
+   meta+='。旧消息中的今天、明天、今晚、刚才以各自发送时间解释；新消息可以延续旧话题，但不能把旧活动、睡眠或告别当作此刻状态。只输出角色短信正文，不复述这些元数据。】\n';
+  }
+  m.content=meta+m.content;
+ });
+}
+
 function finishNativeMessages(result:ConversationCompilation,context:ConversationContext,legacy:FruitCompiledMessage[]):void {
  // Keep the old single native prelude and legacy whole-request depth semantics.
  let count=0;while(count<result.messages.length&&result.messages[count].role==='system'&&!result.messages[count].sourceId.startsWith('legacy:')&&result.messages[count].marker!=='chatHistory'&&result.messages[count].sourceId!=='native-format')count++;
@@ -148,7 +183,7 @@ export function compileConversationPrompt(preset:FruitPreset,rawProfile:FruitPro
     const bucket=buckets.get(i)||[];bucket.sort((a,b)=>priority[a.role]-priority[b.role]||(a.injectionOrder||0)-(b.injectionOrder||0)||a.orderIndex-b.orderIndex);
     result.messages.push(...bucket);if(i<relative.length)result.messages.push(relative[i]);
   }
-  if(native)finishNativeMessages(result,context,legacyInjections);
+  if(native){finishNativeMessages(result,context,legacyInjections);bindPhoneClock(result,context);}
   if(native&&options.elsewherePreset&&(context.mode==='meeting'||context.mode==='theatre')){
     const p=validateElsewherePreset(options.elsewherePreset);
     const entries=p.entries.filter(e=>e.enabled&&e.content.trim()).map((e,index)=>({role:e.role,content:e.content,sourceId:'preset:'+p.id+':'+e.id,sourceName:e.name,orderIndex:index}));
